@@ -7,4 +7,5 @@
 - Deployment hints defer to project tooling and environment; no assumed private infrastructure.
 - Optional integrations remain separately installed and subject to their own instructions.
 - Made the skill-search test independent of any workstation catalog using temporary fixtures.
-- Validation: 43 tests passed, isolated two-host installation/doctor passed, skill and secret scans passed. Independent review unavailable; public release pending.
+- Validation: 43 tests passed, isolated two-host installation/doctor passed, skill and secret scans passed. Independent review unavailable; owner explicitly authorized public release as aos-plus.
+- Published package name: aos-plus; installed skill name remains aos.

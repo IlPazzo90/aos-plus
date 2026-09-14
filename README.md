@@ -1,8 +1,9 @@
-# AOS — AI Development Operating System
+# AOS Plus — AI Development Operating System
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.12.0, with a fresh history.
+Interpretable Context Methodology (ICM). Public edition 1.12.0, with a fresh history. Repository: `aos-plus`.
+The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
 

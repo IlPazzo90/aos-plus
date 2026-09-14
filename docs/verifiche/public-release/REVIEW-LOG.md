@@ -11,3 +11,7 @@ Claude did not execute the review: weekly quota exhausted, exit 1. Gate INCOMPLE
 ## Scanner interpretation
 
 AOS security scan of the initial untracked tree exited 2 with three signal categories in its own scanner source. Inspected lines 195 and 340: service-role detection/message, not a configured role key; line 237: a list of header and variable names, not credential values; line 366: the XSS-detection regex, not HTML injection. These are documented self-matches, not suppressed rules. Gitleaks tree and complete fresh history scans exited 0.
+
+## Release authorization
+
+The owner explicitly instructed publication as aos-plus after being asked whether to proceed without the unavailable Claude review. Public release is authorized with that limitation. External gate remains INCOMPLETE, not PASS. Historical pending statements above describe the earlier state.
