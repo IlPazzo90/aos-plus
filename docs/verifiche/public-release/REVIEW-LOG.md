@@ -7,3 +7,7 @@ Security/maintainer assessment: fresh history; only reusable sources and generic
 ## Independent review
 
 Claude did not execute the review: weekly quota exhausted, exit 1. Gate INCOMPLETE, not PASS. Public release remains pending explicit acceptance of this missing review or a completed external review. The earlier waiver for a different batch of private repositories is not treated as authorization to skip this public-release gate. The first attempt prompt prematurely stated a full test pass; the actual failed test and successful corrected rerun are recorded above. No independent verdict was produced on either state.
+
+## Scanner interpretation
+
+AOS security scan of the initial untracked tree exited 2 with three signal categories in its own scanner source. Inspected lines 195 and 340: service-role detection/message, not a configured role key; line 237: a list of header and variable names, not credential values; line 366: the XSS-detection regex, not HTML injection. These are documented self-matches, not suppressed rules. Gitleaks tree and complete fresh history scans exited 0.
