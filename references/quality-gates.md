@@ -1,0 +1,205 @@
+# Quality Gates — Red Team, Multi-Role, Definition of Done
+
+Read when closing a T2 or T3 task. T0/T1 do not run this workflow; apply SKILL.md
+and the risk-specific inline checks in `risk-and-tiers.md`.
+
+## Order
+
+1. Self-review the diff
+2. Red team pass
+3. Cross-model verification — **only when the trigger below fires**
+4. Multi-role pass — **only the roles that apply**
+5. Definition of Done, with evidence
+6. Score, if it clarifies anything
+
+Fix what is real. Re-verify what you fixed. Then stop.
+
+## 1. Self-review
+
+Read your own diff as a diff, not as the thing you intended to write. Look for:
+leftover debug output, commented-out code, an unused import, a renamed thing not
+renamed everywhere, a `TODO` you left, a hardcoded value that should be config, a file
+you touched by accident.
+
+## 2. Red team
+
+Now stop being the author. The implementation is guilty until proven innocent. Hunt:
+
+- **Logic** — off-by-one, inverted condition, wrong default, wrong operator
+- **False assumptions** — "this is always non-empty", "this always arrives sorted",
+  "this can't be null"
+- **Error paths** — what happens when the network call fails, the file is missing,
+  the API returns 429, the response shape changed
+- **Unexpected input** — empty, huge, unicode, negative, duplicate, out of order
+- **Concurrency** — two runs at once, a re-entrant trigger, a cron overlapping itself
+- **Regressions** — what else reads this function, this option, this table, this file
+- **Security** — injection, secrets in logs or commits, authz assumed rather than
+  checked, data exposed to the wrong tenant or user. Start from the mechanical pass
+  (`bash "$AOS_DIR/bin/aos-security.sh"`) so the known traps are already
+  off the table, then spend the thinking on what it cannot see: whether the
+  permissions are *correct*, not merely present
+- **Performance** — a query inside a loop, an unbounded fetch, a full-table scan
+- **Cruft** — dead code, duplication, an abstraction with one caller
+
+For each real finding: severity, fix if in scope and safe, add a test if the project
+has a place for one, re-run the relevant check.
+
+**Do not manufacture findings to look thorough.** "Red team pass: nothing significant"
+is a legitimate and common result. Padding it wastes the user's attention and
+devalues the ones that matter.
+
+## 3. Cross-model verification — `verify-agent`
+
+Steps 1 and 2 have a structural weakness: the reviewer is the author. The same model
+that wrote the code is hunting for its own blind spots, and a model's blind spots are
+correlated with its output. A clean red team is weak evidence, not strong evidence.
+
+`verify-agent` closes that gap. A model from a **different family** (Claude CLI when Codex is main; Codex CLI when Claude is main) receives only the brief and the artifact — never AOS's reasoning, never the
+conversation — and is prompted to prove the work wrong. Every finding it returns is
+then verified mechanically before it is accepted or refuted. Max 6 rounds, closed early
+on convergence or on a sterile round. A quota error, an interrupted stream or an empty
+report is a round that did not run — never a PASS.
+
+### When it fires
+
+| Situation | Action |
+|-----------|--------|
+| Tier ≥ T2 **and** risk ≥ HIGH, before shipping | **Run it.** Announce it, do not ask |
+| Tier ≥ T2 **and** risk ≥ HIGH **and** the red team found nothing | **Run it.** "Nothing found" is precisely the blind-spot case |
+| T3 complete **at risk ≥ MEDIUM**, or an irreversible action is next | Offer it in one line; run it if the user says yes |
+| The user asks to be sure, or doubts the work | Run it |
+| T0, T1, or risk LOW | **No.** Cost with no matching exposure |
+| Content, commercial or administrative work | No — AOS is not driving that work either |
+
+### Preconditions — check these first, they fail hard
+
+1. **A Git location for the final record.** The requirement to commit BRIEF.md and
+   REVIEW-LOG.md applies in both directions. Codex CLI additionally requires a Git
+   repository as cwd; Claude CLI can review files outside a repository. Do not call
+   the Claude backend unavailable for that reason: establish an existing repository
+   where the record belongs. If none is appropriate, state that persistence is
+   blocked; an executable review and a completed, versioned gate are distinct.
+2. **A working opposite backend.** Claude CLI logged in when Codex is main;
+   Codex CLI logged in when Claude is main. Other backends only on explicit user request; never silently substitute the
+   principal or a same-family clone for the opposite reviewer.
+3. **Where the log will end up.** Raw traces belong in ignored `tmp/verify/`.
+   Commit a sanitized brief and review record under `docs/verifiche/<slug>/`.
+   Check exclusion rules before writing traces; never publish sensitive review data.
+
+A blocking precondition missing → **do not silently skip the gate.** Say which one it is,
+run the red team properly inline, and record in the report that cross-model
+verification was unavailable and why.
+This fallback completes the available assessment, **not the mandatory external
+gate**. Prepare all remaining authorized work. If release depends on this gate,
+leave release pending until the backend works or the user explicitly accepts the
+missing independent review, subject to host/project rules. Do not silently turn
+an unavailable reviewer into permission to ship or a VERIFIED verdict.
+
+### Feed it the brief AOS already has
+
+The verdict is only as good as the contract it is measured against. Where AOS produced
+a plan or a spec, **that document is the brief** — hand it over instead of letting the
+brief be re-derived from the conversation. A T2/T3 task that never wrote a brief down
+has a bigger problem than verification.
+
+### Reading the verdict
+
+- **VERIFICATO** — a real gate passed. Say so.
+- **VERIFICATO CON RISERVE** — the reservations go in the report's `## Rischi aperti`,
+  one per line. They do not disappear because the verdict was not red.
+- **INCOMPLETO** — a required backend or packet did not complete. Preserve completed
+  evidence, state missing coverage and do not declare a complete PASS.
+- **BOCCIATO** — a confirmed BLOCKER. This is **not** done. Back into the loop, and it
+  counts against the 5-cycle bound in `SKILL.md`.
+
+### A finding may point outside the artifact
+
+The reviewer attacks the work against the brief, and the brief describes a *purpose*.
+It will therefore sometimes land on a defect in a file the change never touched — one
+the change inherited and built on. Report it, but **say which it is**: a defect
+*introduced* here is this task's problem, one *inherited* is a decision for the user.
+Collapsing the two either inflates the diff's guilt or buries a real hole.
+
+The same distinction sets the fix boundary. Correct what this change caused; for the
+inherited one, fix it only if it is small and safe, and otherwise put it in the report
+with what it would take. Do not let an inherited defect quietly turn a bounded task
+into a refactor.
+
+A reviewer finding is a **claim, not a fact** — external models hallucinate too.
+Confirm each one mechanically before changing code, and write the counter-proof when
+you refute one. Never edit the artifact to placate a finding you could not reproduce.
+
+## 4. Multi-role — use the roles that apply, not all of them
+
+Pick the two or three that fit the change. Six sections on a form validation fix is
+bureaucracy.
+
+| Role | The one question it asks |
+|------|--------------------------|
+| **Architect** | Does this fit the structure that is already here, or fight it? |
+| **Senior dev** | Would a competent colleague reading this in six months understand it immediately? |
+| **QA** | Which behaviour is now untested, and which edge case did we skip? |
+| **Security** | Where is the trust boundary, and what crosses it unchecked? |
+| **DevOps/SRE** | How does this deploy, how does it fail, and how do we roll it back? |
+| **UX/Product** | Does this actually solve the user's problem, or just the ticket? |
+| **Future maintainer** | What will surprise the next person, and is it written down? |
+
+Synthesise findings into one list. Do not write one report per role.
+
+## 5. Definition of Done
+
+Every applicable box, backed by something that was actually run or observed. An
+unchecked box is not a failure — an unverified check is.
+
+- [ ] The agreed requirement is implemented — re-read the original request
+- [ ] The behaviour was **observed**, not inferred from the code
+- [ ] The project's checks are green (see `project-profiles.md` for what those are here)
+- [ ] Tests added or updated where the project has tests and the change warrants it
+- [ ] No known regression introduced
+- [ ] Errors are handled the way this codebase handles errors
+- [ ] The relevant edge cases are covered
+- [ ] The solution matches local conventions
+- [ ] No unjustified complexity, no unrequested scope
+- [ ] Security reviewed proportionally to risk
+- [ ] Cross-model verification run where section 3 required it — or its absence
+      declared, with the reason
+- [ ] Where it ran: `BRIEF.md` and `REVIEW-LOG.md` moved out of `tmp/` into
+      `docs/verifiche/<slug>/` and **committed** — a verdict left in an ignored
+      directory is a verification that did not happen
+- [ ] Performance checked where it matters
+- [ ] Docs updated where the change makes existing docs wrong
+- [ ] Config, migration and rollback handled where relevant
+- [ ] Final verification run against **real output**, in this turn
+
+**Never** say done, fixed, working, or passing on the strength of having written the
+code. Run the check, read the output, then speak.
+
+## 6. Scoring — diagnostic, never decorative
+
+Score only where it sharpens the picture: Correctness, Test confidence,
+Maintainability, Security, Performance, Observability, Documentation, Architectural
+fit.
+
+- **90–100** production-ready for this scope
+- **80–89** good; non-blocking improvements exist
+- **70–79** needs attention before closing, if the area matters here
+- **< 70** do not declare done without an explicit reason
+
+A low score in an area **critical to this task** is a blocking gate. A low score in an
+irrelevant area is noise — omit it.
+
+Do not invent precise numbers where no measurement exists, and do not chase 100/100.
+Prose beats a fake metric: "no test coverage on the error path" says more than
+"Test confidence: 72".
+
+## Anti-patterns this file exists to prevent
+
+- A green build treated as proof of quality
+- Editing the test until it passes, when the behaviour is what is wrong
+- Skipping the red team because the change "felt clean"
+- Treating a self-review as independent review — the author is not a second opinion
+- Running `verify-agent` on a T1 fix, or skipping it silently on a live deploy
+- Accepting an external reviewer's finding without reproducing it
+- Six role reports on a two-line fix
+- Numbers presented as measurement when they are impressions
+- Endless polish with no marginal value — the loop bounds in `SKILL.md` are binding
