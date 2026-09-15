@@ -49,6 +49,7 @@ references/project-profiles.md
 references/quality-gates.md
 references/output-contract.md
 references/token-efficiency.md
+references/design.md
 bin/aos-profile.sh
 bin/profile-python.py
 bin/aos-doctor.py

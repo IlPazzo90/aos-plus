@@ -147,6 +147,7 @@ bureaucracy.
 | **Security** | Where is the trust boundary, and what crosses it unchecked? |
 | **DevOps/SRE** | How does this deploy, how does it fail, and how do we roll it back? |
 | **UX/Product** | Does this actually solve the user's problem, or just the ticket? |
+| **Designer (UI/UX)** | Would someone who designs for a living read this as designed, or as assembled? (`design.md`) |
 | **Future maintainer** | What will surprise the next person, and is it written down? |
 
 Synthesise findings into one list. Do not write one report per role.
@@ -172,6 +173,8 @@ unchecked box is not a failure — an unverified check is.
       `docs/verifiche/<slug>/` and **committed** — a verdict left in an ignored
       directory is a verification that did not happen
 - [ ] Performance checked where it matters
+- [ ] Where a person looks at the result: the design gate in `references/design.md` §5
+      was run against the rendered thing, in a browser, not against the source
 - [ ] Docs updated where the change makes existing docs wrong
 - [ ] Config, migration and rollback handled where relevant
 - [ ] Final verification run against **real output**, in this turn

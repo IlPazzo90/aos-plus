@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.14.0-public — 2026-09-15
+
+A pile of design skills was installed and none of them said *when* it enters a job,
+or what makes the result acceptable. `references/design.md` adds the missing role.
+
+- **The UI/UX role** owns the direction and the acceptance bar, not the pixels of
+  every commit. It asks the one question the other roles do not: would someone who
+  designs for a living read this as designed, or as assembled? The gap between the
+  two is rarely talent — it is that nobody wrote the direction down before the first
+  component existed, so every later decision was taken locally and the sum is generic.
+- **Six stages, each with an artifact someone else can read**: direction, tokens,
+  library choice, variants, motion spec, review. A stage with no artifact did not run;
+  "I kept it in mind" is not an output. This is the ICM stage contract applied to
+  design, with the skills that help mapped one per stage rather than listed together.
+- **Four of those skills declare `disable-model-invocation: true`** in their
+  frontmatter — an agent cannot invoke them, only the user can. Suggest them and say
+  so; reporting a stage as complete through a skill that never ran is a false claim.
+  Read the frontmatter of anything you plan to route to before promising it.
+- **The gate is checked against the rendered result, in a browser, not the source.**
+  Contrast ratios, 44px touch targets, ≥16px text in any field the user types into
+  (below that mobile Safari zooms the page on focus), `prefers-reduced-motion`,
+  visible focus, three viewports plus 200% zoom, and the empty/loading/error states.
+  Reading the CSS tells you what you wrote, not what shipped.
+- **Costs are named from what the skills read, not from what they say.** One design
+  skill reads four separate image-generation API keys; another reads a font-catalog
+  key; the image-direction skills name no backend of their own and will use whatever
+  the host provides. So no asset-generating stage runs unattended, and none runs in a
+  loop — the first unattended run spends real money.
+- Designer row in `references/quality-gates.md` §4, next to UX/Product, which asks a
+  different question, plus the matching DoD box.
+
 ## 1.13.0-public — 2026-09-15
 
 - Routing gains three rows: reach for an anti-over-engineering pass when the solution

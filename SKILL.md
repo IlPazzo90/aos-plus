@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.13.0"
+  version: "1.14.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman e RTK, processo proporzionato."
 ---
 
@@ -146,8 +146,11 @@ Choose one skill per need; domain specialists still apply.
 | Solution looks larger than the problem | `ponytail` before building; `ponytail-review` on a diff, `ponytail-audit` on a repo |
 | Library, framework or API surface | Context7, never a remembered signature |
 | Prose to publish | `humanizer` for AI tells; the writing/design guideline skills for review |
+| **Anything a person will look at** — page, component, dashboard, deck, banner | `references/design.md`: the UI/UX role, its stages and its gate |
 
 Larger-than-session decision map: suggest user-run `/wayfinder`; do not invoke it.
+Same rule for the design skills carrying `disable-model-invocation: true`
+(`prototype`, `pick-ui-library`, `review-animations`): suggest, never claim they ran.
 Overlaps, unavailable capabilities or delegation choices: `references/orchestration.md`.
 Do not add implementation-mirroring tests for reversible low-impact edits.
 
@@ -165,6 +168,9 @@ Observe requested behavior. Run required project checks plus risk-appropriate
 regression/edge checks. Read the exact diff; remove debug leftovers and scope creep.
 Before committing run `bash "$AOS_DIR/bin/aos-security.sh"`; exit 2 means signals to
 resolve or explain. Name the trust boundary; a clean scan does not prove permissions.
+When the change is something a person looks at, the gate in `references/design.md` §5
+is part of verification: check the rendered result in a browser you drive, at the
+stated viewports, not the source.
 
 T2/T3: read `references/quality-gates.md` for red team, applicable roles and DoD.
 **External gate: tier ≥ T2 AND risk ≥ HIGH.** Codex main calls Claude Code (Opus);
