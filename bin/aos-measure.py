@@ -73,6 +73,41 @@ def start(args):
     # reason a task closes without one. Only the explicit --record path is created.
     args.record.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(args.record, data, exclusive=True)
+    pending = unjudged(args.record)
+    if pending:
+        # Five records existed and none carried the user's verdict: `finish` writes the
+        # author's word and nothing asked for the other one. The next task on the same
+        # repository is the moment someone is there to answer, one command per record.
+        print("AVVISO: record consegnati senza verdetto dell'utente — chiedi una riga e registrala:",
+              file=sys.stderr)
+        for path in pending:
+            print(f"  python3 {sys.argv[0]} judge --record {display_path(path)} --verdict accepted|rejected",
+                  file=sys.stderr)
+
+
+def display_path(path):
+    # Relative to the cwd when it lies under it, so the printed command runs as shown.
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
+
+
+def unjudged(record):
+    # Sibling records that `finish` closed as delivered/partial and `judge` never touched.
+    # Unreadable or foreign JSON files are not records, so they are skipped, not reported.
+    names = []
+    for path in sorted(record.parent.glob("*.json")):
+        if path == record or path.is_symlink():
+            continue
+        try:
+            data = load_record(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(data["finished_at"], str) and data["outcome"] in ("delivered", "partial") \
+                and data.get("judged_at") is None:
+            names.append(path)
+    return names
 
 
 def git(top, *argv):

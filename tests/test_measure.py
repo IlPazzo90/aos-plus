@@ -37,6 +37,65 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNone(data["rtk_estimate"]["saved"])
         self.assertIsNone(data["elapsed_seconds"])
 
+    def test_start_names_delivered_records_nobody_judged(self):
+        # A finished, unjudged sibling is named; a judged one, a blocked one, an open
+        # one and a foreign JSON file are not. The new record is still created.
+        folder = Path(self.temp.name)
+        delivered = self.start_then_finish(folder / "2026-09-01-old.json", "delivered")
+        partial = self.start_then_finish(folder / "2026-09-02-part.json", "partial")
+        judged = self.start_then_finish(folder / "2026-09-03-judged.json", "delivered")
+        subprocess.run([sys.executable, str(SCRIPT), "judge", "--verdict", "accepted", "--record", str(judged)],
+                       capture_output=True, text=True, check=True)
+        self.start_then_finish(folder / "2026-09-04-blocked.json", "blocked")
+        subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
+                        "--version", "1", "--record", str(folder / "2026-09-05-open.json")], check=True, capture_output=True)
+        (folder / "notes.json").write_text('{"schema": 1, "outcome": "delivered"}')
+        (folder / "broken.json").write_text("{")
+        (folder / "shaped.json").write_text(json.dumps({"schema": 1, "task": "t", "runtime": "r", "model": "m",
+                                                        "version": "1", "started_at": "2026-09-01T00:00:00Z",
+                                                        "finished_at": True, "outcome": "delivered"}))
+        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x", "--version", "1.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.record.exists())
+        self.assertIn("AVVISO: record consegnati senza verdetto", result.stderr)
+        # One runnable command per record: a copy-paste of the line must judge that file.
+        for pending in (delivered, partial):
+            self.assertIn(f"judge --record {pending} --verdict accepted|rejected", result.stderr)
+        for absent in ("2026-09-03-judged.json", "2026-09-04-blocked.json", "2026-09-05-open.json",
+                       "notes.json", "broken.json", "shaped.json"):
+            self.assertNotIn(absent, result.stderr)
+
+    def test_the_printed_judge_command_is_relative_to_the_cwd_when_it_can_be(self):
+        folder = Path(self.temp.name).resolve() / "docs" / "misure"
+        folder.mkdir(parents=True)
+        self.start_then_finish(folder / "2026-09-01-old.json", "delivered")
+        result = subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
+                                 "--version", "1", "--record", "docs/misure/2026-09-02-new.json"],
+                                capture_output=True, text=True, cwd=str(folder.parents[1]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("judge --record docs/misure/2026-09-01-old.json --verdict", result.stderr)
+
+    def test_start_is_silent_when_every_sibling_is_judged_or_absent(self):
+        folder = Path(self.temp.name)
+        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x", "--version", "1.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("AVVISO", result.stderr)
+        judged = self.start_then_finish(folder / "2026-09-03-judged.json", "delivered")
+        subprocess.run([sys.executable, str(SCRIPT), "judge", "--verdict", "rejected", "--record", str(judged)],
+                       capture_output=True, text=True, check=True)
+        other = Path(self.temp.name) / "second.json"
+        result = subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
+                                 "--version", "1", "--record", str(other)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("AVVISO", result.stderr)
+
+    def start_then_finish(self, path, outcome):
+        base = [sys.executable, str(SCRIPT)]
+        subprocess.run(base + ["start", "--task", "t", "--runtime", "r", "--model", "m", "--version", "1",
+                               "--record", str(path)], check=True, capture_output=True)
+        subprocess.run(base + ["finish", "--outcome", outcome, "--record", str(path)], check=True, capture_output=True)
+        return path
+
     def test_start_does_not_overwrite(self):
         self.start()
         before = self.record.read_bytes()

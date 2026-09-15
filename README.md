@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.20.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.21.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -81,7 +81,7 @@ Every T2/T3 task closes with a record, not an impression:
 ```sh
 RECORD="docs/misure/$(date -u +%F)-short-slug.json"
 python3 bin/aos-measure.py start --record "$RECORD" \
-  --task "What was asked" --runtime codex --model configured --version 1.20.0
+  --task "What was asked" --runtime codex --model configured --version 1.21.0
 python3 bin/aos-measure.py finish --record "$RECORD" --outcome delivered --corrections 1
 # later, once the user has said what they think of it:
 python3 bin/aos-measure.py judge --record "$RECORD" --verdict accepted
@@ -92,7 +92,10 @@ python3 bin/aos-measure.py judge --record "$RECORD" --verdict accepted
 filed as partial. `accepted` and `rejected` are the user's words: `judge` writes them
 once, after the user has spoken, and keeps what `finish` had said in `delivered_as`. The
 author writing `accepted` at finish — which the first records did — is the author grading
-their own work, the judgement the record exists to replace.
+their own work, the judgement the record exists to replace. Since 1.21.0 `start` lists the
+sibling records that were delivered and never judged, with the command to record the
+verdict: the start of the next task on the same repository is when someone is there to
+answer, and a record nobody asks about stays `delivered` forever.
 Provider counters are optional and must name their `--metric-source`; unknown values stay
 null and are never estimated. Nothing is collected automatically, no history is read, and
 no provider is contacted. The record is committed with the work — a measurement left in an

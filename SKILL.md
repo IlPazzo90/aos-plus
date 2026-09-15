@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.20.0"
+  version: "1.21.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -199,7 +199,8 @@ raw transcripts stay outside Git. Same-family/self-review is not cross-model rev
 first change and `finish` at the end, into `docs/misure/<date>-<slug>.json`, committed
 with the work. `finish --outcome` is `delivered | partial | blocked`: what was handed
 over. `accepted` and `rejected` are the user's words, written later with `judge --verdict`
-once the user has spoken — never by the author at finish. Unavailable provider counters stay null;
+once the user has spoken — never by the author at finish; `start` names the earlier records still
+without one, so ask for that line then. Unavailable provider counters stay null;
 never estimate them. No secrets or client identities in `--task`. **This step is not
 conditional on the work feeling worth measuring** — that judgement is the one the record
 exists to replace, and a step phrased as conditional is a step that never runs.

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.21.0-public — 2026-09-15
+
+**A verdict nobody asks for.** `judge` existed since 1.18.0 and had never been called:
+no record ever carried the user's verdict: the early ones said `accepted` in the author's
+hand, the later ones stayed `delivered`, which is also the author's word. Now
+`aos-measure.py start` prints the sibling records that were finished as
+`delivered`/`partial` and never judged, one complete `judge` command each (relative to the
+cwd when possible); JSON files that are not records, including a shaped one whose
+`finished_at` is not a string, are skipped, not reported. SKILL.md adds one line: when the notice
+appears, ask the user for that line and record it. Three tests.
+
+**Where self-audits stop.** This edition's source went through five audit-and-fix cycles in
+one day, and the last ones found bookkeeping of earlier fixes rather than defects. The next
+audit of AOS on itself waits for use: at least five measured T2 records on real projects.
+
+Checks: `python3 -m unittest discover tests` green on 3.12 and 3.9 (98 tests); the
+cross-model gate ran on the reserve model, so the verdict is verified with reservations.
+
 ## 1.20.0-public — 2026-09-15
 
 **Backups nobody weighs.** One install had 8.3 GB in `~/.agents/backups`: eight copies of
