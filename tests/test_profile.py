@@ -64,6 +64,14 @@ class ProfileTests(unittest.TestCase):
                 output = self.profile(files)
                 self.assertIn("py_compile", output)
 
+    def test_pytest_config_alone_keeps_the_python_minimum_bar(self):
+        # pytest.ini proves a configuration, not that any Python test exists to run.
+        output = self.profile({"pytest.ini": "[pytest]\n",
+                               "package.json": json.dumps({"scripts": {"test": "jest"}}),
+                               "app.py": ""})
+        self.assertIn("-m pytest", output)
+        self.assertIn("py_compile", output)
+
     def test_python_runner_replaces_the_minimum_bar(self):
         output = self.profile({"tests/test_app.py": "import unittest\nclass Example(unittest.TestCase): pass\n"})
         self.assertIn("-m unittest discover -s tests", output)
@@ -121,6 +129,9 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("workflow n8n", output)
         self.assertIn("Editorial Flow.json", output)
         self.assertNotIn("HIGH", output)
+        # Nor may it assert what the nodes do: a Manual Trigger and a Set publish nothing.
+        self.assertNotIn("pubblica contenuti o manda messaggi veri", output)
+        self.assertIn("leggi i nodi", output)
 
 
 if __name__ == "__main__":

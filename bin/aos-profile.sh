@@ -170,10 +170,14 @@ if has Makefile && grep -qE '^test:' Makefile 2>/dev/null; then
   [ -z "$test_cmd" ] && test_cmd="make test"
 fi
 if [ "$is_python" -eq 1 ] && [ -n "$host_python" ]; then
-  python_tests=$("$host_python" -I "$SCRIPT_DIR/profile-python.py" "$python_cmd")
+  python_raw=$("$host_python" -I "$SCRIPT_DIR/profile-python.py" "$python_cmd")
+  python_evidence=$(printf '%s\n' "$python_raw" | sed -n 's/^PYTHON_TESTS_EVIDENCE=//p')
+  python_tests=$(printf '%s\n' "$python_raw" | grep -v '^PYTHON_TESTS_EVIDENCE=')
   if [ -n "$python_tests" ]; then
     printf '%s\n' "$python_tests"
-    python_runner=1
+    # Only test files prove there is Python to run; a pytest section in a config
+    # file, or pytest in the dependencies, proves neither.
+    [ "$python_evidence" = "files" ] && python_runner=1
     [ -z "$test_cmd" ] && test_cmd="runner Python rilevato"
   fi
 fi
@@ -221,14 +225,16 @@ fi
 [ "$found_deploy" -eq 0 ] && echo "  (nessun bersaglio riconosciuto — chiedi prima di rilasciare)"
 echo
 
-# La barra minima dipende dall'assenza di un runner *Python*, non dall'assenza di
-# un comando di test qualsiasi: `make test` o `npm run test` possono non toccare
-# una riga del Python di questo progetto, e prima bastavano a farla sparire.
+# The bar depends on the absence of a *Python* runner, not on the absence of any
+# test command: `make test` or `npm run test` may not touch a line of this
+# project's Python, and they used to be enough to remove it.
 if [ "$is_python" -eq 1 ] && [ "$python_runner" -eq 0 ]; then
-  if [ -n "$test_cmd" ]; then
+  if [ "$python_evidence" = "config" ]; then
+    echo "  Il comando pytest viene da configurazione o dipendenze, non da test trovati."
+  elif [ -n "$test_cmd" ]; then
     echo "  '$test_cmd' non e' provato che verifichi il Python di questo progetto."
   fi
-  echo "  Nessun runner Python identificato. Verifica configurazione e istruzioni; barra minima:"
+  echo "  Nessuna prova che i test Python vengano eseguiti. Verifica configurazione e istruzioni; barra minima:"
   echo "    ${python_cmd:-<interprete da individuare>} -m py_compile <file modificati>"
   echo "    ${python_cmd:-<interprete da individuare>} -c 'import <modulo>'"
   echo "    esegui su input reale in scratchpad, MAI su dati di produzione"
@@ -282,11 +288,11 @@ WF_JSON=$(sgrep --include='*.json' -e '"connections"' | head -5)
 while IFS= read -r wf; do
   [ -n "$wf" ] || continue
   if [ -f "$wf" ] && grep -q '"nodes"' "$wf" 2>/dev/null; then
-    # Il file dice che il workflow esiste, non che sia attivo sull'istanza: la
-    # severita' non si deduce dal riconoscimento. Prima usciva HIGH comunque.
-    echo "  workflow n8n ($wf): riconosciuto il file, non lo stato sull'istanza."
-    echo "  Se e' attivo, eseguirlo pubblica contenuti o manda messaggi veri:"
-    echo "  verifica attivazione e destinazione, e non attivarlo senza dirlo"
+    # The file says the workflow exists, not that it is active on the instance nor
+    # what its nodes do. Neither the severity nor the effects follow from detection.
+    echo "  workflow n8n ($wf): riconosciuto il file, non lo stato sull'istanza"
+    echo "  ne' cosa fanno i suoi nodi. Prima di eseguirlo o attivarlo leggi i nodi"
+    echo "  e la destinazione: alcuni scrivono davvero fuori. Non attivarlo senza dirlo"
     risky=1; break
   fi
 done <<EOF

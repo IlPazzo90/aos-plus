@@ -17,8 +17,18 @@
   promise; `evals/` is now covered, with a test.
 - `references/quality-gates.md`: reviewer capability is back among the gate preconditions.
   A reviewer counts only if it is at least comparable to the model that produced the work.
-- Validation: 47 tests (were 43) OK under Python 3.13, OK with 2 skipped under Python 3.9.6.
-  The four new tests fail against the previous code, which was checked before fixing it.
+- A `[pytest]` section, or pytest among the dependencies, still removed the minimum bar:
+  `profile-python.py` printed a pytest command from configuration alone. It now states on
+  a dedicated line whether the evidence comes from **test files** or only from
+  configuration, and the bar stays up in the second case.
+- The n8n line no longer presumes the effects either: a workflow of Manual Trigger and Set
+  publishes nothing, so the text reports what was recognized and defers to reading the nodes.
+- Known and inherited: backticked reference checking cannot tell an illustrative path from a
+  promise. This already applied to `references/`, `bin/` and `catalog/`; `evals/` joins the
+  same class.
+- Validation: 48 tests (were 43) OK under Python 3.13, OK with 2 skipped under Python 3.9.6.
+  Six of the seven new tests fail against the code they were written for, checked before
+  each fix; the seventh is a guard for behavior that already held.
 
 ## 1.12.1-public — 2026-09-15
 

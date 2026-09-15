@@ -43,8 +43,9 @@ def main():
     except (ImportError, ValueError, TypeError, AttributeError):
         # Python < 3.11 has no stdlib TOML parser; other evidence still applies.
         pass
+    from_test_files = False
     unittest_roots = set()
-    excluded = {"node_modules", ".git", "vendor", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
+    excluded ={"node_modules", ".git", "vendor", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
     for directory, dirs, files in os.walk(".", followlinks=False):
         relative = Path(directory)
         dirs[:] = [d for d in dirs if d not in excluded and not (relative / d).is_symlink()]
@@ -68,9 +69,15 @@ def main():
                     imports.add(node.module.split(".")[0])
             if "pytest" in imports:
                 pytest_evidence.append(str(path))
+                from_test_files = True
             if "unittest" in imports:
                 unittest_roots.add((str(relative), "test*.py" if name.startswith("test_") else "*_test.py"))
     command = shlex.quote(interpreter)
+    # Config and dependencies prove a runner is configured; only test files prove
+    # there is Python to run. The caller needs the difference to decide whether the
+    # minimum bar still applies, so report it on a line it can strip.
+    proven = "files" if (from_test_files or unittest_roots) else ("config" if pytest_evidence else "none")
+    print("PYTHON_TESTS_EVIDENCE=" + proven)
     if pytest_evidence:
         print("  {} -m pytest   (evidenza: {}; disponibilita pytest non verificata)".format(command, ", ".join(pytest_evidence[:3])))
     elif unittest_roots:
