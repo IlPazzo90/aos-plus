@@ -31,6 +31,11 @@
   read; and the narrowing options were searched across the whole file, so an unrelated
   section with its own `testpaths` produced a false warning. Both fixed: conftest files
   are read for `collect_ignore`, and the options count only inside the pytest section.
+- Those options are now read with real parsers instead of line patterns: `tomllib` for
+  `pyproject.toml`, `configparser` for the ini files, with the previous scan kept as a
+  fallback when a file cannot be parsed. A `[`-looking line inside a multiline TOML
+  string is not a table, and `collect_ignore` written with a type annotation is still
+  an exclusion.
 - Known and inherited: backticked reference checking cannot tell an illustrative path from a
   promise. This already applied to `references/`, `bin/` and `catalog/`; `evals/` joins the
   same class.

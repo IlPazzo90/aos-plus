@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read runner evidence without importing or executing project code."""
 import ast
+import configparser
 import os
 from pathlib import Path
 import re
@@ -15,15 +16,36 @@ def read(path):
         return ""
 
 
-def section(text, header):
-    """Body of the first matching section only, so a later unrelated one cannot speak for it."""
-    match = header.search(text)
-    if not match:
-        # An ini file without its own header: the whole file is that section.
-        return text
-    rest = text[match.end():]
-    following = re.search(r"(?m)^\s*\[", rest)
-    return rest[:following.start()] if following else rest
+NARROWING = ("addopts", "testpaths", "norecursedirs")
+
+
+def narrows_collection(name, text, fallback):
+    """True when the file's pytest section carries an option that limits collection.
+
+    Parsed, not pattern-matched across the file: a `[` inside a multiline TOML string
+    is not a new table, and an unrelated section's testpaths is not pytest's. Reading
+    these options is not emulating collection — it only says the test files found may
+    not be the ones that run. `fallback` is used when the file cannot be parsed.
+    """
+    if name == "pyproject.toml":
+        try:
+            import tomllib
+            options = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
+        except (ImportError, ValueError, TypeError, AttributeError):
+            return fallback(text)
+        if options is None:
+            return False
+        return any(key in options for key in NARROWING)
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        # An ini file with no section header at all: the whole file is the section.
+        return fallback(text)
+    for candidate in ("pytest", "tool:pytest"):
+        if parser.has_section(candidate):
+            return any(parser.has_option(candidate, key) for key in NARROWING)
+    return False
 
 
 def main():
@@ -31,21 +53,18 @@ def main():
     if not interpreter:
         return
     pytest_evidence = []
-    # Options that decide what pytest collects. Reading them is not emulating
-    # collection: it only says the found test files may not be the ones that run.
-    # They count only inside the pytest section — an unrelated section with its own
-    # testpaths is not a pytest restriction.
-    narrowing = re.compile(r"(?m)^\s*(addopts|testpaths|norecursedirs)\s*[=:]")
+    narrowing = re.compile(r"(?m)^\s*(" + "|".join(NARROWING) + r")\s*[=:]")
+    fallback = lambda text: bool(narrowing.search(text))
     header = re.compile(r"(?m)^\s*\[(?:tool\.pytest(?:\.ini_options)?|pytest|tool:pytest)\]")
     collection_limited = False
     if Path("pytest.ini").is_file():
         pytest_evidence.append("pytest.ini")
-        collection_limited |= bool(narrowing.search(section(read(Path("pytest.ini")), header)))
+        collection_limited |= narrows_collection("pytest.ini", read(Path("pytest.ini")), fallback)
     for name in ("pyproject.toml", "setup.cfg", "tox.ini"):
         text = read(Path(name))
         if header.search(text):
             pytest_evidence.append(name)
-            collection_limited |= bool(narrowing.search(section(text, header)))
+            collection_limited |= narrows_collection(name, text, fallback)
     for path in Path(".").glob("requirements*.txt"):
         if re.search(r"(?mi)^\s*pytest(?:\s|[<>=!~;\[]|$)", read(path)):
             pytest_evidence.append(str(path))
@@ -73,7 +92,8 @@ def main():
             dirs[:] = []
         for name in files:
             # collect_ignore lives in conftest.py, not in the ini files above.
-            if name == "conftest.py" and re.search(r"(?m)^\s*collect_ignore(_glob)?\s*=", read(relative / name)):
+            # `collect_ignore: list[str] = [...]` is the same exclusion, annotated.
+            if name == "conftest.py" and re.search(r"(?m)^\s*collect_ignore(_glob)?\s*(:[^=\n]*)?=", read(relative / name)):
                 collection_limited = True
             if not (name.startswith("test_") or name.endswith("_test.py")) or not name.endswith(".py"):
                 continue
