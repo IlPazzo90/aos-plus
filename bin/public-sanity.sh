@@ -60,42 +60,54 @@ if [ "${1:-}" = "--message" ]; then
   finish
 fi
 
-# This script's own pattern line matches the patterns it defines. Blanking that one
-# line keeps the file scanned: the incident this guard exists for was a private name
-# added to a protected file, and skipping those files entirely would let it back in.
+# This script's own pattern line matches the patterns it defines. Only that exact
+# assignment is blanked — anchored, whole line, nothing else — so the file stays
+# scanned. A looser rule hid new private data: blanking every `extra=` line let an
+# assignment holding a home path through, which is the thing this guard is for.
 scrub_self() {
-  sed -e "s|^PATTERNS=.*|PATTERNS=<definizione>|" -e "s|^\(\s*\)extra=.*|\1extra=<definizione>|"
+  sed "s|^PATTERNS='[^']*'$|PATTERNS=<definizione>|"
 }
 
-# No mapfile and no arrays that need bash 4: macOS ships bash 3.2, where this hook
-# would have read an empty list and reported success on every commit.
-if [ "$#" -gt 0 ]; then
-  list=$(printf '%s\n' "$@")
-  staged=0
-else
-  # Added, copied, modified or renamed; a deletion has nothing left to scan.
-  list=$(git diff --cached --name-only --diff-filter=ACMR)
-  staged=1
+# A scan that cannot run must not report a clean tree. Probe git before trusting it.
+if ! git diff --cached --name-only >/dev/null 2>&1; then
+  echo "public-sanity: impossibile leggere l'indice; controllo NON eseguito." >&2
+  exit 2
 fi
 
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  # The staged blob is what gets published. The working tree can differ from it in
-  # both directions: cleaned after `git add` (a false pass) or dirty before it (a
-  # false block). Read the index.
-  if [ "$staged" -eq 1 ]; then
-    content=$(git show ":$f" 2>/dev/null) || continue
-  else
-    [ -f "$f" ] || continue
-    content=$(cat "$f" 2>/dev/null) || continue
-  fi
-  case "$f" in "$TERMS_FILE") content=$(printf '%s\n' "$content" | sed 's|.*|<termini privati>|') ;; esac
-  case "$f" in bin/public-sanity.sh) content=$(printf '%s\n' "$content" | scrub_self) ;; esac
-  while IFS= read -r hit; do
-    report "$f:$hit"
-  done < <(printf '%s\n' "$content" | grep -I -n -i -E "$PATTERNS" 2>/dev/null | cut -c1-200)
-done <<EOF
-$list
-EOF
+# No mapfile and no arrays that need bash 4: macOS ships bash 3.2, where this hook
+# would have read an empty list and reported success on every commit. No here-doc
+# either: on a read-only TMPDIR bash cannot create one, and the failure used to end
+# in a green result.
+scan() {
+  while IFS= read -r -d '' f; do
+    [ -n "$f" ] || continue
+    # The staged blob is what gets published. The working tree can differ from it in
+    # both directions: cleaned after `git add` (a false pass) or dirty before it (a
+    # false block). Read the index.
+    if [ "$staged" -eq 1 ]; then
+      content=$(git show ":$f" 2>/dev/null) || continue
+    else
+      [ -f "$f" ] || continue
+      content=$(cat "$f" 2>/dev/null) || continue
+    fi
+    case "$f" in "$TERMS_FILE") content=$(printf '%s\n' "$content" | sed 's|.*|<termini privati>|') ;; esac
+    case "$f" in bin/public-sanity.sh) content=$(printf '%s\n' "$content" | scrub_self) ;; esac
+    while IFS= read -r hit; do
+      report "$f:$hit"
+    done < <(printf '%s\n' "$content" | grep -I -n -i -E "$PATTERNS" 2>/dev/null | cut -c1-200)
+  done
+}
+
+# -z, because git quotes names with accents, tabs or newlines and the quoted form is
+# not a path: `git show ":\"café.md\""` fails, and a skipped file used to pass.
+# T is in the filter too: replacing a tracked symlink with a real file is a type
+# change, and its new content is just as publishable.
+if [ "$#" -gt 0 ]; then
+  staged=0
+  scan < <(printf '%s\0' "$@")
+else
+  staged=1
+  scan < <(git diff --cached -z --name-only --diff-filter=ACMRT)
+fi
 
 finish

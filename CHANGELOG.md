@@ -18,6 +18,12 @@
   project key embedded in the skill. The check says to follow symlinks: an installer
   that writes one copy and links the rest makes an unqualified `find` report zero
   scripts on the path the agent actually loads.
+- The guard was then taken apart twice by a reviewer and rebuilt: it reads the staged
+  blob rather than the working tree, handles git-quoted filenames (`-z`), includes
+  type changes in the filter, checks the commit message from a `commit-msg` hook
+  instead of reading the previous one from `pre-commit`, blanks only its own exact
+  pattern assignment rather than every similar line, and exits non-zero when it cannot
+  read the index — before, a scan that failed printed a clean result.
 - A pre-commit check now refuses to publish content that names the maintainer, their
   machine or their clients: this distribution is assembled by copying files out of a
   private repository, and that copy is where sanitization gets skipped. Enable it in a
