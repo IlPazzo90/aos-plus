@@ -229,7 +229,9 @@ echo
 # test command: `make test` or `npm run test` may not touch a line of this
 # project's Python, and they used to be enough to remove it.
 if [ "$is_python" -eq 1 ] && [ "$python_runner" -eq 0 ]; then
-  if [ "$python_evidence" = "config" ]; then
+  if [ "$python_evidence" = "limited" ]; then
+    echo "  I test Python esistono, ma la configurazione pytest puo' escluderli dalla raccolta."
+  elif [ "$python_evidence" = "config" ]; then
     echo "  Il comando pytest viene da configurazione o dipendenze, non da test trovati."
   elif [ -n "$test_cmd" ]; then
     echo "  '$test_cmd' non e' provato che verifichi il Python di questo progetto."

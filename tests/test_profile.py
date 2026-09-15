@@ -81,6 +81,24 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("limita la raccolta", output)
         self.assertIn("py_compile", output)
 
+    def test_conftest_collect_ignore_keeps_the_python_minimum_bar(self):
+        # collect_ignore lives in conftest.py, not in the ini files.
+        output = self.profile({"pytest.ini": "[pytest]\n",
+                               "conftest.py": 'collect_ignore = ["tests/test_app.py"]\n',
+                               "tests/test_app.py": "import pytest\ndef test_app(): assert True\n",
+                               "app.py": ""})
+        self.assertIn("limita la raccolta", output)
+        self.assertIn("py_compile", output)
+
+    def test_unrelated_section_is_not_a_pytest_restriction(self):
+        # testpaths under [unrelated] says nothing about what pytest collects.
+        output = self.profile({"setup.cfg": "[tool:pytest]\n[unrelated]\ntestpaths = ignored\n",
+                               "tests/test_app.py": "import pytest\ndef test_app(): assert True\n",
+                               "app.py": ""})
+        self.assertIn("-m pytest", output)
+        self.assertNotIn("limita la raccolta", output)
+        self.assertNotIn("py_compile", output)
+
     def test_python_runner_replaces_the_minimum_bar(self):
         output = self.profile({"tests/test_app.py": "import unittest\nclass Example(unittest.TestCase): pass\n"})
         self.assertIn("-m unittest discover -s tests", output)

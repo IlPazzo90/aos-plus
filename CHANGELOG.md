@@ -27,6 +27,10 @@
   `testpaths`, `norecursedirs` and `collect_ignore` can exclude exactly what was found.
   When the pytest configuration narrows collection, the profile says so and keeps the
   minimum bar. This reads the options; it does not emulate collection.
+- `collect_ignore` was named in that check but lives in `conftest.py`, which was never
+  read; and the narrowing options were searched across the whole file, so an unrelated
+  section with its own `testpaths` produced a false warning. Both fixed: conftest files
+  are read for `collect_ignore`, and the options count only inside the pytest section.
 - Known and inherited: backticked reference checking cannot tell an illustrative path from a
   promise. This already applied to `references/`, `bin/` and `catalog/`; `evals/` joins the
   same class.

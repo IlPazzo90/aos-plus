@@ -15,6 +15,17 @@ def read(path):
         return ""
 
 
+def section(text, header):
+    """Body of the first matching section only, so a later unrelated one cannot speak for it."""
+    match = header.search(text)
+    if not match:
+        # An ini file without its own header: the whole file is that section.
+        return text
+    rest = text[match.end():]
+    following = re.search(r"(?m)^\s*\[", rest)
+    return rest[:following.start()] if following else rest
+
+
 def main():
     interpreter = sys.argv[1]
     if not interpreter:
@@ -22,16 +33,19 @@ def main():
     pytest_evidence = []
     # Options that decide what pytest collects. Reading them is not emulating
     # collection: it only says the found test files may not be the ones that run.
-    narrowing = re.compile(r"(?m)^\s*(addopts|testpaths|norecursedirs|collect_ignore)\s*[=:]")
+    # They count only inside the pytest section — an unrelated section with its own
+    # testpaths is not a pytest restriction.
+    narrowing = re.compile(r"(?m)^\s*(addopts|testpaths|norecursedirs)\s*[=:]")
+    header = re.compile(r"(?m)^\s*\[(?:tool\.pytest(?:\.ini_options)?|pytest|tool:pytest)\]")
     collection_limited = False
     if Path("pytest.ini").is_file():
         pytest_evidence.append("pytest.ini")
-        collection_limited = collection_limited or bool(narrowing.search(read(Path("pytest.ini"))))
+        collection_limited |= bool(narrowing.search(section(read(Path("pytest.ini")), header)))
     for name in ("pyproject.toml", "setup.cfg", "tox.ini"):
         text = read(Path(name))
-        if re.search(r"(?m)^\s*\[(?:tool\.pytest(?:\.ini_options)?|pytest|tool:pytest)\]", text):
+        if header.search(text):
             pytest_evidence.append(name)
-            collection_limited = collection_limited or bool(narrowing.search(text))
+            collection_limited |= bool(narrowing.search(section(text, header)))
     for path in Path(".").glob("requirements*.txt"):
         if re.search(r"(?mi)^\s*pytest(?:\s|[<>=!~;\[]|$)", read(path)):
             pytest_evidence.append(str(path))
@@ -58,6 +72,9 @@ def main():
         if len(relative.parts) >= 4:
             dirs[:] = []
         for name in files:
+            # collect_ignore lives in conftest.py, not in the ini files above.
+            if name == "conftest.py" and re.search(r"(?m)^\s*collect_ignore(_glob)?\s*=", read(relative / name)):
+                collection_limited = True
             if not (name.startswith("test_") or name.endswith("_test.py")) or not name.endswith(".py"):
                 continue
             path = relative / name
@@ -84,15 +101,16 @@ def main():
     # minimum bar still applies, so report it on a line it can strip.
     proven = "files" if (from_test_files or unittest_roots) else ("config" if pytest_evidence else "none")
     if proven == "files" and pytest_evidence and collection_limited:
-        # Found test files do not prove this command runs them: addopts, testpaths
-        # and friends can exclude exactly what was found.
-        proven = "config"
+        # Found test files do not prove this command runs them: addopts, testpaths,
+        # norecursedirs or a conftest collect_ignore can exclude exactly what was found.
+        proven = "limited"
     print("PYTHON_TESTS_EVIDENCE=" + proven)
     if pytest_evidence:
         print("  {} -m pytest   (evidenza: {}; disponibilita pytest non verificata)".format(command, ", ".join(pytest_evidence[:3])))
         if collection_limited:
             print("    la configurazione pytest limita la raccolta (addopts, testpaths,")
-            print("    norecursedirs o collect_ignore): i test trovati potrebbero non essere eseguiti")
+            print("    norecursedirs o collect_ignore in conftest.py): i test trovati")
+            print("    potrebbero non essere quelli eseguiti")
     elif unittest_roots:
         # Run discovery at each evidenced directory: Python does not recurse
         # into nested non-package directories on all supported versions.
