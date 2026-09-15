@@ -110,6 +110,22 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("limita la raccolta", output)
         self.assertIn("py_compile", output)
 
+    def test_setup_cfg_tool_pytest_section_is_not_shadowed(self):
+        # pytest reads [tool:pytest] from setup.cfg; an empty [pytest] must not hide it.
+        output = self.profile({"setup.cfg": "[tool:pytest]\naddopts = --ignore=tests\n[pytest]\n",
+                               "tests/test_app.py": "import pytest\ndef test_app(): assert True\n",
+                               "app.py": ""})
+        self.assertIn("limita la raccolta", output)
+        self.assertIn("py_compile", output)
+
+    def test_quoted_toml_table_is_still_the_pytest_table(self):
+        # ["tool".pytest.ini_options] is the same table, spelled differently.
+        output = self.profile({"pyproject.toml": '["tool".pytest.ini_options]\naddopts = "--ignore=tests"\n',
+                               "tests/test_app.py": "import pytest\ndef test_app(): assert True\n",
+                               "app.py": ""})
+        self.assertIn("limita la raccolta", output)
+        self.assertIn("py_compile", output)
+
     def test_unrelated_section_is_not_a_pytest_restriction(self):
         # testpaths under [unrelated] says nothing about what pytest collects.
         output = self.profile({"setup.cfg": "[tool:pytest]\n[unrelated]\ntestpaths = ignored\n",

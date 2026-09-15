@@ -19,33 +19,38 @@ def read(path):
 NARROWING = ("addopts", "testpaths", "norecursedirs")
 
 
-def narrows_collection(name, text, fallback):
-    """True when the file's pytest section carries an option that limits collection.
+def toml_pytest_options(text):
+    """The [tool.pytest.ini_options] table, or None when it cannot be read.
 
-    Parsed, not pattern-matched across the file: a `[` inside a multiline TOML string
-    is not a new table, and an unrelated section's testpaths is not pytest's. Reading
-    these options is not emulating collection — it only says the test files found may
-    not be the ones that run. `fallback` is used when the file cannot be parsed.
+    Parsed rather than pattern-matched: a `[`-looking line inside a multiline string
+    is not a table, and a quoted key like ["tool".pytest.ini_options] is still that
+    table. None means "unknown", never "no options".
     """
-    if name == "pyproject.toml":
-        try:
-            import tomllib
-            options = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
-        except (ImportError, ValueError, TypeError, AttributeError):
-            return fallback(text)
-        if options is None:
-            return False
-        return any(key in options for key in NARROWING)
+    try:
+        import tomllib
+        table = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
+    except (ImportError, ValueError, TypeError, AttributeError):
+        return None
+    return table if isinstance(table, dict) else None
+
+
+def narrows_collection(text, fallback):
+    """True when a pytest section carries an option that limits collection.
+
+    Any candidate section counts. pytest reads `[tool:pytest]` from setup.cfg and
+    `[pytest]` from pytest.ini and tox.ini, and picking one of them per file only
+    risks reading the section pytest ignores: a doubt raised on the wrong section
+    keeps the minimum bar, missing the right one removes it.
+    """
     parser = configparser.ConfigParser(strict=False, interpolation=None)
     try:
         parser.read_string(text)
     except configparser.Error:
         # An ini file with no section header at all: the whole file is the section.
         return fallback(text)
-    for candidate in ("pytest", "tool:pytest"):
-        if parser.has_section(candidate):
-            return any(parser.has_option(candidate, key) for key in NARROWING)
-    return False
+    return any(parser.has_option(candidate, key)
+               for candidate in ("pytest", "tool:pytest") if parser.has_section(candidate)
+               for key in NARROWING)
 
 
 def main():
@@ -59,12 +64,20 @@ def main():
     collection_limited = False
     if Path("pytest.ini").is_file():
         pytest_evidence.append("pytest.ini")
-        collection_limited |= narrows_collection("pytest.ini", read(Path("pytest.ini")), fallback)
-    for name in ("pyproject.toml", "setup.cfg", "tox.ini"):
+        collection_limited |= narrows_collection(read(Path("pytest.ini")), fallback)
+    # pyproject.toml is asked of the TOML parser first: the header regex cannot see a
+    # quoted table name, and a config it cannot read is not a config without options.
+    text = read(Path("pyproject.toml"))
+    options = toml_pytest_options(text)
+    if options is not None or header.search(text):
+        pytest_evidence.append("pyproject.toml")
+        collection_limited |= (any(key in options for key in NARROWING)
+                               if options is not None else fallback(text))
+    for name in ("setup.cfg", "tox.ini"):
         text = read(Path(name))
         if header.search(text):
             pytest_evidence.append(name)
-            collection_limited |= narrows_collection(name, text, fallback)
+            collection_limited |= narrows_collection(text, fallback)
     for path in Path(".").glob("requirements*.txt"):
         if re.search(r"(?mi)^\s*pytest(?:\s|[<>=!~;\[]|$)", read(path)):
             pytest_evidence.append(str(path))

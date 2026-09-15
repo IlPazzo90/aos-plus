@@ -36,6 +36,10 @@
   fallback when a file cannot be parsed. A `[`-looking line inside a multiline TOML
   string is not a table, and `collect_ignore` written with a type annotation is still
   an exclusion.
+- Two residual ways past that check: picking one candidate section per file meant an
+  empty `[pytest]` could shadow the `[tool:pytest]` that setup.cfg actually uses, and
+  the header regex gated the TOML parser, so a quoted table name was never parsed at
+  all. Any candidate section now counts, and `pyproject.toml` goes to the parser first.
 - Known and inherited: backticked reference checking cannot tell an illustrative path from a
   promise. This already applied to `references/`, `bin/` and `catalog/`; `evals/` joins the
   same class.
