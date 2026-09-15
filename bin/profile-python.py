@@ -20,12 +20,18 @@ def main():
     if not interpreter:
         return
     pytest_evidence = []
+    # Options that decide what pytest collects. Reading them is not emulating
+    # collection: it only says the found test files may not be the ones that run.
+    narrowing = re.compile(r"(?m)^\s*(addopts|testpaths|norecursedirs|collect_ignore)\s*[=:]")
+    collection_limited = False
     if Path("pytest.ini").is_file():
         pytest_evidence.append("pytest.ini")
+        collection_limited = collection_limited or bool(narrowing.search(read(Path("pytest.ini"))))
     for name in ("pyproject.toml", "setup.cfg", "tox.ini"):
         text = read(Path(name))
         if re.search(r"(?m)^\s*\[(?:tool\.pytest(?:\.ini_options)?|pytest|tool:pytest)\]", text):
             pytest_evidence.append(name)
+            collection_limited = collection_limited or bool(narrowing.search(text))
     for path in Path(".").glob("requirements*.txt"):
         if re.search(r"(?mi)^\s*pytest(?:\s|[<>=!~;\[]|$)", read(path)):
             pytest_evidence.append(str(path))
@@ -77,9 +83,16 @@ def main():
     # there is Python to run. The caller needs the difference to decide whether the
     # minimum bar still applies, so report it on a line it can strip.
     proven = "files" if (from_test_files or unittest_roots) else ("config" if pytest_evidence else "none")
+    if proven == "files" and pytest_evidence and collection_limited:
+        # Found test files do not prove this command runs them: addopts, testpaths
+        # and friends can exclude exactly what was found.
+        proven = "config"
     print("PYTHON_TESTS_EVIDENCE=" + proven)
     if pytest_evidence:
         print("  {} -m pytest   (evidenza: {}; disponibilita pytest non verificata)".format(command, ", ".join(pytest_evidence[:3])))
+        if collection_limited:
+            print("    la configurazione pytest limita la raccolta (addopts, testpaths,")
+            print("    norecursedirs o collect_ignore): i test trovati potrebbero non essere eseguiti")
     elif unittest_roots:
         # Run discovery at each evidenced directory: Python does not recurse
         # into nested non-package directories on all supported versions.

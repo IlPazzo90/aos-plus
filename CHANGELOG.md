@@ -23,6 +23,10 @@
   configuration, and the bar stays up in the second case.
 - The n8n line no longer presumes the effects either: a workflow of Manual Trigger and Set
   publishes nothing, so the text reports what was recognized and defers to reading the nodes.
+- A found test file does not prove the proposed command runs it either: `addopts`,
+  `testpaths`, `norecursedirs` and `collect_ignore` can exclude exactly what was found.
+  When the pytest configuration narrows collection, the profile says so and keeps the
+  minimum bar. This reads the options; it does not emulate collection.
 - Known and inherited: backticked reference checking cannot tell an illustrative path from a
   promise. This already applied to `references/`, `bin/` and `catalog/`; `evals/` joins the
   same class.

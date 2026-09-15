@@ -72,6 +72,15 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("-m pytest", output)
         self.assertIn("py_compile", output)
 
+    def test_pytest_collection_limits_keep_the_python_minimum_bar(self):
+        # A real test file does not prove this command runs it: addopts can exclude it.
+        output = self.profile({"pytest.ini": "[pytest]\naddopts = --ignore=tests\n",
+                               "tests/test_app.py": "import pytest\ndef test_app(): assert True\n",
+                               "app.py": ""})
+        self.assertIn("-m pytest", output)
+        self.assertIn("limita la raccolta", output)
+        self.assertIn("py_compile", output)
+
     def test_python_runner_replaces_the_minimum_bar(self):
         output = self.profile({"tests/test_app.py": "import unittest\nclass Example(unittest.TestCase): pass\n"})
         self.assertIn("-m unittest discover -s tests", output)
