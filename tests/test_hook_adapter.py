@@ -33,7 +33,9 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, 'original output\n')
         self.assertEqual(result.stderr, 'finding\n')
-        result = subprocess.run(command + ["print('garbage')"], capture_output=True)
+        # The adapter reads stdin to EOF; without input= it would inherit the
+        # runner's stdin and block whenever that stays open.
+        result = subprocess.run(command + ["print('garbage')"], input=b'', capture_output=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn(b'invalid upstream', result.stderr)
 

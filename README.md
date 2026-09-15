@@ -2,12 +2,14 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.12.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.12.1, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
 
-Requires Bash and Python 3.9+ for helpers; tests require Python 3.11+.
+Requires Bash and Python 3.9+ for helpers. The two tests that exercise TOML catalog
+maintenance need stdlib `tomllib`; below Python 3.11 they are skipped and reported
+as skipped, not failed.
 Clone this repository, inspect the scripts, then choose a host:
 
 ```sh

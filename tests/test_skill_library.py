@@ -12,6 +12,17 @@ spec = importlib.util.spec_from_file_location('library', ROOT / 'bin/skill-libra
 library = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(library)
 
+# refresh() needs stdlib tomllib. The CLI re-execs into a 3.11+ interpreter via
+# ensure_refresh_runtime(); these tests call refresh() directly, so they skip
+# instead of erroring when the running interpreter predates 3.11.
+try:
+    import tomllib  # noqa: F401
+    HAS_TOMLLIB = True
+except ImportError:
+    HAS_TOMLLIB = False
+
+NEEDS_TOMLLIB = unittest.skipUnless(HAS_TOMLLIB, 'refresh requires stdlib tomllib (Python 3.11+)')
+
 
 class LibraryTests(unittest.TestCase):
     def test_exact_name_and_keyword(self):
@@ -36,6 +47,7 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(library.search([], 'missing', 3), ([], 0))
         self.assertIsNone(library.source_path({'path': '/nonexistent/skill/SKILL.md'}))
 
+    @NEEDS_TOMLLIB
     def test_config_preservation_refresh_and_dry_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -71,6 +83,7 @@ class LibraryTests(unittest.TestCase):
             result = subprocess.run(cmd + ['--limit', '0'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
 
+    @NEEDS_TOMLLIB
     def test_empty_discovery_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
