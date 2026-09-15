@@ -105,6 +105,12 @@ which is a weaker thing than a round — see precondition 2.
 3. **Where the log will end up.** Raw traces belong in ignored `tmp/verify/`.
    Commit a sanitized brief and review record under `docs/verifiche/<slug>/`.
    Check exclusion rules before writing traces; never publish sensitive review data.
+4. **What the brief says about the measurement record.** `finish` is by construction
+   the last step, so at review time `docs/misure/<record>.json` is open, and a reviewer
+   who sees `outcome: null` files it as a MAJOR every round — three gates in a row did.
+   The brief's artifact section states it once: «record di misura aperto: si chiude con
+   `finish` a lavoro concluso, prima del commit che lo include». Then a re-raise without
+   new evidence is what it is.
 
 A blocking precondition missing → **do not silently skip the gate.** Say which one it is,
 run the red team properly inline, and record in the report that cross-model

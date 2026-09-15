@@ -145,6 +145,40 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("file illeggibile", result.stdout)
 
+    def test_a_file_the_editions_keep_identical_is_compared_not_just_the_version(self):
+        # Same version number, different code: the number alone would have said fine.
+        codex, claude = self.roots
+        public = self.base / "public"
+        (public / "bin").mkdir(parents=True)
+        (claude / "VERSION").write_text("1.0\n")
+        (public / "VERSION").write_text("1.0\n")
+        (public / "bin/check.py").write_text((claude / "bin/check.py").read_text())
+        (claude / "DISTRIBUTION").write_text(f"{public}\n# identical by construction\nbin/check.py\n")
+        self.assertNotIn("DISTRIBUZIONE", self.run_doctor().stdout)
+        (public / "bin/check.py").write_text("print('ported wrong')\n")
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("bin/check.py differisce", result.stdout)
+        (claude / "DISTRIBUTION").write_text(f"{public}\n../escape\n")
+        self.assertNotIn("differisce", self.run_doctor().stdout)
+        # An indented comment is a comment, not a path (found by review).
+        (claude / "DISTRIBUTION").write_text(f"{public}\n  # indented comment\nbin/check.py\n")
+        (public / "bin/check.py").write_text((claude / "bin/check.py").read_text())
+        self.assertNotIn("DISTRIBUZIONE", self.run_doctor().stdout)
+
+    def test_heavy_backup_directories_are_a_warning(self):
+        # 8.3 GB of backups outside the root, invisible to the tmp/ check.
+        home = self.base / "home"
+        (home / ".agents/backups/aos-old").mkdir(parents=True)
+        with (home / ".agents/backups/aos-old/dump.bin").open("wb") as stream:
+            stream.truncate(1100 * 1024 * 1024)
+        result = self.run_doctor(dict(os.environ, HOME=str(home)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AVVISO BACKUP", result.stdout)
+        self.assertIn("1100 MB", result.stdout)
+        (home / ".agents/backups/aos-old/dump.bin").write_bytes(b"small")
+        self.assertNotIn("AVVISO BACKUP", self.run_doctor(dict(os.environ, HOME=str(home))).stdout)
+
     def test_a_heavy_tmp_is_a_warning_and_a_light_one_is_silent(self):
         # 936 MB of research sat in one clone's ignored tmp/ and nobody had counted it.
         codex, claude = self.roots

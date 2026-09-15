@@ -139,23 +139,56 @@ class Doctor:
 
     TMP_WARN_BYTES = 200 * 1024 * 1024
 
+    BACKUP_WARN_BYTES = 1024 * 1024 * 1024
+
     def distribution(self, root):
-        # Optional: a DISTRIBUTION file naming the public edition's checkout. "Same
-        # intervention" had no check, and 1.17.0 never reached it.
+        # Optional: a DISTRIBUTION file naming the public edition's checkout on its
+        # first line, then the files the two editions keep byte-identical. "Same
+        # intervention" had no check, and 1.17.0 never reached it; a version match
+        # alone would not have seen a port that changed the number and not the code.
         marker = root / "DISTRIBUTION"
         if not marker.is_file():
             return
         try:
-            target = Path(marker.read_text().strip()).expanduser()
+            lines = [line.strip() for line in marker.read_text().splitlines()
+                     if line.strip() and not line.strip().startswith("#")]
+            target = Path(lines[0]).expanduser() if lines else None
             here = (root / "VERSION").read_text().strip()
-            there = (target / "VERSION").read_text().strip() if (target / "VERSION").is_file() else None
+            there = (target / "VERSION").read_text().strip() if target and (target / "VERSION").is_file() else None
         except (OSError, UnicodeError):
             self.warn("DISTRIBUZIONE", str(marker), "file illeggibile: correggerlo o rimuoverlo")
             return
-        if there is None:
-            self.warn("DISTRIBUZIONE", str(target), "checkout assente: correggere DISTRIBUTION o clonare la distribuzione")
-        elif there != here:
+        if target is None or there is None:
+            self.warn("DISTRIBUZIONE", str(target or marker), "checkout assente: correggere DISTRIBUTION o clonare la distribuzione")
+            return
+        if there != here:
             self.warn("DISTRIBUZIONE", f"{target} è a {there}, questa installazione a {here}", "portare le modifiche alla distribuzione nello stesso intervento")
+        for relative in lines[1:]:
+            if Path(relative).is_absolute() or ".." in Path(relative).parts:
+                continue
+            try:
+                same = (root / relative).read_bytes() == (target / relative).read_bytes()
+            except OSError:
+                same = False
+            if not same:
+                self.warn("DISTRIBUZIONE", f"{relative} differisce da {target}", "i file elencati in DISTRIBUTION sono identici per costruzione: portare la modifica")
+
+    def backups(self):
+        # 8.3 GB sat in ~/.agents/backups on 2026-09-15: eight copies of the same
+        # clone, each carrying the same 936 MB of tmp/. Outside the root, so the tmp/
+        # check could not see it; size only, deletion is the user's.
+        for base in (Path.home() / ".claude/backups", Path.home() / ".agents/backups"):
+            if not base.is_dir():
+                continue
+            total = 0
+            for path in base.rglob("*"):
+                try:
+                    if path.is_file() and not path.is_symlink():
+                        total += path.stat().st_size
+                except OSError:
+                    continue
+            if total > self.BACKUP_WARN_BYTES:
+                self.warn("BACKUP", f"{base} pesa {total // (1024 * 1024)} MB", "backup dell'installer e di aggiorna.sh: verificare cosa è unico e cancellare il resto")
 
     def tmp_weight(self, root):
         # tmp/ is ignored by Git and nobody counts it: 936 MB sat in one clone's tmp/
@@ -188,6 +221,7 @@ class Doctor:
                 self.check_file(claude_root, relative, raw)
         self.distribution(claude_root)
         self.tmp_weight(claude_root)
+        self.backups()
         for root in (codex_root, claude_root):
             router = root.parent / "skill-library"
             try:

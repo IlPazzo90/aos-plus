@@ -78,7 +78,7 @@ if [ -n "$host_python" ] && [ -f "$SCRIPT_DIR/aos-doctor.py" ]; then
   drift="$(printf '%s\n' "$doctor_out" | grep -E '^(COPIA|MANIFEST|MANCANTE|ROUTER|SINTASSI|RIFERIMENTO|PREREQUISITO):' || true)"
   # Two warnings belong here, at the start of work: the public edition left behind,
   # and a tmp/ nobody counts. The catalog warnings do not; they are a maintenance task.
-  printf '%s\n' "$doctor_out" | grep -E '^AVVISO (DISTRIBUZIONE|TMP):' | sed 's/^/  /'
+  printf '%s\n' "$doctor_out" | grep -E '^AVVISO (DISTRIBUZIONE|TMP|BACKUP):' | sed 's/^/  /'
   if [ -z "$drift" ]; then
     echo "  installazione Claude/Codex: condivisa (link e file verificati dal doctor)"
   else

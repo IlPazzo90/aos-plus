@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.20.0-public — 2026-09-15
+
+**Backups nobody weighs.** One install had 8.3 GB in `~/.agents/backups`: eight copies of
+the same clone, one per install of the day, each carrying the same 936 MB of `tmp/`. The
+doctor warns (`AVVISO BACKUP`) above 1 GB in either host's backup directory, which sits
+outside the root where the `tmp/` check could not see it; the profile repeats it.
+Deletion stays the user's.
+
+**`DISTRIBUTION` compares files, not only the version.** After the checkout path, the
+file may list the files the two editions keep byte-identical; the doctor compares them
+and warns on the one that differs. A version match alone would not have seen a port that
+changed the number and not the code.
+
+**The open measurement record.** `quality-gates.md` §3 gains a fourth precondition: the
+brief states once that the record is open and closes with `finish` before the commit, so
+a reviewer does not file `outcome: null` as a MAJOR every round.
+
+Tests: 95 on Python 3.12 and 3.9 (3 skipped for `tomllib`).
+
 ## 1.19.0-public — 2026-09-15
 
 Two warnings the doctor did not have, both from things nobody counted.
