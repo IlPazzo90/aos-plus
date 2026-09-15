@@ -197,6 +197,33 @@ Do not invent precise numbers where no measurement exists, and do not chase 100/
 Prose beats a fake metric: "no test coverage on the error path" says more than
 "Test confidence: 72".
 
+## 7. Installed capability is an attack surface
+
+A skill, hook, MCP server or plugin added from outside is not documentation: it is
+configuration the agent executes, with the agent's own permissions. The install
+output usually says so in one line that scrolls past — *"Review skills before use;
+they run with full agent permissions."*
+
+Check a newly installed capability before relying on it, and record what you found:
+
+1. **What it executes.** `find <dir> -type f \( -name '*.sh' -o -name '*.py' -o -name
+   '*.mjs' -o -name '*.js' \)`. A set of Markdown files is instructions; a set of
+   scripts is software you did not review. Count them before you trust the folder.
+2. **What it asks for.** Grep the tree for `API_KEY`, `TOKEN`, `SECRET`. Credentials
+   the skill expects are costs and blast radius: a media skill wanting four different
+   generation keys will spend real money the first time it runs unattended.
+3. **Where it sends.** Grep for `https://` and for telemetry calls. A deploy helper
+   that uploads the project directory to a third-party endpoint is doing exactly what
+   it says and still moves your source off the machine; know which endpoint, and what
+   the archive excludes.
+4. **What it can reach.** A capability that can deploy, publish or message can do it
+   to production. Decide that before it is installed, not at the moment an agent
+   reaches for it mid-task.
+
+None of this proves a capability is safe. It establishes what it *can* do, which is
+the part a clean scan never gives you. Do not extend an authorization to a new
+capability because a similar one already had it.
+
 ## Anti-patterns this file exists to prevent
 
 - A green build treated as proof of quality

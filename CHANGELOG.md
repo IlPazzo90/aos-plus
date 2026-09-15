@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.13.0-public — 2026-09-15
+
+- Routing gains three rows: reach for an anti-over-engineering pass when the solution
+  looks larger than the problem, ask a documentation service for library and framework
+  APIs instead of trusting a remembered signature, and run prose through an AI-tell
+  pass before publishing. Discovery of everything else stays with `skill-library`.
+- **Installed capability is executable configuration** (SKILL.md §3, detail in
+  `references/quality-gates.md` §7). A skill, hook or MCP server added from outside is
+  not documentation: it ships scripts, may require paid API keys and may send data off
+  the machine, with the agent's own permissions. The check has four points — what it
+  executes, what it asks for, where it sends, what it can reach — and comes from
+  measuring a real install: scripts inside folders that looked like plain Markdown,
+  nine distinct API keys expected across image, music and speech generation, and a
+  deploy helper that uploads the project directory to a third-party endpoint.
+- A pre-commit check now refuses to publish content that names the maintainer, their
+  machine or their clients: this distribution is assembled by copying files out of a
+  private repository, and that copy is where sanitization gets skipped. Enable it in a
+  fresh clone with `git config core.hooksPath .githooks`. The private terms live in an
+  ignored `.public-sanity-terms`, never in the script — a guard that lists the names it
+  hides publishes them itself, which is what its first version did.
+- Compaction is chosen, not suffered (§3): compact at a breakpoint you pick, not
+  mid-implementation and not at the automatic threshold, where the paths and partial
+  state still in play are exactly what gets dropped.
+
+
 ## 1.12.2-public — 2026-09-15
 
 - `aos-profile.sh`: the Python minimum bar no longer disappears just because the project

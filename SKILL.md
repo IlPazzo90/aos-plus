@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.12.2"
+  version: "1.13.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman e RTK, processo proporzionato."
 ---
 
@@ -113,7 +113,14 @@ before dependent work; continue independent authorized work.
 - **Continuity:** before compaction, interruption or handoff, update the existing
   task record with decisions, file/state identifiers, checks and next action.
   Separate verified facts from hypotheses. On resume check changed state, then
-  continue pending work. No secrets or narrative transcript in memory.
+  continue pending work. No secrets or narrative transcript in memory. Compact at a
+  breakpoint you choose — research done, milestone closed, approach abandoned — not
+  mid-implementation and not at the automatic threshold, where the file paths and
+  partial state still in play are what gets dropped.
+- **Installed capability is executable configuration.** A skill, hook or MCP server
+  added from outside ships scripts, may require paid API keys and may send data off
+  the machine. Before relying on a new one, inspect what it executes, what it asks
+  for and where it sends; `references/quality-gates.md` §7 has the check.
 
 Installation health: `python3 "$AOS_DIR/bin/aos-doctor.py"` (read-only, on demand).
 Setup/cost audit or requested optimization: `references/token-efficiency.md`.
@@ -136,6 +143,9 @@ Choose one skill per need; domain specialists still apply.
 | T2/T3 completion | `superpowers:verification-before-completion` |
 | T2+ AND HIGH+ | `verify-agent`, opposite model family |
 | Finished branch integration | `superpowers:finishing-a-development-branch` |
+| Solution looks larger than the problem | `ponytail` before building; `ponytail-review` on a diff, `ponytail-audit` on a repo |
+| Library, framework or API surface | Context7, never a remembered signature |
+| Prose to publish | `humanizer` for AI tells; the writing/design guideline skills for review |
 
 Larger-than-session decision map: suggest user-run `/wayfinder`; do not invoke it.
 Overlaps, unavailable capabilities or delegation choices: `references/orchestration.md`.
