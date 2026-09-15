@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.22.0-public — 2026-09-15
+
+**Model routing.** SKILL.md §3 and `references/orchestration.md` §Model routing: the main
+session runs on the strongest model the user configured and keeps classification, T2/T3
+work, verification, arbitration, the final report and anything HIGH/CRITICAL; bounded
+T0/T1 work at risk ≤ MEDIUM may go to a subagent on the host's working model (Claude
+`Agent` with `model`; Codex `spawn_agent` or `[agents].default_subagent_model`). When the
+main session is on a weaker model and the task is T2+ or HIGH+, AOS says so and asks for
+the switch before the first change. Model names never live in AOS: they belong in the
+user's global instructions. The cross-model reviewer is the strongest model of the other
+family; SKILL.md no longer names a specific Claude model for it.
+
+No new tests: these are instructions. Checks: 98 tests green on 3.12 and 3.9.
+
 ## 1.21.0-public — 2026-09-15
 
 **A verdict nobody asks for.** `judge` existed since 1.18.0 and had never been called:

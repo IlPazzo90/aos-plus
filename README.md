@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.21.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.22.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -81,7 +81,7 @@ Every T2/T3 task closes with a record, not an impression:
 ```sh
 RECORD="docs/misure/$(date -u +%F)-short-slug.json"
 python3 bin/aos-measure.py start --record "$RECORD" \
-  --task "What was asked" --runtime codex --model configured --version 1.21.0
+  --task "What was asked" --runtime codex --model configured --version 1.22.0
 python3 bin/aos-measure.py finish --record "$RECORD" --outcome delivered --corrections 1
 # later, once the user has said what they think of it:
 python3 bin/aos-measure.py judge --record "$RECORD" --verdict accepted

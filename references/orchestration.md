@@ -79,10 +79,34 @@ reports changed files, checks and unresolved facts. Send deltas for follow-ups.
 Do not fork the entire conversation by default or ask workers to rediscover plans.
 Do not launch reviewer chains. Respect the existing 3/5/6 limits.
 
-Model/effort choices are recommendations unless the runtime and user authorize
-selection. Keep user overrides. Consider lower effort for bounded work only after
-representative checks show adequacy; higher effort for ambiguity is not a guarantee.
-Do not hardcode a provider ranking, benchmark result or price into AOS.
+## Model routing
+
+The user ranks the models; AOS only decides which work may leave the main session.
+The ranking, the names and the reason live in the user's global instructions
+(`CLAUDE.md`, `~/.codex/AGENTS.md`), never in AOS: names change, the rule does not.
+
+- **Main session = strongest configured model.** It keeps classification, T2/T3
+  implementation, verification, arbitration of findings, the final report and
+  anything at risk HIGH/CRITICAL. AOS cannot change the main model: on Claude Code it
+  is the user's `/model`, on Codex `model` in `config.toml` or `-m`. When the main
+  session runs on a weaker model and the task is T2+ or HIGH+, announce it with the
+  tier line and ask for the switch before the first change; do not quietly proceed.
+- **Subagent = working model**, for bounded T0/T1 work at risk ≤ MEDIUM that is
+  independent of the rest: a file with a known change, a search, a test run, a port.
+  Claude Code: the `Agent` tool takes `model`, an alias the host lists; `fork` always
+  inherits the parent model, so use it only when the whole context is
+  the point. Codex: `spawn_agent` accepts a model, otherwise
+  `[agents].default_subagent_model`, otherwise the host default; `codex exec -m` for
+  scripted calls; `codex features list` must show `multi_agent` enabled. Read-only
+  search may go one step cheaper than the working model.
+- **Reviewer = strongest model of the other family.** Verification is the most
+  complex step, and a reviewer weaker than the author counts little. verify-agent
+  pins the Claude reviewer to the strongest alias of its family; the Codex reviewer
+  uses the configured model,
+  with the reserve only on an exhausted quota, and its PASS counts less.
+- Effort follows the same line: lower effort for bounded work only after
+  representative checks show adequacy; higher effort for ambiguity is not a
+  guarantee. Do not hardcode a provider ranking, benchmark result or price into AOS.
 
 ## Independence and persistence
 

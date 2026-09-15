@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.21.0"
+  version: "1.22.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -118,9 +118,15 @@ it is the only one whose savings are permanent.
   original SKILL.md and resolve resources at its real source.
 - **Delegation:** no automatic fan-out. Only authorized, independent, bounded work
   whose benefit justifies context/startup cost. Send goal, files, constraints and
-  expected evidence, not full chat. Default to current model/effort; selection or
-  advisor/orchestrator use must respect host controls and user choices. An advisor
-  answers a decision; a worker owns a deliverable; neither replaces verification.
+  expected evidence, not full chat. **Model routing:** the main session runs on the
+  strongest model the user configured and keeps classification, T2/T3 work,
+  verification, arbitration, the final report and anything HIGH/CRITICAL; bounded
+  T0/T1 work at risk ≤ MEDIUM may go to a subagent on the host's working model
+  (Claude `Agent` `model`; Codex `spawn_agent`, default in `[agents]`). Model names
+  live in the user's global instructions, never in AOS. If the main session is on a
+  weaker model and the task is T2+ or HIGH+, say so and ask for the switch before the
+  first change. An advisor answers a decision; a worker owns a deliverable; neither
+  replaces verification. Mechanics: `references/orchestration.md` §Model routing.
 - **Continuity:** before compaction, interruption or handoff, update the existing
   task record with decisions, file/state identifiers, checks and next action.
   Separate verified facts from hypotheses. On resume check changed state, then
@@ -186,7 +192,7 @@ in `references/design.md` §5 is part of verification: check the rendered result
 it runs — a browser you drive, a simulator, the exported file — not the source.
 
 T2/T3: read `references/quality-gates.md` for red team, applicable roles and DoD.
-**External gate: tier ≥ T2 AND risk ≥ HIGH.** Codex main calls Claude Code (Opus);
+**External gate: tier ≥ T2 AND risk ≥ HIGH.** Codex main calls Claude Code;
 Claude main calls Codex via `verify-agent/scripts/review.py --caller codex|claude`.
 Reviewer returns findings only, never AOS or another reviewer. Confirm findings
 mechanically. Maximum **6 rounds**; empty, quota-blocked or interrupted is not PASS.
