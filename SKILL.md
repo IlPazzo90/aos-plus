@@ -1,8 +1,8 @@
 ---
 name: aos
 metadata:
-  version: "1.16.0"
-description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman e RTK, processo proporzionato."
+  version: "1.18.0"
+description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
 # AOS — AI Development Operating System
@@ -177,8 +177,10 @@ re-verify, review. Track substantive attempts in the task record:
 
 Observe requested behavior. Run required project checks plus risk-appropriate
 regression/edge checks. Read the exact diff; remove debug leftovers and scope creep.
-Before committing run `bash "$AOS_DIR/bin/aos-security.sh"`; exit 2 means signals to
-resolve or explain. Name the trust boundary; a clean scan does not prove permissions.
+The security scan follows risk, not tier: at risk ≥ MEDIUM, or whenever the diff
+touches auth, routes, migrations or request input, run `bash "$AOS_DIR/bin/aos-security.sh"`
+before committing; exit 2 means signals to resolve or explain. LOW-risk work is exempt,
+a T0 edit at MEDIUM+ is not. Name the trust boundary; a clean scan does not prove permissions.
 When the change is something a person looks at and is not a T0 one-line edit, the gate
 in `references/design.md` §5 is part of verification: check the rendered result where
 it runs — a browser you drive, a simulator, the exported file — not the source.
@@ -195,14 +197,18 @@ raw transcripts stay outside Git. Same-family/self-review is not cross-model rev
 
 **T2/T3 close with a record, not an impression.** `bin/aos-measure.py start` before the
 first change and `finish` at the end, into `docs/misure/<date>-<slug>.json`, committed
-with the work. `--outcome` is the honest one of `accepted | rejected | partial | blocked`,
-including when the user rejected the result. Unavailable provider counters stay null;
+with the work. `finish --outcome` is `delivered | partial | blocked`: what was handed
+over. `accepted` and `rejected` are the user's words, written later with `judge --verdict`
+once the user has spoken — never by the author at finish. Unavailable provider counters stay null;
 never estimate them. No secrets or client identities in `--task`. **This step is not
 conditional on the work feeling worth measuring** — that judgement is the one the record
 exists to replace, and a step phrased as conditional is a step that never runs.
 
 Report outcome, evidence and material limits in Italian; code/comments/commits in
-English. T0: two lines. T1: short. T2/T3: `references/output-contract.md`; backlog
+English. T0: two lines. T1: short, closing with one learning line — the wrong
+assumption or the decisive check, or «nessun apprendimento durevole» — because most
+durable corrections come from T1 work, not from the tasks big enough to have a report.
+T2/T3: `references/output-contract.md`; backlog
 only for real findings (T3 must address it), one next-investment advisory at T3.
 Never claim done from written code alone or weaken checks to save tokens.
 

@@ -159,14 +159,19 @@ RECORD="docs/misure/$(date -u +%F)-fix-csv-export.json"
 python3 "$AOS_DIR/bin/aos-measure.py" start --record "$RECORD" \
   --task "Fix CSV export" --runtime codex --model configured --version 1.16.0
 python3 "$AOS_DIR/bin/aos-measure.py" finish --record "$RECORD" \
-  --outcome accepted --corrections 1
+  --outcome delivered --corrections 1
+# later, once the user has said what they think of it:
+python3 "$AOS_DIR/bin/aos-measure.py" judge --record "$RECORD" --verdict accepted
 ```
 
 The record belongs in the project's `docs/misure/` and gets committed with the work, for
 the reason the review logs do: an ignored directory is where evidence goes to disappear.
 Outside a repository, put it where that project's durable task record already lives and
 say where. `--outcome blocked` exists so a task stopped by a missing capability, an
-exhausted quota or a declared gate is not filed as `partial`.
+exhausted quota or a declared gate is not filed as `partial`. `accepted` and `rejected`
+are not `finish` values: the first records measured both said `accepted`, written by the
+author before the user had read the result. They are `judge --verdict` values, written
+once, after.
 
 For comparison use the same task acceptance and comparable model/runtime; record
 both successes and rejected outcomes. A single record is a baseline, not evidence

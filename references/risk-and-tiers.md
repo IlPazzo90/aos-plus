@@ -30,7 +30,7 @@ a production website is HIGH: it is small, easy, and it moves SEO.
 | Risk | Required before "done" |
 |------|------------------------|
 | LOW | Observe the change works. Run whatever check the project has. |
-| MEDIUM | The above + regression check on what the change touched + the obvious edge cases |
+| MEDIUM | The above + regression check on what the change touched + the obvious edge cases + `bin/aos-security.sh` run, every signal answered |
 | HIGH | The above + explicit plan stated before starting + **security pass** (`bin/aos-security.sh` run and every signal answered, *plus* the Security role in `quality-gates.md` §4 answered in prose: where is the trust boundary and what crosses it unchecked) + **a stated rollback path** + review from at least the two most relevant roles + **at tier ≥ T2, the cross-model gate** (`verify-agent`, conditions in `quality-gates.md` §3) and its log committed to `docs/verifiche/` |
 | CRITICAL | The above + **stop before executing.** State exactly what will happen, what cannot be undone, and what the recovery is. Wait for explicit approval. |
 

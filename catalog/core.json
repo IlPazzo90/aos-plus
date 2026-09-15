@@ -1,4 +1,8 @@
 [
   "aos",
-  "skill-library"
+  "skill-library",
+  "caveman:caveman",
+  "ponytail",
+  "ponytail-review",
+  "humanizer:humanizer"
 ]

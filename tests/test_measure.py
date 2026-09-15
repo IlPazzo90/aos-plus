@@ -46,10 +46,10 @@ class MeasureTests(unittest.TestCase):
 
     def test_finish_separates_provider_and_estimate(self):
         self.start()
-        result = self.run_cli("finish", "--outcome", "accepted", "--corrections", "2", "--input-tokens", "100", "--cached-input-tokens", "20", "--output-tokens", "50", "--metric-source", "provider usage report", "--rtk-saved-estimate", "600", "--rtk-source", "rtk gain estimate")
+        result = self.run_cli("finish", "--outcome", "delivered", "--corrections", "2", "--input-tokens", "100", "--cached-input-tokens", "20", "--output-tokens", "50", "--metric-source", "provider usage report", "--rtk-saved-estimate", "600", "--rtk-source", "rtk gain estimate")
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(self.record.read_text())
-        self.assertEqual(data["outcome"], "accepted")
+        self.assertEqual(data["outcome"], "delivered")
         self.assertEqual(data["corrections"], 2)
         self.assertGreaterEqual(data["elapsed_seconds"], 0)
         self.assertTrue(data["finished_at"].endswith("Z"))
@@ -74,27 +74,27 @@ class MeasureTests(unittest.TestCase):
                    ("--corrections", "-1"), ("--output-tokens", "5", "--metric-source", " ")]
         for args in invalid:
             with self.subTest(args=args):
-                result = self.run_cli("finish", "--outcome", "accepted", *args)
+                result = self.run_cli("finish", "--outcome", "delivered", *args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.record.read_bytes(), before)
 
     def test_cannot_finish_twice(self):
         self.start()
-        self.assertEqual(self.run_cli("finish", "--outcome", "rejected").returncode, 0)
+        self.assertEqual(self.run_cli("finish", "--outcome", "partial").returncode, 0)
         before = self.record.read_bytes()
-        self.assertNotEqual(self.run_cli("finish", "--outcome", "accepted").returncode, 0)
+        self.assertNotEqual(self.run_cli("finish", "--outcome", "delivered").returncode, 0)
         self.assertEqual(self.record.read_bytes(), before)
 
     def test_concurrent_finish_preserves_first_completion(self):
         self.start()
         command = [sys.executable, str(SCRIPT), "finish", "--record", str(self.record), "--outcome"]
-        first = subprocess.Popen([*command, "accepted"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        second = subprocess.Popen([*command, "rejected"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        first = subprocess.Popen([*command, "delivered"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        second = subprocess.Popen([*command, "partial"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         first.communicate(timeout=10)
         second.communicate(timeout=10)
         self.assertEqual(sorted((first.returncode, second.returncode)), [0, 1])
         data = json.loads(self.record.read_text())
-        self.assertEqual(data["outcome"], "accepted" if first.returncode == 0 else "rejected")
+        self.assertEqual(data["outcome"], "delivered" if first.returncode == 0 else "partial")
         self.assertFalse(self.record.with_suffix(".json.lock").exists())
 
     def test_atomic_write_failure_keeps_original_and_cleans_temporary(self):
@@ -114,20 +114,157 @@ class MeasureTests(unittest.TestCase):
         data = json.loads(self.record.read_text())
         data["started_at"] = "PRIVATE-CONTENT"
         self.record.write_text(json.dumps(data))
-        result = self.run_cli("finish", "--outcome", "accepted")
+        result = self.run_cli("finish", "--outcome", "delivered")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("PRIVATE-CONTENT", result.stdout + result.stderr)
 
     def test_missing_or_invalid_record_fails_cleanly(self):
-        result = self.run_cli("finish", "--outcome", "accepted")
+        result = self.run_cli("finish", "--outcome", "delivered")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("Traceback", result.stderr)
         self.record.write_text("{}")
         before = self.record.read_bytes()
-        result = self.run_cli("finish", "--outcome", "accepted")
+        result = self.run_cli("finish", "--outcome", "delivered")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(self.record.read_bytes(), before)
+
+    def test_a_stale_lock_names_itself_and_the_remedy(self):
+        # A finish killed between creating the lock and releasing it left every later
+        # finish failing with a bare "FileExistsError" and no way to know what to remove.
+        self.start()
+        lock = self.record.with_name(self.record.name + ".lock")
+        lock.write_text("")
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(lock), result.stderr)
+        self.assertIn("rimuovi", result.stderr)
+        self.assertIsNone(json.loads(self.record.read_text())["outcome"])
+
+    def test_a_record_started_after_the_work_says_so(self):
+        # The first real record measured 65 seconds because start ran after the work was
+        # committed. Inside Git with a clean tree and no commit since start, finish must
+        # say the elapsed time covers nothing — and still complete the record.
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        import os, time
+        earlier = dict(os.environ, GIT_COMMITTER_DATE=f"@{int(time.time()) - 120} +0000")
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "--allow-empty", "-m", "before"], check=True, env=earlier)
+        self.start()
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("AVVISO", result.stderr)
+        self.assertIs(json.loads(self.record.read_text())["work_observed_after_start"], False)
+
+    def test_a_commit_in_the_same_second_as_start_is_unknown_not_absent(self):
+        # Git dates commits to the second: a commit made after start within that second
+        # compared as "not later" and was filed as no work at all.
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        data = self.start()
+        import os
+        from datetime import datetime
+        second = int(datetime.fromisoformat(data["started_at"].replace("Z", "+00:00")).timestamp())
+        same = dict(os.environ, GIT_COMMITTER_DATE=f"@{second} +0000")
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "--allow-empty", "-m", "same second"], check=True, env=same)
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(self.record.read_text())["work_observed_after_start"])
+
+    def test_a_file_already_dirty_before_start_is_not_work_after_start(self):
+        # git status says what is dirty, not since when: the first version read a file
+        # left dirty before start as work done after it and silenced the warning.
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        stale = repo / "pre.txt"
+        stale.write_text("before start")
+        import os, time
+        old = time.time() - 120
+        os.utime(stale, (old, old))
+        self.start()
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("AVVISO", result.stderr)
+        self.assertIs(json.loads(self.record.read_text())["work_observed_after_start"], False)
+
+    def test_only_the_record_and_its_lock_are_excluded_not_every_path_sharing_the_prefix(self):
+        # A glob on the record name also hid record.json.py, real work after start.
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.start()
+        (repo / (self.record.name + ".py")).write_text("work")
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("AVVISO", result.stderr)
+        self.assertIs(json.loads(self.record.read_text())["work_observed_after_start"], True)
+
+    def test_an_untracked_directory_holding_the_record_is_not_work(self):
+        # `git status` groups an untracked directory as one entry; judged by the
+        # directory's mtime, which the lock itself updates, the record counted as work.
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.record = repo / "misure/r.json"
+        self.start()
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIs(json.loads(self.record.read_text())["work_observed_after_start"], False)
+
+    def test_a_deletion_is_unknown_not_work_and_not_its_absence(self):
+        # A deleted path has no mtime, and its directory's is moved by the lock.
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "old.txt").write_text("o")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c"], check=True)
+        (repo / "old.txt").unlink()
+        self.start()
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(self.record.read_text())["work_observed_after_start"])
+
+    def test_an_arrow_inside_a_file_name_and_a_real_rename_are_both_read_correctly(self):
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "dest.txt").write_text("d")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c"], check=True)
+        import os, time
+        old = time.time() - 120
+        os.utime(repo / "dest.txt", (old, old))
+        self.start()
+        (repo / "source -> dest.txt").write_text("work")
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIs(json.loads(self.record.read_text())["work_observed_after_start"], True)
+        # A rename keeps the file's mtime, and the index's mtime is moved by git status
+        # itself: a rename of an old file is unknown, never asserted either way.
+        (repo / "source -> dest.txt").unlink()
+        self.record = repo / "r2.json"
+        self.start()
+        subprocess.run(["git", "-C", str(repo), "mv", "dest.txt", "moved.txt"], check=True)
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(self.record.read_text())["work_observed_after_start"])
+
+    def test_work_after_start_is_seen_and_unknown_outside_git(self):
+        repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.start()
+        (repo / "work.txt").write_text("changed after start")
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("AVVISO", result.stderr)
+        self.assertIs(json.loads(self.record.read_text())["work_observed_after_start"], True)
+        # Outside Git nothing can be observed; the field is null, never a guess.
+        with tempfile.TemporaryDirectory() as plain:
+            record = Path(plain) / "r.json"
+            subprocess.run([sys.executable, str(SCRIPT), "start", "--record", str(record), "--task", "t",
+                            "--runtime", "claude", "--model", "m", "--version", "v"], check=True, capture_output=True)
+            subprocess.run([sys.executable, str(SCRIPT), "finish", "--record", str(record), "--outcome", "delivered"],
+                           check=True, capture_output=True)
+            self.assertIsNone(json.loads(record.read_text())["work_observed_after_start"])
 
     def test_a_blocked_task_is_not_filed_as_partial(self):
         # A task stopped by a missing capability produced no deliverable to accept in
@@ -144,6 +281,45 @@ class MeasureTests(unittest.TestCase):
         before = self.record.read_bytes()
         result = self.run_cli("finish", "--outcome", "DONE")
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_the_author_cannot_write_the_users_verdict_at_finish(self):
+        # Both records before this said "accepted", written minutes before the user had
+        # read the result. finish records what was delivered; the verdict is a later word.
+        self.start()
+        before = self.record.read_bytes()
+        for verdict in ("accepted", "rejected"):
+            self.assertNotEqual(self.run_cli("finish", "--outcome", verdict).returncode, 0)
+        self.assertEqual(self.record.read_bytes(), before)
+        result = self.run_cli("finish", "--outcome", "delivered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertEqual(data["outcome"], "delivered")
+        self.assertIsNone(data["judged_at"])
+
+    def test_judge_records_the_verdict_once_after_finish(self):
+        self.start()
+        self.assertNotEqual(self.run_cli("judge", "--verdict", "accepted").returncode, 0, "judged before finish")
+        self.assertIsNone(json.loads(self.record.read_text())["outcome"])
+        self.run_cli("finish", "--outcome", "partial")
+        result = self.run_cli("judge", "--verdict", "rejected")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertEqual(data["outcome"], "rejected")
+        self.assertEqual(data["delivered_as"], "partial")
+        self.assertTrue(data["judged_at"].endswith("Z"))
+        before = self.record.read_bytes()
+        self.assertNotEqual(self.run_cli("judge", "--verdict", "accepted").returncode, 0, "judged twice")
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertFalse(self.record.with_suffix(".json.lock").exists())
+
+    def test_a_blocked_task_has_nothing_to_judge(self):
+        self.start()
+        self.run_cli("finish", "--outcome", "blocked")
+        before = self.record.read_bytes()
+        result = self.run_cli("judge", "--verdict", "accepted")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bloccato", result.stderr)
         self.assertEqual(self.record.read_bytes(), before)
 
     def test_a_missing_directory_is_not_a_reason_to_close_without_a_record(self):

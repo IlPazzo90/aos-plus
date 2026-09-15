@@ -31,15 +31,29 @@ new capability is justified, recommend measuring or maintaining the current one.
 
 ## Learning without instruction accumulation
 
-After **every** T2/T3 task, identify a wrong assumption, the decisive check and any
-recurring correction, and state what the review found — including "nessun apprendimento
-durevole" when it genuinely found none. An explicit empty result, not a skipped step:
-"after significant work" was the previous wording, and significance is judged by the
-author, about their own work, at the moment they most want to be finished.
-Keep a fact only if it changes future decisions. A reusable
+After **every** T1, T2 and T3 task, identify a wrong assumption, the decisive check
+and any recurring correction, and state what the review found — including "nessun
+apprendimento durevole" when it genuinely found none. An explicit empty result, not a
+skipped step: "after significant work" was the previous wording, and significance is
+judged by the author, about their own work, at the moment they most want to be
+finished. T1 gets one line in the report; T2/T3 get the DoD box in
+`quality-gates.md` §5. Keep a fact only if it changes future decisions. A reusable
 proposal needs its source and scope: project-specific convention, personal durable
 preference, existing-skill fix, new skill, or automation. Distinguish a one-off
 incident from recurrence; link evidence instead of copying a session narrative.
+
+**A durable learning has a destination, or it is a remark.** The 1.10 rewrite dropped
+the destinations and kept the exhortation, and on Codex — which has no automatic
+memory — nothing since then said where a learning goes:
+
+- Repository convention → the project's `CLAUDE.md` / `AGENTS.md`, or its `docs/`,
+  following the file that already exists there. Same on both hosts.
+- Personal durable preference or correction → on Claude, a memory file under the
+  host's memory directory, in its existing format, with its index line; on Codex,
+  propose the entry and the file to the user, since the runtime keeps no memory AOS
+  can write to.
+- Existing-skill fix, new skill, automation → a proposal with evidence; never applied
+  from an ordinary task.
 
 Respect project/host rules for memory. Do not silently expand global instructions
 or modify AOS/third-party skills from ordinary tasks. For an explicit AOS audit,

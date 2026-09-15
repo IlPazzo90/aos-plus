@@ -21,9 +21,11 @@ Follow its instructions using this runtime's tools. Resolve scripts and referenc
 relative to the original real source directory, never this router's directory.
 Searching does not execute a skill or grant authority for its actions.
 
-An absent file is reported MISSING. Obtain a fresh Codex `skills/list` JSON response
-(with forceReload, including disabled entries), then run `refresh response.json`.
-Inspect its summary and use `--apply` for authorized catalog maintenance. Refresh
+An absent file is reported MISSING. Run `refresh --discover`, which starts a local
+`codex app-server`, asks `skills/list` (forceReload, including disabled entries) and
+saves the snapshot under the AOS `tmp/`; a snapshot obtained otherwise is passed as
+`refresh response.json`. Inspect the summary and use `--apply` for authorized catalog
+maintenance. Refresh
 rebuilds the index and managed exclusions by skill name, so plugin version changes
 do not require hand-editing paths. Existing exclusions outside the managed block
 are preserved. New skills default to on-demand unless added to `catalog/core.json`.

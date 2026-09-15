@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.16.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.18.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -10,21 +10,24 @@ The installed skill remains named `aos` for Claude Code and Codex compatibility.
 Requires Bash and Python 3.9+ for helpers. The two tests that exercise TOML catalog
 maintenance need stdlib `tomllib`; below Python 3.11 they are skipped and reported
 as skipped, not failed.
-Clone this repository, inspect the scripts, then choose a host:
+Clone this repository, inspect the scripts, then install:
 
 ```sh
-bash bin/aos-install.sh --host codex --from "$PWD" --dry-run
-bash bin/aos-install.sh --host codex --from "$PWD"
-bash bin/aos-install.sh --host claude --from "$PWD"
+bash bin/aos-install.sh --host claude --from "$PWD" --dry-run
+bash bin/aos-install.sh --host claude --from "$PWD"    # the one installation
+bash bin/aos-install.sh --host codex --link            # Codex reads it through a link
 ```
 
-Targets are `~/.agents/skills/aos` and `~/.claude/skills/aos`. Existing installations
-are backed up. Each run touches only the host you named, which is where the two copies
-drift: **a commit is not an install.** After changing AOS, run the installer for the
-other host in the same sitting and confirm with `python3 bin/aos-doctor.py`, which
-compares the two and names the files that differ. Install only the hosts you use; restart the agent session to refresh
-skill discovery. Invoke `$aos` in Codex or `/aos` in Claude Code. Keep host-specific
-permissions and hooks separate. Installation does not grant deployment authority.
+There is one installation, `~/.claude/skills/aos`, backed up before every update.
+`~/.agents/skills/aos` is a symlink to it, which is how Codex already shares every other
+skill: nothing to keep in step, nothing to drift. Until 1.17.0 the Codex side was a second
+copy, and a whole apparatus — hash comparison, "a commit is not an install" — existed to
+police a duplication a link avoids. If a real directory is found on the Codex path,
+`--link` backs it up under `~/.agents/backups/` and replaces it; `--host codex` alone
+verifies the link; `--host codex --uninstall` removes only the link. Restart the agent
+session to refresh skill discovery. Invoke `$aos` in Codex or `/aos` in Claude Code. Keep
+host-specific permissions and hooks separate. Installation does not grant deployment
+authority.
 
 ## The UI/UX role
 
@@ -53,20 +56,19 @@ implementation or a controlled performance benchmark.
 
 ```sh
 python3.12 -m unittest discover -s tests -v
-bash bin/aos-install.sh --host codex
-bash bin/aos-install.sh --host claude
+bash bin/aos-install.sh --host claude    # verify the installation
+bash bin/aos-install.sh --host codex     # verify the link
 python3 bin/aos-doctor.py
 ```
 
-The doctor compares two installations; with one host it will report the missing
-other host. Use the selected-host installer verification when only one is installed.
-Tests do not call model providers or prove cross-model behavior.
+The doctor checks the Codex link and the maintained files of the one installation; a
+real directory on the Codex path is reported as `COPIA` even when its contents are
+identical, because a copy is a Codex that will read an older AOS the day the
+installation changes. Without Codex, ignore that one line. Tests do not call model
+providers or prove cross-model behavior.
 
-Since 1.16.0 you do not have to remember to run the doctor: `aos-profile.sh`, which runs
-at the start of the work anyway, prints the loaded AOS version and whether the two host
-copies are aligned. Editing one host and leaving the other behind is invisible from
-inside either session, and it is the most common way an agent ends up reading an
-instruction its counterpart does not have.
+You do not have to remember to run the doctor: `aos-profile.sh`, which runs at the
+start of the work anyway, prints the loaded AOS version and the state of the link.
 
 ### The measurement record
 
@@ -75,12 +77,18 @@ Every T2/T3 task closes with a record, not an impression:
 ```sh
 RECORD="docs/misure/$(date -u +%F)-short-slug.json"
 python3 bin/aos-measure.py start --record "$RECORD" \
-  --task "What was asked" --runtime codex --model configured --version 1.16.0
-python3 bin/aos-measure.py finish --record "$RECORD" --outcome accepted --corrections 1
+  --task "What was asked" --runtime codex --model configured --version 1.18.0
+python3 bin/aos-measure.py finish --record "$RECORD" --outcome delivered --corrections 1
+# later, once the user has said what they think of it:
+python3 bin/aos-measure.py judge --record "$RECORD" --verdict accepted
 ```
 
-`--outcome` is one of `accepted | rejected | partial | blocked`; `blocked` exists so a
-task stopped by a missing capability or an exhausted quota is not filed as partial.
+`finish --outcome` is one of `delivered | partial | blocked`: what was handed over.
+`blocked` exists so a task stopped by a missing capability or an exhausted quota is not
+filed as partial. `accepted` and `rejected` are the user's words: `judge` writes them
+once, after the user has spoken, and keeps what `finish` had said in `delivered_as`. The
+author writing `accepted` at finish — which the first records did — is the author grading
+their own work, the judgement the record exists to replace.
 Provider counters are optional and must name their `--metric-source`; unknown values stay
 null and are never estimated. Nothing is collected automatically, no history is read, and
 no provider is contacted. The record is committed with the work — a measurement left in an
@@ -103,10 +111,12 @@ correctness.
 Missing dependencies must be reported according to the applicable gate. No external
 review is supplied merely by installing AOS. Do not copy another user's permissions.
 
-`catalog/index.json` ships empty and `catalog/core.json` contains only AOS/router
-names. Generate a local index from your runtime's skills/list response using
-`python3 bin/skill-library.py refresh --help`. Generated indexes can expose local
-paths and installed tools: keep them out of public commits. Refresh may modify
+`catalog/index.json` ships empty and `catalog/core.json` names only AOS, its router
+and the four skills `SKILL.md` routes to by name. Generate a local index with
+`python3 bin/skill-library.py refresh --discover`, which starts a local `codex
+app-server` and asks it for `skills/list`; a snapshot obtained otherwise is passed as
+the argument. Generated indexes can expose local paths and installed tools: keep them
+out of public commits. Refresh may modify
 Codex configuration when explicitly applied; inspect its preview first.
 
 This package excludes private project history, workstation catalogs and internal

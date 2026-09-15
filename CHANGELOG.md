@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.18.0-public — 2026-09-15
+
+The six findings of the second audit, the one written at the end of 1.17.0. Four are
+code with a test that reproduces the defect; two are declared without a remedy, with the
+reason.
+
+**Two copies were the defect, not their drift.** The Codex installation had stayed on
+1.14.0 with ten dirty files while the installer copied files and the doctor compared
+hashes. The whole apparatus — `HASH`, manifests compared across hosts, "a commit is not
+an install" — policed a duplication that `~/.agents/skills` already avoids for every
+other shared skill: with a link. `~/.agents/skills/aos` is now a symlink to
+`~/.claude/skills/aos`, created or repaired by `aos-install.sh --host codex --link`,
+which backs up a real directory found there and replaces it; `--from` is refused for
+Codex and `--uninstall` removes only the link, refusing a real directory; a stray regular file on that path is moved to the backup directory and replaced by the link. The doctor checks the link and the files of
+one root: a real directory on the Codex path is `COPIA`, identical or not, because it is
+a Codex reading an older AOS without either session seeing it. `aos-profile.sh` says so
+in one line. Tests: `test_install.py` (link, backup of the copy, `--from` refused,
+`--link` Codex-only, uninstall that leaves the installation), `test_doctor.py` (`COPIA` on
+an identical copy, missing or misdirected link).
+
+**The catalog refresh had no way to start.** The `skills/list` snapshot had to be
+produced by hand, which is why one measured install stayed eighty skills behind.
+`skill-library.py refresh --discover` starts `codex app-server`, sends `initialize`,
+`initialized` and `skills/list` with `forceReload` and `includeDisabled`, saves the
+snapshot under `tmp/` and continues as before; a ready snapshot is still accepted as the
+argument, exactly one of the two. Tested with a fake `codex` on PATH answering the same
+JSON-RPC, no network; a server that stays open and silent is abandoned at the timeout, and an error on either request fails the discovery.
+
+**The user's verdict was written by the author.** Every record measured so far said
+`accepted`, written minutes before the user had read the result. `finish --outcome` is
+now `delivered | partial | blocked`, what was handed over; `judge --verdict
+accepted|rejected` runs later, once, and keeps in `delivered_as` what `finish` had
+written. A `blocked` task has nothing to judge.
+
+**Instructions have no tests** and will not get them: a test that looks for words proves
+the words are there. The scenarios remain, to be walked on every change to `SKILL.md`;
+this one touches only the measurement sentence in §5, which none of the three scenarios
+crosses.
+
+**Fixed cost**: `SKILL.md` is at 1,990 words and is the only file loaded every session.
+No cut: the measure that matters is per task, in `docs/misure/`.
+
+Also ported from the private 1.17.0 that this edition had skipped: `tests/` joined the
+installer manifest and a test checks that every `tests/test_*.py` is listed; a stale
+catalog row is a warning, not a failed doctor; the installer removes from the target
+what left the manifest, orphan tests included; `aos-security.sh` never reports its own
+lines and scans a subdirectory with paths it can open (`--relative`); `aos-measure.py
+finish` says when no work is observed after `start` (`work_observed_after_start`), names
+a stale lock and the remedy, and parses `git status -z` as records so a rename or an
+arrow inside a file name is read correctly; the security scan follows risk, not tier
+(`SKILL.md` §5, `risk-and-tiers.md`); the learning line extends to T1 with destinations
+per host (`output-contract.md`) and a Definition of Done box; the profiler lists `docs/`
+as documentation and does not read `supabase` inside a test tree as a stack;
+`bin/codex-hook-adapter.py` and its test are gone, no hook used them.
+
+Checks: 91 tests on Python 3.12, 91 on 3.9 (3 skipped for `tomllib`), `bash -n`,
+`py_compile`, shellcheck, the mechanical security pass, and the public-sanity scan.
+
 ## 1.16.0-public — 2026-09-15
 
 **AOS did not measure itself, and it had already said so.** An earlier revision closed

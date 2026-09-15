@@ -60,12 +60,12 @@ echo "path: $(pwd)"
 echo
 
 # ------------------------------------------------------------------------- aos
-# The Claude and Codex copies drift in silence: editing one leaves the other on the
-# old instructions, and from inside either session that is invisible. aos-doctor
-# already compares them file by file, so this reuses it instead of inventing a
-# weaker check — but it reports only the drift codes. The catalog anomalies are a
-# separate, known, long-standing condition; printing forty of them here would bury
-# the one line that matters and train the reader to skip the block.
+# One installation, linked from the Codex path. aos-doctor checks the link and the
+# maintained files; this reuses it instead of inventing a weaker check, but reports
+# only the codes that mean a host is not reading this AOS: a copy on the Codex path
+# means Codex reads an older skill, and from inside either session that is invisible.
+# The catalog warnings are a separate, known condition; printing forty of them here
+# would bury the one line that matters and train the reader to skip the block.
 echo "--- AOS ---"
 AOS_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
 aos_version="$(tr -d ' \n' < "$AOS_ROOT/VERSION" 2>/dev/null)"
@@ -73,17 +73,19 @@ echo "  versione caricata: ${aos_version:-sconosciuta} ($AOS_ROOT)"
 if [ -n "$host_python" ] && [ -f "$SCRIPT_DIR/aos-doctor.py" ]; then
   # Never let the doctor's exit code become ours: this is orientation, not a gate.
   doctor_out="$("$host_python" -I "$SCRIPT_DIR/aos-doctor.py" 2>&1 || true)"
-  drift="$(printf '%s\n' "$doctor_out" | grep -E '^(HASH|MANIFEST|MANCANTE|ROUTER):' || true)"
+  # Every error code, not only the link ones: a doctor failing on SINTASSI alone used
+  # to leave this line saying "condivisa (link verificato)", which was true and useless.
+  drift="$(printf '%s\n' "$doctor_out" | grep -E '^(COPIA|MANIFEST|MANCANTE|ROUTER|SINTASSI|RIFERIMENTO|PREREQUISITO):' || true)"
   if [ -z "$drift" ]; then
-    echo "  copie Claude/Codex: allineate (confronto SHA-256 dei file mantenuti)"
+    echo "  installazione Claude/Codex: condivisa (link e file verificati dal doctor)"
   else
-    echo "  copie Claude/Codex: DIVERGONO su $(printf '%s\n' "$drift" | wc -l | tr -d ' ') voci —"
-    echo "  un host sta leggendo istruzioni che l'altro non ha. Sincronizza con"
-    echo "  bin/aos-install.sh prima di fidarti di questo processo:"
+    echo "  installazione Claude/Codex: ANOMALIE su $(printf '%s\n' "$drift" | wc -l | tr -d ' ') voci —"
+    echo "  un host potrebbe leggere un AOS diverso o rotto. Esegui python3 bin/aos-doctor.py"
+    echo "  e ripara (bin/aos-install.sh --host codex --link per il link) prima di fidarti:"
     printf '%s\n' "$drift" | head -5 | sed 's/^/    /'
   fi
 else
-  echo "  copie Claude/Codex: non confrontate (python3 o aos-doctor.py assenti)"
+  echo "  installazione Claude/Codex: non verificata (python3 o aos-doctor.py assenti)"
 fi
 echo
 
@@ -95,8 +97,10 @@ found_instr=0
 for f in CLAUDE.md AGENTS.md CONTEXT.md .cursorrules; do
   if has "$f"; then echo "  $f ($(wc -l < "$f" | tr -d ' ') righe)"; found_instr=1; fi
 done
-[ -d docs ] && echo "  docs/ ($(find docs -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ') voci)"
-[ "$found_instr" -eq 0 ] && echo "  (nessuno)"
+[ "$found_instr" -eq 0 ] && echo "  (nessun file di istruzioni: CLAUDE.md, AGENTS.md, CONTEXT.md, .cursorrules)"
+# docs/ is documentation, listed for orientation; it does not outrank anything, so it
+# must not be the reason the line above stays silent.
+[ -d docs ] && echo "  docs/ ($(find docs -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ') voci) — documentazione, non istruzioni"
 echo
 
 # ---------------------------------------------------------------------- stack
@@ -142,7 +146,9 @@ fi
 has Dockerfile && add_stack "docker"
 has docker-compose.yml && add_stack "docker-compose"
 { has vercel.json || has vercel.ts; } && add_stack "vercel"
-{ [ -d supabase ] || [ -n "$(sgrep --include='*.ts' --include='*.py' -e 'supabase' | head -1)" ]; } \
+# The word inside a test tree is not a stack: AOS's own tests name supabase and
+# the profiler declared AOS a Supabase project.
+{ [ -d supabase ] || [ -n "$(sgrep --exclude-dir=tests --exclude-dir=test --exclude-dir=__tests__ --include='*.ts' --include='*.py' -e 'supabase' | head -1)" ]; } \
   && add_stack "supabase"
 n8n=$(sgrep --include='*.json' -e '"connections"' | head -3)
 if [ -n "$n8n" ]; then
@@ -314,7 +320,7 @@ fi
 if [ "$is_wp" -eq 1 ]; then
   echo "  codice WordPress: valuta modifica e ambiente; un deploy sul sito live richiede verifiche e rollback"; risky=1
 fi
-if [ -d supabase ] || [ -n "$(sgrep --include='*.ts' --include='*.py' -e 'supabase' | head -1)" ]; then
+if [ -d supabase ] || [ -n "$(sgrep --exclude-dir=tests --exclude-dir=test --exclude-dir=__tests__ --include='*.ts' --include='*.py' -e 'supabase' | head -1)" ]; then
   echo "  Supabase: valuta ambiente, dati e reversibilita; migrazioni richiedono controlli, perdita dati o azioni irreversibili richiedono autorizzazione"; risky=1
 fi
 # n8n veniva riconosciuto sopra ma non arrivava mai qui: e' il segnale che conta

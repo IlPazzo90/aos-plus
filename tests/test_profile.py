@@ -155,14 +155,30 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("-m unittest discover -s tests", output)
         self.assertNotIn("py_compile", output)
 
+    def test_docs_is_listed_as_documentation_and_never_silences_the_missing_instructions_line(self):
+        # It printed "docs/ (8 voci)" and "(nessuno)" back to back: docs/ set nothing
+        # and the reader had to guess which line was wrong.
+        output = self.profile({"docs/note.md": "", "app.py": ""})
+        self.assertIn("nessun file di istruzioni", output)
+        self.assertIn("docs/ (1 voci) — documentazione, non istruzioni", output)
+        output = self.profile({"CLAUDE.md": "rules\n", "app.py": ""})
+        self.assertNotIn("nessun file di istruzioni", output)
+
+    def test_supabase_named_only_inside_a_test_tree_is_not_a_stack(self):
+        # AOS's own tests name supabase, and the profiler called AOS a Supabase project.
+        output = self.profile({"tests/test_x.py": "supabase = None\n", "app.py": ""})
+        self.assertNotIn("supabase", output.lower())
+        output = self.profile({"src/db.py": "import supabase\n", "app.py": ""})
+        self.assertIn("supabase", output.lower())
+
     def test_the_profile_states_which_aos_is_loaded_and_whether_the_hosts_agree(self):
-        # The two host copies drift in silence; aos-doctor could always see it, but it
-        # only ran when someone thought to ask. Assert the block and its two claims,
-        # never the verdict: whether they are aligned right now is machine state.
+        # A copy on the Codex path means Codex reads an older AOS, invisibly from inside
+        # either session. Assert the block and its two claims, never the verdict: whether
+        # the link is right now is machine state.
         output = self.profile({"app.py": ""})
         self.assertIn("--- AOS ---", output)
         self.assertIn("versione caricata:", output)
-        self.assertRegex(output, r"copie Claude/Codex: (allineate|DIVERGONO|non confrontate)")
+        self.assertRegex(output, r"installazione Claude/Codex: (condivisa|ANOMALIE|non verificata)")
 
     def test_the_profile_never_promises_that_a_git_push_cannot_deploy(self):
         # It used to say the push does NOT deploy. With Vercel's Git integration every

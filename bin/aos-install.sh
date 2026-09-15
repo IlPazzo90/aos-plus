@@ -5,9 +5,12 @@
 #   aos-install.sh --from <dir>       install/update from <dir>, backing up first
 #   aos-install.sh --from <dir> -n    dry run: show what would change, touch nothing
 #   aos-install.sh --uninstall        back up, then remove the skill
+#   aos-install.sh --host codex --link   create or repair the Codex link
 #
-# --host claude (default) or --host codex selects one installation.
-# Codex target: ~/.agents/skills/aos; backups: ~/.agents/backups.
+# --host claude (default) manages the one real installation, ~/.claude/skills/aos.
+# --host codex manages ~/.agents/skills/aos, which is a symlink to it: --link
+# creates or repairs the link (backing up a real directory found there), verify
+# checks it, --uninstall removes only the link. Backups: ~/.agents/backups.
 # Never deletes another skill. Never needs sudo.
 
 set -u
@@ -26,7 +29,8 @@ while [ $# -gt 0 ]; do
     --from)      [ $# -ge 2 ] || { echo "--from richiede una directory" >&2; exit 2; }; SOURCE="$2"; MODE="install"; shift 2 ;;
     -n|--dry-run) DRY=1; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
-    -h|--help)   sed -n '2,12p' "$0"; exit 0 ;;
+    --link)      MODE="link"; shift ;;
+    -h|--help)   sed -n '2,14p' "$0"; exit 0 ;;
     *)           echo "opzione sconosciuta: $1" >&2; exit 2 ;;
   esac
 done
@@ -36,6 +40,7 @@ case "$HOST" in
   codex) TARGET="$HOME/.agents/skills/aos"; BACKUP_ROOT="$HOME/.agents/backups" ;;
   *) echo "Host non valido: $HOST (usa claude o codex)" >&2; exit 2 ;;
 esac
+CLAUDE_ROOT="$HOME/.claude/skills/aos"
 
 say() { echo "$@"; }
 # I comandi arrivano come stringa singola perché alcuni contengono glob
@@ -57,14 +62,20 @@ bin/aos-measure.py
 bin/aos-security.sh
 bin/aos-install.sh
 bin/skill-library.py
-bin/codex-hook-adapter.py
 catalog/core.json
 catalog/index.json
 catalog/skill-library/SKILL.md
-evals/scenarios.json"
+evals/scenarios.json
+tests/test_doctor.py
+tests/test_install.py
+tests/test_measure.py
+tests/test_profile.py
+tests/test_security.py
+tests/test_skill_library.py"
 
 install_router() {
-  local link="$(dirname "$TARGET")/skill-library"
+  local link
+  link="$(dirname "$TARGET")/skill-library"
   if [ -e "$link" ] || [ -L "$link" ]; then
     [ "$(readlink "$link")" = "$TARGET/catalog/skill-library" ] || { say "Router esistente non gestito: $link"; return 1; }
   else
@@ -113,7 +124,8 @@ verify() {
 }
 
 backup() {
-  [ -d "$TARGET" ] || { say "Nessuna installazione precedente da salvare."; return 0; }
+  # A link holds nothing of its own: backing it up would copy the tree it points to.
+  if [ -L "$TARGET" ] || [ ! -d "$TARGET" ]; then say "Nessuna installazione precedente da salvare."; return 0; fi
   local ver stamp dest
   ver="$( [ -f "$TARGET/VERSION" ] && cat "$TARGET/VERSION" || echo unknown )"
   stamp="$(date +%Y%m%d-%H%M%S)"
@@ -123,9 +135,81 @@ backup() {
   run "cp -R '$TARGET' '$dest'"
 }
 
+# The Codex host is a link, not a copy. Two copies were the defect: the installer
+# copied files, the Codex clone stayed on 1.14.0 with ten dirty files, and the
+# doctor, the hash comparison and "a commit is not an install" existed to police a
+# duplication that ~/.agents/skills already avoids for every other shared skill.
+check_link() {
+  say "=== VERIFICA LINK CODEX $TARGET ==="
+  if [ ! -L "$TARGET" ]; then
+    if [ -d "$TARGET" ]; then say "  COPIA: è una directory, non un link — esegui --host codex --link per sostituirla"
+    else say "  MANCANTE: il link non esiste — esegui --host codex --link per crearlo"; fi
+    return 1
+  fi
+  if [ "$(cd "$TARGET" 2>/dev/null && pwd -P)" != "$(cd "$CLAUDE_ROOT" 2>/dev/null && pwd -P)" ]; then
+    say "  ERRORE: il link punta a $(readlink "$TARGET"), non a $CLAUDE_ROOT"; return 1
+  fi
+  say "  ok   $TARGET -> $CLAUDE_ROOT"
+  return 0
+}
+
+if [ "$HOST" = "codex" ]; then
+  case "$MODE" in
+    verify)
+      check_link || exit 1
+      verify "$CLAUDE_ROOT"; exit $?
+      ;;
+    install)
+      say "--from non si applica a --host codex: la sorgente è sempre $CLAUDE_ROOT (usa --link)"; exit 2
+      ;;
+    link)
+      [ -d "$CLAUDE_ROOT" ] || { say "Installazione Claude assente in $CLAUDE_ROOT: installa prima quella."; exit 1; }
+      if [ -L "$TARGET" ] && check_link >/dev/null; then
+        say "Link già corretto: $TARGET -> $CLAUDE_ROOT"
+      else
+        backup
+        if [ -L "$TARGET" ]; then run "rm '$TARGET'"
+        elif [ -d "$TARGET" ]; then say "Rimuovo la copia $TARGET (backup sopra)"; run "rm -rf '$TARGET'"
+        elif [ -e "$TARGET" ]; then
+          # Not a link, not a directory: keep it, out of the way, and say where.
+          stray="$BACKUP_ROOT/aos-file-$(date +%Y%m%d-%H%M%S)"
+          say "$TARGET è un file, non un link: lo sposto in $stray"
+          run "mkdir -p '$BACKUP_ROOT'"; run "mv '$TARGET' '$stray'"
+        fi
+        run "mkdir -p '$(dirname "$TARGET")'"
+        run "ln -s '$CLAUDE_ROOT' '$TARGET'"
+      fi
+      install_router || exit 1
+      if [ "$DRY" -eq 1 ]; then say "Dry run: nessuna modifica scritta."; exit 0; fi
+      check_link || exit 1
+      verify "$CLAUDE_ROOT"; exit $?
+      ;;
+    uninstall)
+      if [ -L "$TARGET" ]; then
+        if [ "$(readlink "$(dirname "$TARGET")/skill-library")" = "$TARGET/catalog/skill-library" ]; then
+          run "rm '$(dirname "$TARGET")/skill-library'"
+        fi
+        say "Rimuovo il link $TARGET"; run "rm '$TARGET'"
+      elif [ -d "$TARGET" ]; then
+        # Only the link is ours to remove. A real directory here may be somebody's
+        # clone with uncommitted work: --link backs it up and replaces it on request.
+        say "$TARGET è una directory, non un link: non la rimuovo. Usa --host codex --link per sostituirla con il link (backup incluso), o rimuovila tu."
+        exit 1
+      else
+        say "AOS non è collegato per Codex."
+      fi
+      exit 0
+      ;;
+  esac
+fi
+
 case "$MODE" in
   verify)
     verify "$TARGET"; exit $?
+    ;;
+
+  link)
+    say "--link riguarda solo --host codex: l'installazione Claude è la sorgente."; exit 2
     ;;
 
   install)
@@ -144,6 +228,32 @@ case "$MODE" in
     backup
     say "Installo: $SOURCE -> $TARGET"
     run "mkdir -p '$TARGET'"
+    # A file dropped from the manifest must leave the target too: the copy step alone
+    # left bin/codex-hook-adapter.py and its test alive on the Codex host after 1.17.0
+    # removed them, and the doctor, which compares maintained files, could not see it.
+    # Only files the target's own previous manifest named are candidates for removal.
+    # shellcheck disable=SC2086  # word splitting is the point: one name per word
+    current=" $(printf '%s ' $REQUIRED_FILES)"
+    if [ -f "$TARGET/bin/aos-install.sh" ]; then
+      previous="$(sed -n '/^REQUIRED_FILES="/,/"/p' "$TARGET/bin/aos-install.sh" | tr -d '"' | sed 's/^REQUIRED_FILES=//')"
+      # Flattened on one line: the manifest is newline-separated, and matching
+      # " name " against it found only the names on the first line — the dry run
+      # of that version would have removed every other maintained file.
+      for f in $previous; do
+        case "$current" in *" $f "*) ;; *)
+          case "$f" in */..*|/*) continue ;; esac
+          [ -f "$TARGET/$f" ] && { say "Rimuovo (uscito dal manifesto): $f"; run "rm '$TARGET/$f'"; } ;;
+        esac
+      done
+    fi
+    # tests/ is AOS-owned in full and entered the manifest only in 1.17.0: a test file
+    # the previous manifest never named would otherwise survive the removal of the
+    # module it imports and break discovery on the upgraded host.
+    for f in "$TARGET"/tests/test_*.py; do
+      [ -f "$f" ] || continue
+      rel="tests/$(basename "$f")"
+      case "$current" in *" $rel "*) ;; *) say "Rimuovo (test fuori manifesto): $rel"; run "rm '$TARGET/$rel'" ;; esac
+    done
     # Copy maintained files only; preserve the target's Git history and local logs.
     for f in $REQUIRED_FILES; do
       run "mkdir -p '$TARGET/$(dirname "$f")'"

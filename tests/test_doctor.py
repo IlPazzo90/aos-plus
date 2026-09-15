@@ -1,6 +1,7 @@
-"""Read-only installation doctor behavior against temporary host roots."""
+"""Read-only installation doctor behavior against a temporary linked installation."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -26,11 +27,15 @@ class DoctorTests(unittest.TestCase):
             "catalog/skill-library/SKILL.md": "---\nname: skill-library\ndescription: router\n---\n",
         }
         files["bin/aos-install.sh"] = 'REQUIRED_FILES="' + "\n".join([*files, "bin/aos-install.sh"]) + '"\n'
+        codex, claude = self.roots
+        for name, content in files.items():
+            target = claude / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        # One installation: the Codex path is a link to it, as for every shared skill.
+        codex.parent.mkdir()
+        codex.symlink_to(claude)
         for root in self.roots:
-            for name, content in files.items():
-                target = root / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content)
             (root.parent / "skill-library").symlink_to(root / "catalog/skill-library")
 
     def run_doctor(self, env=None):
@@ -59,13 +64,34 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("RIFERIMENTO", result.stdout)
         self.assertIn("evals/scenarios.json", result.stdout)
 
-    def test_detects_missing_and_different_files(self):
-        (self.roots[0] / "references/check.md").unlink()
-        (self.roots[1] / "bin/check.py").write_text("print('different')\n")
+    def test_detects_missing_files(self):
+        (self.roots[1] / "references/check.md").unlink()
         result = self.run_doctor()
         self.assertEqual(result.returncode, 1)
         self.assertIn("MANCANTE", result.stdout)
-        self.assertIn("HASH", result.stdout)
+
+    def test_a_real_directory_on_the_codex_path_is_a_copy_even_when_identical(self):
+        # The Codex clone sat on 1.14.0 with ten dirty files while the doctor compared
+        # hashes: two copies were the defect, and an identical copy is still a copy.
+        codex, claude = self.roots
+        codex.unlink()
+        shutil.copytree(claude, codex)
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("COPIA", result.stdout)
+        self.assertIn("--host codex", result.stdout)
+        self.assertNotIn("HASH", result.stdout)
+
+    def test_a_missing_or_misdirected_codex_link_is_reported(self):
+        codex, claude = self.roots
+        codex.unlink()
+        self.assertIn("MANCANTE", self.run_doctor().stdout)
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        codex.symlink_to(elsewhere)
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MANCANTE", result.stdout)
 
     def test_detects_syntax_even_when_copies_match(self):
         for root in self.roots:
@@ -87,6 +113,23 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         for code in ("RIFERIMENTO", "ROUTER", "CATALOGO"):
             self.assertIn(code, result.stdout)
+
+    def test_a_stale_catalog_row_is_a_warning_not_a_broken_installation(self):
+        # Forty CATALOGO rows once made every run exit 1 while both copies were identical.
+        for root in self.roots:
+            (root / "catalog/index.json").write_text(json.dumps([{"name": "gone", "path": str(self.base / "gone/SKILL.md")}]))
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AVVISO CATALOGO", result.stdout)
+        self.assertIn("OK", result.stdout)
+
+    def test_the_real_manifest_ships_every_test_file(self):
+        # Two copies were reported aligned with 61 tests on one side and 56 on the other:
+        # tests/ was outside the manifest, so the comparison could not see the drift.
+        installer = (DOCTOR.parent / "aos-install.sh").read_text()
+        manifest = installer.split('REQUIRED_FILES="', 1)[1].split('"', 1)[0].split()
+        present = sorted(str(p.relative_to(DOCTOR.parent.parent)) for p in (DOCTOR.parent.parent / "tests").glob("test_*.py"))
+        self.assertEqual(sorted(name for name in manifest if name.startswith("tests/")), present)
 
     def test_does_not_execute_installer_scripts_or_bash_env(self):
         marker = self.base / "executed"

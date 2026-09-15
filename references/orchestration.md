@@ -41,15 +41,12 @@ Below the external-gate threshold, no routine cross-model call.
    the missing capability once when material. Missing tooling never removes a gate.
 
 AOS is user-maintained. Do not edit third-party skills or install speculative
-replacements. Claude and Codex copies of AOS are separate installations; use
-`bin/aos-install.sh --host claude|codex --from <source>` to update with backup.
-**Editing one host's copy leaves the other on the old version.** A commit is not an
-install: after changing AOS, run the installer for the *other* host in the same
-intervention and confirm with `aos-doctor.py`, which compares the two and reports the
-files that differ. This is how one host ends up reading an instruction the other does
-not have, and it is invisible from inside either session.
-Do not transplant host permissions/hooks. Use `--dry-run` and verify the selected
-host; preserve unrelated target state.
+replacements. There is one installation, `~/.claude/skills/aos`; `~/.agents/skills/aos`
+is a link to it, so an update there is what both hosts read. `bin/aos-install.sh --host
+codex --link` creates or repairs the link and `aos-doctor.py` reports a real directory
+on that path as `COPIA`: two copies were the defect, not their drift, and a copy left
+there is a Codex reading an older AOS, invisibly from inside either session. Do not
+transplant host permissions/hooks.
 
 ## Wayfinder
 

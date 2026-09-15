@@ -17,6 +17,11 @@
 # for containing the very patterns it looks for. The regex matches the same.
 set -uo pipefail
 
+# Resolved before the cd below, or a relative script path would be looked up in the
+# scanned directory. The script contains the very patterns it hunts (header names,
+# service_role, innerHTML): scanning itself produced three fixed signals on every
+# AOS commit, and a check that always fires is a check that gets skipped.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 cd "${1:-.}" || exit 1
 SIGNALS=0
 
@@ -64,7 +69,10 @@ cut_value() { sed -E 's/(:[0-9]+:).*/\1 .../'; }
 # Scope: what changed. Falls back to the whole tree, and says so, because a
 # silent change of scope is how a check starts lying about what it covered.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  FILES=$( { git diff HEAD --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep -v '^$' | sort -u)
+  # --relative: without it the diff lists paths from the repository root while the
+  # cwd is the directory being scanned, and `bash aos-security.sh bin` reported
+  # "0 file" over a bin/ full of changes. ls-files is cwd-relative already.
+  FILES=$( { git diff HEAD --name-only --relative 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep -v '^$' | sort -u)
   SCOPE="modifiche non committate"
   if [ -z "$FILES" ]; then
     FILES=$(git ls-files); SCOPE="TUTTO il repository (niente di non committato)"
@@ -74,7 +82,11 @@ else
   SCOPE="cartella (non e' un repository git)"
 fi
 
-LIVE=$(printf '%s\n' "$FILES" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+LIVE=$(printf '%s\n' "$FILES" | while read -r f; do
+  [ -f "$f" ] || continue
+  [ "$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")" = "$SELF" ] && continue
+  printf '%s\n' "$f"
+done)
 COUNT=$(printf '%s\n' "$LIVE" | grep -vc '^$')
 
 echo "=== AOS SECURITY PASS ==="

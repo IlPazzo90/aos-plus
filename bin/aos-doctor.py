@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Read-only local AOS health checks (Python 3.9+).
 
+There is one installation, ~/.claude/skills/aos; the Codex path is a symlink to
+it. The doctor checks the link, then the maintained files of the one root.
 Frontmatter checks required fields only, not complete YAML syntax.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,11 +19,19 @@ from urllib.parse import unquote, urlsplit
 class Doctor:
     def __init__(self):
         self.errors = 0
+        self.warnings = 0
         self.bash = shutil.which("bash")
 
     def fail(self, code, subject, remedy):
         self.errors += 1
         print(f"{code}: {subject} — {remedy}")
+
+    def warn(self, code, subject, remedy):
+        # A catalog row whose target moved says the index is old, not that the
+        # installation is broken: 40 of them once made every run exit 1, and a gate
+        # that always says no stops being read.
+        self.warnings += 1
+        print(f"AVVISO {code}: {subject} — {remedy}")
 
     def read(self, root, relative):
         path = root / relative
@@ -100,7 +109,7 @@ class Doctor:
                         if not target.is_absolute():
                             target = root / target
                         if not target.is_file():
-                            self.fail("CATALOGO", f"{root}: {entry['name']}", "aggiornare il catalogo: destinazione locale assente")
+                            self.warn("CATALOGO", f"{root}: {entry['name']}", "rigenerare l'indice con skill-library.py refresh: destinazione locale assente")
                 elif relative == "catalog/core.json" and (not isinstance(data, list) or not all(isinstance(x, str) for x in data)):
                     raise ValueError()
             elif suffix == ".md":
@@ -114,25 +123,33 @@ class Doctor:
             # Never echo source text: it may contain a pasted credential.
             self.fail("SINTASSI", f"{root}: {relative}", "correggere sintassi/formato con il validatore locale")
 
-    def run(self, roots):
+    def link(self, codex_root, claude_root):
+        # Two copies were the defect, not their drift: the Codex clone sat on 1.14.0
+        # with ten dirty files while the installer copied files around it. A real
+        # directory here is reported as a copy, whatever its contents.
+        try:
+            if codex_root.is_symlink() and codex_root.resolve() == claude_root.resolve() and claude_root.is_dir():
+                return
+        except (OSError, RuntimeError):
+            pass
+        if codex_root.is_dir() and not codex_root.is_symlink():
+            self.fail("COPIA", str(codex_root), "è una copia, non un link: sostituirla con bash bin/aos-install.sh --host codex --link")
+        else:
+            self.fail("MANCANTE", str(codex_root), f"creare il link a {claude_root} con bash bin/aos-install.sh --host codex --link")
+
+    def run(self, codex_root, claude_root):
         print(f"Python {sys.version.split()[0]}: {sys.executable}; sola verifica locale")
         if sys.version_info < (3, 9):
             self.fail("PREREQUISITO", "Python < 3.9", "usare Python 3.9 o successivo")
         if not self.bash:
             self.fail("PREREQUISITO", "bash assente dal PATH", "rendere disponibile bash per la verifica sintattica")
-        manifests = [self.manifest(root) for root in roots]
-        if manifests[0] != manifests[1]:
-            self.fail("MANIFEST", "elenchi diversi fra host", "sincronizzare le versioni con l'installer AOS")
-        maintained = set.union(*manifests)
-        hashes = []
-        for root in roots:
-            digest = {}
-            for relative in sorted(maintained):
-                raw = self.read(root, relative)
-                if raw is not None:
-                    digest[relative] = hashlib.sha256(raw).hexdigest()
-                    self.check_file(root, relative, raw)
-            hashes.append(digest)
+        self.link(codex_root, claude_root)
+        maintained = self.manifest(claude_root)
+        for relative in sorted(maintained):
+            raw = self.read(claude_root, relative)
+            if raw is not None:
+                self.check_file(claude_root, relative, raw)
+        for root in (codex_root, claude_root):
             router = root.parent / "skill-library"
             try:
                 valid = router.is_symlink() and router.resolve() == (root / "catalog/skill-library").resolve() and (router / "SKILL.md").is_file()
@@ -140,13 +157,11 @@ class Doctor:
                 valid = False
             if not valid:
                 self.fail("ROUTER", str(router), "ripristinare il link alla root AOS/catalog/skill-library con l'installer")
-        for relative in sorted(hashes[0].keys() & hashes[1].keys()):
-            if hashes[0][relative] != hashes[1][relative]:
-                self.fail("HASH", relative, "confrontare le due copie e sincronizzare dalla sorgente autorevole")
         runtime = ", ".join(f"{name}={'presente' if shutil.which(name) else 'assente'}" for name in ("rtk", "claude", "codex"))
         print("Frontmatter: presenza campi; sintassi YAML completa non verificata (usare quick_validate).")
         print(f"CLI opzionali (solo PATH): {runtime}. Autenticazione e backend non verificati.")
-        print(f"{'ERRORE' if self.errors else 'OK'}: {len(maintained)} file mantenuti, {self.errors} anomalie; nessuna modifica.")
+        print(f"{'ERRORE' if self.errors else 'OK'}: {len(maintained)} file mantenuti in {claude_root}, "
+              f"{self.errors} anomalie, {self.warnings} avvisi di catalogo; nessuna modifica.")
         return 1 if self.errors else 0
 
 
@@ -155,7 +170,7 @@ def main():
     parser.add_argument("--codex-root", type=Path, default=Path.home() / ".agents/skills/aos")
     parser.add_argument("--claude-root", type=Path, default=Path.home() / ".claude/skills/aos")
     args = parser.parse_args()
-    return Doctor().run([args.codex_root.expanduser(), args.claude_root.expanduser()])
+    return Doctor().run(args.codex_root.expanduser(), args.claude_root.expanduser())
 
 
 if __name__ == "__main__":

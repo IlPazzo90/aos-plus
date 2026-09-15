@@ -45,7 +45,8 @@ def refresh(snapshot, index, config, apply):
     data = json.loads(snapshot.read_text())['data']
     if not data or any(row.get('errors') for row in data):
         raise ValueError('Discovery empty or contains errors; no files changed')
-    rows = {s['path']: s for row in data for s in row['skills']}
+    # A fixture under a collection's test tree is discovered like a skill and is not one.
+    rows = {s['path']: s for row in data for s in row['skills'] if '/test/fixtures/' not in s['path']}
     if not rows:
         raise ValueError('Empty skill inventory; no files changed')
     core = set(read_index(ROOT / 'catalog/core.json'))
@@ -75,6 +76,66 @@ def refresh(snapshot, index, config, apply):
         print('Backup: ' + str(backup))
     index.parent.mkdir(parents=True, exist_ok=True)
     index.write_text(json.dumps(sorted(entries, key=lambda e: (e['name'], e['path'])), ensure_ascii=False, indent=2) + '\n')
+
+
+def discover(cwd, timeout):
+    """Ask a local `codex app-server` for its skill inventory; return the skills/list result.
+
+    The snapshot used to be produced by hand from a twenty-line scratch script, which
+    is the reason the catalog stayed eighty skills behind: a step nobody can run from
+    the tool itself is a step that runs when somebody remembers.
+    """
+    import queue
+    import threading
+    import time
+    codex = shutil.which('codex')
+    if codex is None:
+        raise ValueError('codex not on PATH; pass a skills/list snapshot instead of --discover')
+    process = subprocess.Popen([codex, 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, text=True)
+    try:
+        def send(message):
+            process.stdin.write(json.dumps(message) + '\n')
+            process.stdin.flush()
+        send({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+              'params': {'clientInfo': {'name': 'aos-skill-library', 'version': '1.0'}}})
+        send({'jsonrpc': '2.0', 'method': 'initialized', 'params': {}})
+        send({'jsonrpc': '2.0', 'id': 2, 'method': 'skills/list',
+              'params': {'cwds': [str(cwd)], 'forceReload': True, 'includeDisabled': True}})
+        # readline() blocks: a server that stays open and silent would have made the
+        # deadline below decorative. A reader thread feeds a queue and the wait has a bound.
+        lines = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(l) for l in iter(process.stdout.readline, '')] + [lines.put(None)],
+                         daemon=True).start()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                break
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            # An error on either request is a failed handshake, not noise: a server that
+            # refuses initialize and then answers skills/list is not one to trust.
+            if message.get('id') in (1, 2) and 'error' in message:
+                error = message['error'] if isinstance(message['error'], dict) else {}
+                which = 'initialize' if message['id'] == 1 else 'skills/list'
+                raise ValueError('codex %s failed: %s' % (which, str(error.get('message', ''))[:200]))
+            if message.get('id') == 2:
+                result = message.get('result')
+                if not isinstance(result, dict) or 'data' not in result:
+                    raise ValueError('codex skills/list returned no data')
+                return result
+        raise ValueError('codex app-server gave no skills/list result within %ss' % timeout)
+    finally:
+        process.kill()
+        process.wait()
 
 
 def ensure_refresh_runtime():
@@ -107,14 +168,27 @@ def main():
     find = sub.add_parser('search')
     find.add_argument('query')
     find.add_argument('--limit', type=int, default=5)
-    update = sub.add_parser('refresh', help='Use a fresh Codex skills/list JSON result; dry run by default')
-    update.add_argument('snapshot', type=Path)
+    update = sub.add_parser('refresh', help='Use a Codex skills/list JSON result, or --discover to ask codex app-server; dry run by default')
+    update.add_argument('snapshot', type=Path, nargs='?')
+    update.add_argument('--discover', action='store_true', help='run codex app-server and save its skills/list result under tmp/')
+    update.add_argument('--discover-cwd', type=Path, default=Path.home())
+    update.add_argument('--timeout', type=int, default=120)
     update.add_argument('--config', type=Path, default=Path.home() / '.codex/config.toml')
     update.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     try:
         if args.command == 'refresh':
+            if bool(args.snapshot) == bool(args.discover):
+                parser.error('refresh takes exactly one of: a snapshot file, or --discover')
             ensure_refresh_runtime()
+            if args.discover:
+                result = discover(args.discover_cwd, args.timeout)
+                # tmp/ is ignored by Git; the snapshot is evidence for this refresh, not a source.
+                snapshot = ROOT / 'tmp' / ('skills-list-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S') + '.json')
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                snapshot.write_text(json.dumps(result))
+                print('Snapshot: ' + str(snapshot))
+                args.snapshot = snapshot
             refresh(args.snapshot, args.index, args.config, args.apply)
             return 0
         if not args.query.strip() or not 1 <= args.limit <= 20:

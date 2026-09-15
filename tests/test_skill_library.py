@@ -1,11 +1,13 @@
 """Behavior checks for local discovery, bounds, and config preservation."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('library', ROOT / 'bin/skill-library.py')
@@ -71,6 +73,22 @@ class LibraryTests(unittest.TestCase):
             self.assertIn('/manual/SKILL.md', config.read_text())
             self.assertEqual(library.read_index(index)[0]['path'], '/plugin/2/SKILL.md')
 
+    @NEEDS_TOMLLIB
+    def test_a_test_fixture_discovered_as_a_skill_is_not_indexed_nor_hidden(self):
+        # gstack ships fixture SKILL.md files under test/fixtures; discovery lists them
+        # and the catalog carried two of them ("alpha", "beta") as skills.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, index, snapshot = (root / n for n in ('config.toml', 'index.json', 'snapshot.json'))
+            config.write_text('model = "example"\n')
+            snapshot.write_text(json.dumps({'data': [{'skills': [
+                {'name': 'alpha', 'path': '/gstack/test/fixtures/tree-a/alpha/SKILL.md', 'description': 'fixture', 'enabled': True},
+                {'name': 'real', 'path': '/plugin/real/SKILL.md', 'description': 'skill', 'enabled': True}]}]}))
+            library.refresh(snapshot, index, config, True)
+            names = [e['name'] for e in library.read_index(index)]
+            self.assertEqual(names, ['real'])
+            self.assertNotIn('/test/fixtures/', config.read_text())
+
     def test_cli_limit_and_missing_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             index = Path(tmp) / 'index.json'
@@ -82,6 +100,80 @@ class LibraryTests(unittest.TestCase):
             self.assertLess(len(result.stdout), 500)
             result = subprocess.run(cmd + ['--limit', '0'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
+
+    def test_discover_drives_a_local_codex_app_server_and_returns_its_inventory(self):
+        # The snapshot used to come from a scratch script run by hand, which is why the
+        # catalog stayed eighty skills behind. A fake `codex` on PATH answers the same
+        # JSON-RPC the real app-server does; no network, no real Codex.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / 'codex'
+            fake.write_text('#!/usr/bin/env python3\nimport json, sys\n'
+                            'assert sys.argv[1:] == ["app-server"]\n'
+                            'print("not json, ignored")\n'
+                            'for line in sys.stdin:\n'
+                            '    m = json.loads(line)\n'
+                            '    if m.get("method") == "initialize":\n'
+                            '        print(json.dumps({"id": 1, "result": {}}), flush=True)\n'
+                            '    if m.get("method") == "skills/list":\n'
+                            '        p = m["params"]; assert p["forceReload"] and p["includeDisabled"] and p["cwds"] == ["/somewhere"]\n'
+                            '        print(json.dumps({"jsonrpc": "2.0", "method": "note", "params": {}}), flush=True)\n'
+                            '        print(json.dumps({"id": 2, "result": {"data": [{"skills": [{"name": "x", "path": "/x/SKILL.md", "description": "d", "enabled": True}]}]}}), flush=True)\n'
+                            '        break\n')
+            fake.chmod(0o755)
+            with mock.patch.dict('os.environ', {'PATH': tmp + ':' + os.environ['PATH']}):
+                result = library.discover(Path('/somewhere'), 10)
+            self.assertEqual(result['data'][0]['skills'][0]['name'], 'x')
+            fake.write_text('#!/usr/bin/env python3\nimport json, sys\n'
+                            'for line in sys.stdin:\n'
+                            '    if json.loads(line).get("method") == "skills/list":\n'
+                            '        print(json.dumps({"id": 2, "error": {"code": 1, "message": "boom"}}), flush=True); break\n')
+            with mock.patch.dict('os.environ', {'PATH': tmp + ':' + os.environ['PATH']}):
+                with self.assertRaises(ValueError) as failure:
+                    library.discover(Path('/somewhere'), 10)
+            self.assertIn('boom', str(failure.exception))
+            with mock.patch.dict('os.environ', {'PATH': tmp + '/nowhere'}):
+                with self.assertRaises(ValueError):
+                    library.discover(Path('/somewhere'), 10)
+
+    def test_an_error_on_initialize_fails_the_discovery_even_if_skills_list_answers(self):
+        # The first version read `error` only on the skills/list reply: a server that
+        # refused the handshake and still produced an inventory was accepted.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / 'codex'
+            fake.write_text('#!/usr/bin/env python3\nimport json, sys\n'
+                            'for line in sys.stdin:\n'
+                            '    m = json.loads(line)\n'
+                            '    if m.get("method") == "initialize":\n'
+                            '        print(json.dumps({"id": 1, "error": {"message": "initialize failed"}}), flush=True)\n'
+                            '    if m.get("method") == "skills/list":\n'
+                            '        print(json.dumps({"id": 2, "result": {"data": [{"skills": []}]}}), flush=True); break\n')
+            fake.chmod(0o755)
+            with mock.patch.dict('os.environ', {'PATH': tmp + ':' + os.environ['PATH']}):
+                with self.assertRaises(ValueError) as failure:
+                    library.discover(Path('/somewhere'), 10)
+            self.assertIn('initialize failed', str(failure.exception))
+
+    def test_a_silent_app_server_is_abandoned_at_the_timeout(self):
+        # readline() blocks; the first version checked the deadline only between lines,
+        # so a server that stayed open and quiet hung the refresh past any --timeout.
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / 'codex'
+            fake.write_text('#!/usr/bin/env python3\nimport sys\nfor line in sys.stdin:\n    pass\n')
+            fake.chmod(0o755)
+            started = time.monotonic()
+            with mock.patch.dict('os.environ', {'PATH': tmp + ':' + os.environ['PATH']}):
+                with self.assertRaises(ValueError) as failure:
+                    library.discover(Path('/somewhere'), 1)
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertIn('within 1s', str(failure.exception))
+
+    def test_refresh_cli_takes_a_snapshot_or_discover_not_both_nor_neither(self):
+        cmd = [sys.executable, str(ROOT / 'bin/skill-library.py'), 'refresh']
+        for extra in ([], ['snap.json', '--discover']):
+            result = subprocess.run(cmd + extra, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, extra)
+            self.assertIn('exactly one', result.stderr)
 
     @NEEDS_TOMLLIB
     def test_empty_discovery_rejected(self):
