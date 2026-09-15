@@ -132,11 +132,19 @@ def main():
     # Config and dependencies prove a runner is configured; only test files prove
     # there is Python to run. The caller needs the difference to decide whether the
     # minimum bar still applies, so report it on a line it can strip.
-    proven = "files" if (from_test_files or unittest_roots) else ("config" if pytest_evidence else "none")
-    if proven == "files" and pytest_evidence and collection_limited:
-        # Found test files do not prove this command runs them: addopts, testpaths,
-        # norecursedirs or a conftest collect_ignore can exclude exactly what was found.
-        proven = "limited"
+    # Only a unittest discovery command names the files it will run, so only that
+    # proves the Python is covered. What pytest collects depends on options this
+    # reader cannot enumerate — python_files, markers, a conftest, a plugin — and
+    # settling that needs pytest itself, which this reader never runs. Five review
+    # rounds each found another option missing from the list; the list was the wrong
+    # answer. Absence of a recognized restriction is not proof, so pytest evidence
+    # never removes the minimum bar: it only changes how the doubt is phrased.
+    if pytest_evidence:
+        proven = "limited" if collection_limited else ("unverified" if (from_test_files or unittest_roots) else "config")
+    elif unittest_roots:
+        proven = "files"
+    else:
+        proven = "none"
     print("PYTHON_TESTS_EVIDENCE=" + proven)
     if pytest_evidence:
         print("  {} -m pytest   (evidenza: {}; disponibilita pytest non verificata)".format(command, ", ".join(pytest_evidence[:3])))

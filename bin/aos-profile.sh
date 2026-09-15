@@ -231,6 +231,8 @@ echo
 if [ "$is_python" -eq 1 ] && [ "$python_runner" -eq 0 ]; then
   if [ "$python_evidence" = "limited" ]; then
     echo "  I test Python esistono, ma la configurazione pytest puo' escluderli dalla raccolta."
+  elif [ "$python_evidence" = "unverified" ]; then
+    echo "  I test Python esistono, ma nessuno ha verificato che pytest li raccolga davvero."
   elif [ "$python_evidence" = "config" ]; then
     echo "  Il comando pytest viene da configurazione o dipendenze, non da test trovati."
   elif [ -n "$test_cmd" ]; then

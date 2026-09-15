@@ -40,6 +40,13 @@
   empty `[pytest]` could shadow the `[tool:pytest]` that setup.cfg actually uses, and
   the header regex gated the TOML parser, so a quoted table name was never parsed at
   all. Any candidate section now counts, and `pyproject.toml` goes to the parser first.
+- Structural change, after five rounds each found another option missing from the list:
+  pytest evidence no longer removes the minimum bar at all. What pytest collects depends
+  on options this reader cannot enumerate — `python_files`, markers, a conftest, a plugin
+  — and settling it needs pytest itself, which the reader never runs. Absence of a
+  recognized restriction is not proof. Only a unittest discovery command, which names the
+  files it will run, still counts as proven. The recognized restrictions now only change
+  how the doubt is worded.
 - Known and inherited: backticked reference checking cannot tell an illustrative path from a
   promise. This already applied to `references/`, `bin/` and `catalog/`; `evals/` joins the
   same class.

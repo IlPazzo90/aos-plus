@@ -133,7 +133,22 @@ class ProfileTests(unittest.TestCase):
                                "app.py": ""})
         self.assertIn("-m pytest", output)
         self.assertNotIn("limita la raccolta", output)
-        self.assertNotIn("py_compile", output)
+        # The bar stays either way for pytest; what must not appear is the claim that
+        # this configuration restricts collection.
+        self.assertIn("nessuno ha verificato", output)
+
+    def test_pytest_never_removes_the_minimum_bar(self):
+        # What pytest collects depends on options this reader cannot enumerate, so a
+        # pytest project keeps the bar whatever the configuration says.
+        for name, files in [
+            ("python_files", {"pyproject.toml": '[tool.pytest.ini_options]\npython_files = ["check_*.py"]\n'}),
+            ("clean", {"pytest.ini": "[pytest]\n"}),
+        ]:
+            with self.subTest(config=name):
+                output = self.profile({**files, "app.py": "",
+                                       "tests/test_app.py": "import pytest\ndef test_app(): assert True\n"})
+                self.assertIn("-m pytest", output)
+                self.assertIn("py_compile", output)
 
     def test_python_runner_replaces_the_minimum_bar(self):
         output = self.profile({"tests/test_app.py": "import unittest\nclass Example(unittest.TestCase): pass\n"})
