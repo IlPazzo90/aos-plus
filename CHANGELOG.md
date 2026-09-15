@@ -2,6 +2,33 @@
 
 ## 1.14.0-public — 2026-09-15
 
+**Reviewed across four adversarial rounds before this line was written.** Ten findings,
+ten confirmed mechanically, none refuted. Three of them were contradictions inside the
+new file itself, and five more were inside the fixes for the first three — which is
+where the worst ones always are. What survives is listed below; what it got wrong is
+listed with it, because a gate that hides its own corrections teaches nothing.
+
+- The gate first demanded a direction written **before the first component**. No
+  existing surface can satisfy that, which would have made the role unusable on
+  everything already built. Adopting it on existing work now means writing down the
+  direction the shipped result already implies, and naming what departs from it.
+- The default direction allowed a near-black canvas and then prescribed near-black
+  numerals — 1.06:1 against its own 3:1 floor. Foreground is now stated relative to
+  the canvas.
+- Verification said "in a browser", which a native screen cannot satisfy; a web
+  replica verifies the replica. The medium now picks the check: browser, simulator,
+  or the export at final size. That fix then had to be made three times, because it
+  was written into two files and not into the checklist that T2/T3 work is measured
+  against.
+- The gate demanded one accent with no exception while the same file told you to adopt
+  an existing brand's palette. A two-accent brand could satisfy the direction or the
+  gate, never both. Both counts are now relative to the direction — and the reviewer
+  then attacked that relativization and could not empty the gate: contrast, focus and
+  reduced-motion stay absolute whatever a direction declares. An unexplained second
+  accent still fails, and semantic colours never counted as accents to begin with.
+
+### What the role is
+
 A pile of design skills was installed and none of them said *when* it enters a job,
 or what makes the result acceptable. `references/design.md` adds the missing role.
 
@@ -10,24 +37,28 @@ or what makes the result acceptable. `references/design.md` adds the missing rol
   designs for a living read this as designed, or as assembled? The gap between the
   two is rarely talent — it is that nobody wrote the direction down before the first
   component existed, so every later decision was taken locally and the sum is generic.
-- **Six stages, each with an artifact someone else can read**: direction, tokens,
-  library choice, variants, motion spec, review. A stage with no artifact did not run;
-  "I kept it in mind" is not an output. This is the ICM stage contract applied to
-  design, with the skills that help mapped one per stage rather than listed together.
+- **Seven stages, each with an artifact someone else can read**: plan review,
+  direction, tokens, library choice, variants, motion spec, review. A stage with no
+  artifact did not run; "I kept it in mind" is not an output. This is the ICM stage
+  contract applied to design, with the installed skills mapped to the stage where they
+  help rather than listed together.
 - **Four of those skills declare `disable-model-invocation: true`** in their
   frontmatter — an agent cannot invoke them, only the user can. Suggest them and say
   so; reporting a stage as complete through a skill that never ran is a false claim.
   Read the frontmatter of anything you plan to route to before promising it.
-- **The gate is checked against the rendered result, in a browser, not the source.**
+- **The gate is checked against the rendered result where it runs, not the source.**
   Contrast ratios, 44px touch targets, ≥16px text in any field the user types into
   (below that mobile Safari zooms the page on focus), `prefers-reduced-motion`,
-  visible focus, three viewports plus 200% zoom, and the empty/loading/error states.
-  Reading the CSS tells you what you wrote, not what shipped.
-- **Costs are named from what the skills read, not from what they say.** One design
-  skill reads four separate image-generation API keys; another reads a font-catalog
-  key; the image-direction skills name no backend of their own and will use whatever
-  the host provides. So no asset-generating stage runs unattended, and none runs in a
-  loop — the first unattended run spends real money.
+  visible focus, the viewports or OS text sizes for the medium, and the
+  empty/loading/error states. Reading the CSS tells you what you wrote, not what shipped.
+- **Costs are named from the line that reads the key, not from the line that mentions
+  it.** One design skill reads four separate image-generation API keys — `os.environ.get`
+  in its generator scripts, an operational read. The image-direction skills name no
+  backend of their own and will use whatever the host provides. So no asset-generating
+  stage runs unattended, and none runs in a loop: the first unattended run spends real
+  money. A fifth key was claimed here in the first draft and the reviewer removed it —
+  its only occurrences were in a test that *unsets* the variable, and the script that
+  would read it is not shipped. A grep hit is not a read.
 - Designer row in `references/quality-gates.md` §4, next to UX/Product, which asks a
   different question, plus the matching DoD box.
 

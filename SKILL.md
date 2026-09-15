@@ -168,9 +168,9 @@ Observe requested behavior. Run required project checks plus risk-appropriate
 regression/edge checks. Read the exact diff; remove debug leftovers and scope creep.
 Before committing run `bash "$AOS_DIR/bin/aos-security.sh"`; exit 2 means signals to
 resolve or explain. Name the trust boundary; a clean scan does not prove permissions.
-When the change is something a person looks at, the gate in `references/design.md` §5
-is part of verification: check the rendered result in a browser you drive, at the
-stated viewports, not the source.
+When the change is something a person looks at and is not a T0 one-line edit, the gate
+in `references/design.md` §5 is part of verification: check the rendered result where
+it runs — a browser you drive, a simulator, the exported file — not the source.
 
 T2/T3: read `references/quality-gates.md` for red team, applicable roles and DoD.
 **External gate: tier ≥ T2 AND risk ≥ HIGH.** Codex main calls Claude Code (Opus);

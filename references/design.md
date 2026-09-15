@@ -6,9 +6,23 @@ Load this when the work produces something a person looks at: a page, a componen
 a dashboard, a slide deck, a banner, an email template, a video frame. Not for a
 script, a migration, a cron job or an API with no interface.
 
-A one-line copy change or a single CSS value stays T0 and skips this file. The role
-is not a ceremony to perform on every commit; it is what stops a build from reading
-as assembled instead of designed.
+A one-line copy change or a single CSS value stays T0 and skips this file entirely —
+the gate included. The role is not a ceremony to perform on every commit; it is what
+stops a build from reading as assembled instead of designed.
+
+**Adopting it on something that already exists.** Most surfaces were built without a
+written direction, so "write the direction first" cannot be satisfied retroactively
+and must not be read as a reason to stop. On an existing surface, stage 1 is to write
+down the direction the shipped result already implies — the palette actually in use,
+the type actually in use, the radius actually in use — and to name what departs from
+it. That document is the direction from then on. Adopt it for the part you are
+touching; do not restyle the rest of the product because the role woke up.
+
+**Surfaces that are not web pages.** A native app, a slide deck, a PDF or a video
+frame is in scope, but the browser-specific checks in §5 are not. Substitute the
+equivalent for that medium — simulator or device at the OS text sizes for native,
+the export at final size for print and video — and use `ios-design-review` where it
+applies. A web replica of a native screen verifies the replica, not the product.
 
 ## 2. What the role owns
 
@@ -33,20 +47,29 @@ applied to design; see `references/orchestration.md` §ICM.
 
 | # | Stage | The artifact that must exist | Skills to draw on |
 |---|-------|------------------------------|-------------------|
-| 1 | **Direction** | A short `DIRECTION.md` (or a section in the plan): who looks at it, the one adjective it must earn, two visual references, the palette, the type pairing, the motion budget | `design-taste-frontend`, `high-end-visual-design`, and one style skill — `minimalist-ui`, `industrial-brutalist-ui`, `apple-design` |
+| 0 | **Plan review** | The plan reviewed by a designer's eye before anything is built | `plan-design-review` |
+| 1 | **Direction** | A short `DIRECTION.md` (or a section in the plan): who looks at it, the one adjective it must earn, two visual references, the palette, the type pairing, the motion budget | `design-consultation`, `design-taste-frontend`, `high-end-visual-design`, and one style skill — `minimalist-ui`, `industrial-brutalist-ui`, `apple-design` |
 | 2 | **Tokens** | Tokens in code, three layers: primitive → semantic → component. No raw hex in a component | `design-system`, `stitch-design-taste`; `brand` / `brandkit` when an identity is in play |
 | 3 | **Library** | A named choice per need, with the reason in one line | `pick-ui-library` (user-invoked), `ui-styling` for shadcn/Tailwind, Context7 for the actual API |
-| 4 | **Variants** | Two or three genuinely different builds of the hard screen, seen side by side | `prototype` (user-invoked) |
+| 4 | **Variants** | Two or three genuinely different builds of the hard screen, seen side by side | `prototype` (user-invoked), `design-shotgun` |
 | 5 | **Motion** | A motion spec: what animates, why, which property, which curve, how long | `animate`, `apple-design`, `emil-design-eng`, `animation-vocabulary`, `gsap-*` for GSAP work |
-| 6 | **Review** | A findings list, not an approval | `web-design-guidelines` (Web Interface Guidelines, a11y), `ui-ux-pro-max`, `review-animations` (user-invoked) |
+| 6 | **Review** | A findings list, not an approval | `web-design-guidelines` (Web Interface Guidelines, a11y), `ui-ux-pro-max`, `design-review`, `review-animations` (user-invoked) |
 
 Stages 1 and 2 are the ones that get skipped and the ones that decide the result.
 Skipping 4 is normal on a small change; skipping 6 is not.
 
-Four of these skills carry `disable-model-invocation: true` — `prototype`,
-`pick-ui-library`, `review-animations`, and `wayfinder` alongside them. **Suggest
-them and let the user run the slash command**; an agent cannot invoke them, and
-reporting a stage as done through a skill that never ran is a false claim.
+Three of these carry `disable-model-invocation: true` in their frontmatter —
+`prototype`, `pick-ui-library`, `review-animations`, with `wayfinder` alongside them.
+The gstack skills below do not. **Suggest the blocked ones and let the user run
+the slash command**; an agent cannot invoke them, and reporting a stage as done
+through a skill that never ran is a false claim. Read the frontmatter of anything you
+plan to route to before promising it, because the list changes with every install.
+
+`plan-design-review`, `design-consultation`, `design-shotgun`, `design-review` and
+`design-html` come from gstack, which installs them **under different names per host**:
+as written here on Claude, prefixed `gstack-` under `~/.codex/skills` on Codex. Empty
+directories of the same name may also sit in the shared skills root — inert leftovers,
+not the install. Resolve the name on the host you are actually running on.
 
 ## 4. The default direction
 
@@ -58,9 +81,11 @@ derived from interfaces that hold up, not a list of options.
   `#fff` / `#000`. Every other surface is a step from it. Exactly one saturated
   colour carries meaning; a second saturated colour means one of them is decoration.
   Semantic colours (success, warning, danger) are not the accent.
-- **Hierarchy by size and weight, not by colour.** The number is large and near-black;
-  its label is small, muted, and uppercase or plain — never both. When everything is
-  emphasised nothing is.
+- **Hierarchy by size and weight, not by colour.** The number is large and takes the
+  highest-contrast foreground the canvas allows — near-black on a light canvas,
+  near-white on a dark one. Its label is small, muted, and uppercase or plain — never
+  both. Muted means a step toward the canvas that still clears the contrast floor in
+  §5, not a grey chosen because it looked calm. When everything is emphasised nothing is.
 - **Cards, not boxes.** Radius 16–24px on containers, 8–12px on controls. One soft,
   wide, low-opacity shadow; a visible border *and* a shadow on the same element is a
   decision made twice.
@@ -84,12 +109,18 @@ derived from interfaces that hold up, not a list of options.
 Check these against the rendered thing, not the source. Reading the CSS tells you
 what you wrote; it does not tell you what shipped.
 
-- [ ] The direction was written **before** the first component, and the result still
-      matches it
+- [ ] A written direction exists and the result matches it. On new work it was written
+      before the first component; on an existing surface it is the one reconstructed in
+      §1, and the departures from it are named
 - [ ] Tokens exist and components consume them — `rg` finds no raw hex outside the
       token file
-- [ ] One accent. Count the saturated colours actually rendered
-- [ ] Type scale declared and respected; at most two families
+- [ ] The accent count matches the direction. Count the saturated colours actually
+      rendered, **excluding the semantic ones** (success, warning, danger, info) —
+      a red error next to a blue button is one accent, not two. The default direction
+      allows one, and a direction that allows more says which and why; an unexplained
+      second accent fails either way
+- [ ] Type scale declared and respected, and the family count matches the direction;
+      the default allows two
 - [ ] Body contrast ≥ 4.5:1, UI and large text ≥ 3:1 — measured, not judged by eye
 - [ ] Touch targets ≥ 44×44px; any input the user types into has ≥ 16px font, or
       mobile Safari zooms the page on focus
@@ -97,23 +128,33 @@ what you wrote; it does not tell you what shipped.
 - [ ] Focus is visible on every interactive element, and the keyboard reaches all of
       them in a sensible order
 - [ ] Icons come from one declared set; no emoji standing in for an icon
-- [ ] Checked at 375px, 768px and 1440px — and at 200% browser zoom
+- [ ] Web: checked at 375px, 768px and 1440px, and at 200% browser zoom. Native: on
+      the device or simulator at the smallest and largest OS text size. Print and
+      video: on the export, at final size
 - [ ] Empty, loading and error states exist and were looked at, not just the happy one
 - [ ] Long content, the longest real name, and the largest real number were pasted in
       and nothing broke
 
-**Measure it in a browser you drive.** A page that renders broken still returns a
-clean scan if nothing is measured on it. Screenshot the viewport, read the computed
-values, then judge.
+**Measure it where it actually runs** — a browser you drive for the web, the simulator
+or device for native, the exported file for print and video. A page that renders broken
+still returns a clean scan if nothing is measured on it. Screenshot it, read the
+computed values, then judge.
 
 ## 6. What it costs and what it sends
 
 Image and asset generation is where a design pipeline quietly spends money. Measured,
-not assumed: the `design` skill reads `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
-`ATLASCLOUD_API_KEY` and `MUAPI_API_KEY` for logo and identity generation;
-`ui-ux-pro-max` reads `GOOGLE_FONTS_API_KEY`. The image-direction skills
-(`imagegen-frontend-web`, `imagegen-frontend-mobile`, `banner-design`, `image-to-code`)
-name no backend of their own and will use whatever generator the host provides.
+not assumed: the `design` skill reads `GEMINI_API_KEY` / `GOOGLE_API_KEY`,
+`ATLASCLOUD_API_KEY` and `MUAPI_API_KEY` — `os.environ.get` in `scripts/logo/generate.py`
+and `scripts/cip/generate.py`, an operational read, not a line of setup documentation.
+The image-direction skills (`imagegen-frontend-web`, `imagegen-frontend-mobile`,
+`banner-design`, `image-to-code`) name no backend of their own and will use whatever
+generator the host provides.
+
+**A grep hit is not a read.** The first version of this section also claimed
+`ui-ux-pro-max` reads `GOOGLE_FONTS_API_KEY`. It does not: the only two occurrences in
+the installed copy are inside a test that *unsets* the variable and asserts an error
+message, and the script that would read it is not shipped. Finding a name is evidence
+that somebody typed it. Before naming a key, find the line that reads it.
 
 So: **never run an asset-generating stage unattended, and never in a loop.** The first
 unattended run spends real money. Before relying on any of them the first time, apply
