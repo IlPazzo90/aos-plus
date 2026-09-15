@@ -48,6 +48,17 @@ class DoctorTests(unittest.TestCase):
         after = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.base.rglob("*") if p.is_file()}
         self.assertEqual(before, after)
 
+    def test_backticked_evals_reference_must_exist(self):
+        # A README can promise evals/scenarios.json while the installer never ships it.
+        for root in self.roots:
+            (root / "SKILL.md").write_text(
+                "---\nname: aos\ndescription: test\n---\n"
+                "Read `references/check.md`. Run `evals/scenarios.json` for repeatable cases.\n")
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("RIFERIMENTO", result.stdout)
+        self.assertIn("evals/scenarios.json", result.stdout)
+
     def test_detects_missing_and_different_files(self):
         (self.roots[0] / "references/check.md").unlink()
         (self.roots[1] / "bin/check.py").write_text("print('different')\n")

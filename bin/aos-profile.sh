@@ -90,6 +90,7 @@ if has package.json; then
   has prisma && add_stack "prisma"
 fi
 is_python=0
+python_runner=0
 if has requirements.txt || has pyproject.toml || has setup.py || [ -n "$(anyfile_deep '*.py')" ]; then
   is_python=1
   python_cmd="$host_python"
@@ -172,6 +173,7 @@ if [ "$is_python" -eq 1 ] && [ -n "$host_python" ]; then
   python_tests=$("$host_python" -I "$SCRIPT_DIR/profile-python.py" "$python_cmd")
   if [ -n "$python_tests" ]; then
     printf '%s\n' "$python_tests"
+    python_runner=1
     [ -z "$test_cmd" ] && test_cmd="runner Python rilevato"
   fi
 fi
@@ -219,7 +221,13 @@ fi
 [ "$found_deploy" -eq 0 ] && echo "  (nessun bersaglio riconosciuto — chiedi prima di rilasciare)"
 echo
 
-if [ "$is_python" -eq 1 ] && [ -z "$test_cmd" ]; then
+# La barra minima dipende dall'assenza di un runner *Python*, non dall'assenza di
+# un comando di test qualsiasi: `make test` o `npm run test` possono non toccare
+# una riga del Python di questo progetto, e prima bastavano a farla sparire.
+if [ "$is_python" -eq 1 ] && [ "$python_runner" -eq 0 ]; then
+  if [ -n "$test_cmd" ]; then
+    echo "  '$test_cmd' non e' provato che verifichi il Python di questo progetto."
+  fi
   echo "  Nessun runner Python identificato. Verifica configurazione e istruzioni; barra minima:"
   echo "    ${python_cmd:-<interprete da individuare>} -m py_compile <file modificati>"
   echo "    ${python_cmd:-<interprete da individuare>} -c 'import <modulo>'"
@@ -274,8 +282,11 @@ WF_JSON=$(sgrep --include='*.json' -e '"connections"' | head -5)
 while IFS= read -r wf; do
   [ -n "$wf" ] || continue
   if [ -f "$wf" ] && grep -q '"nodes"' "$wf" 2>/dev/null; then
-    echo "  workflow n8n ($wf): attivarne uno rotto pubblica contenuti o manda"
-    echo "  messaggi veri. HIGH — non attivare senza dirlo"
+    # Il file dice che il workflow esiste, non che sia attivo sull'istanza: la
+    # severita' non si deduce dal riconoscimento. Prima usciva HIGH comunque.
+    echo "  workflow n8n ($wf): riconosciuto il file, non lo stato sull'istanza."
+    echo "  Se e' attivo, eseguirlo pubblica contenuti o manda messaggi veri:"
+    echo "  verifica attivazione e destinazione, e non attivarlo senza dirlo"
     risky=1; break
   fi
 done <<EOF

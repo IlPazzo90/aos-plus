@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.12.1, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.12.2, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation

@@ -82,6 +82,11 @@ report is a round that did not run — never a PASS.
 2. **A working opposite backend.** Claude CLI logged in when Codex is main;
    Codex CLI logged in when Claude is main. Other backends only on explicit user request; never silently substitute the
    principal or a same-family clone for the opposite reviewer.
+   **Capability is part of the precondition**, not a detail of the backend: a reviewer
+   counts only if it is at least comparable to the model that produced the work. A small
+   local model answering PASS is not evidence that the work is sound — most likely it did
+   not follow the brief. When the user asks for such a backend, run it and say in the
+   report how little the verdict weighs.
 3. **Where the log will end up.** Raw traces belong in ignored `tmp/verify/`.
    Commit a sanitized brief and review record under `docs/verifiche/<slug>/`.
    Check exclusion rules before writing traces; never publish sensitive review data.

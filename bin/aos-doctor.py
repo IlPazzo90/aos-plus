@@ -56,7 +56,7 @@ class Doctor:
     def references(self, root, relative, content):
         # Check literal Markdown links and AOS-owned backtick paths, not prose examples.
         candidates = re.findall(r"\[[^\]]*\]\(([^)]+)\)", content)
-        candidates += re.findall(r"`((?:references|bin|catalog)/[A-Za-z0-9_./-]+)`", content)
+        candidates += re.findall(r"`((?:references|bin|catalog|evals)/[A-Za-z0-9_./-]+)`", content)
         for candidate in set(candidates):
             candidate = candidate.strip()
             if candidate.startswith("<") and ">" in candidate:
@@ -69,7 +69,7 @@ class Doctor:
             path = Path(unquote(parsed.path))
             if path.is_absolute():
                 continue
-            base = root if str(path).startswith(("references/", "bin/", "catalog/")) else (root / relative).parent
+            base = root if str(path).startswith(("references/", "bin/", "catalog/", "evals/")) else (root / relative).parent
             if not (base / path).exists():
                 self.fail("RIFERIMENTO", f"{root}: {relative} -> {target}", "correggere il link o ripristinare la destinazione")
 

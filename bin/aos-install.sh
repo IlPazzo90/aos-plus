@@ -59,7 +59,8 @@ bin/skill-library.py
 bin/codex-hook-adapter.py
 catalog/core.json
 catalog/index.json
-catalog/skill-library/SKILL.md"
+catalog/skill-library/SKILL.md
+evals/scenarios.json"
 
 install_router() {
   local link="$(dirname "$TARGET")/skill-library"

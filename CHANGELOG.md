@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.12.2-public — 2026-09-15
+
+- `aos-profile.sh`: the Python minimum bar no longer disappears just because the project
+  declares some test command. `make test`, `npm run test` or a loose script dropped the
+  `py_compile` guidance even when none of them exercises the Python in the project. The
+  condition is now the absence of a *Python* runner; when a command exists but is not
+  proven to cover the Python, the profile says so instead of going quiet.
+- `aos-profile.sh`: recognizing an n8n workflow file says nothing about whether that
+  workflow is active on the instance. The line asserted HIGH from detection alone; it now
+  reports what it recognized and makes the consequence conditional on activation. The risk
+  signal stays.
+- `evals/scenarios.json` is installed and verified (`REQUIRED_FILES`, 22 files): the README
+  promised it while the installer never shipped it. `aos-doctor.py` checked backticked
+  paths only under `references/`, `bin/` and `catalog/`, so it could not see the broken
+  promise; `evals/` is now covered, with a test.
+- `references/quality-gates.md`: reviewer capability is back among the gate preconditions.
+  A reviewer counts only if it is at least comparable to the model that produced the work.
+- Validation: 47 tests (were 43) OK under Python 3.13, OK with 2 skipped under Python 3.9.6.
+  The four new tests fail against the previous code, which was checked before fixing it.
+
 ## 1.12.1-public — 2026-09-15
 
 - The two tests that call `refresh()` directly now skip, instead of erroring, when the running interpreter has no stdlib `tomllib`. The CLI path is unaffected: `ensure_refresh_runtime()` re-execs into an installed Python 3.11+. The 1.12.0 entry recorded "43 tests passed" without naming the interpreter.

@@ -55,6 +55,20 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("make test", output)
         self.assertNotIn("Nessun test python", output)
 
+    def test_non_python_test_command_keeps_the_python_minimum_bar(self):
+        # A declared test command is not evidence that it exercises the Python here.
+        for name, files in [("make", {"Makefile": "test:\n\techo checked\n", "app.py": ""}),
+                            ("npm", {"package.json": json.dumps({"scripts": {"test": "jest"}}), "app.py": ""}),
+                            ("scripts", {"scripts/verifica-deploy.sh": "echo ok\n", "app.py": ""})]:
+            with self.subTest(runner=name):
+                output = self.profile(files)
+                self.assertIn("py_compile", output)
+
+    def test_python_runner_replaces_the_minimum_bar(self):
+        output = self.profile({"tests/test_app.py": "import unittest\nclass Example(unittest.TestCase): pass\n"})
+        self.assertIn("-m unittest discover -s tests", output)
+        self.assertNotIn("py_compile", output)
+
     def test_lockfiles_select_matching_commands(self):
         for lock, manager in [("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun"), ("bun.lockb", "bun")]:
             with self.subTest(lock=lock):
@@ -100,6 +114,13 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("Supabase", output)
         self.assertNotIn("rischio >= HIGH", output)
         self.assertNotIn("ogni modifica di schema o delete e' CRITICAL", output)
+
+    def test_n8n_workflow_is_reported_without_asserting_severity(self):
+        # Recognizing a workflow file says nothing about whether it is active.
+        output = self.profile({"Editorial Flow.json": json.dumps({"nodes": [], "connections": {}})})
+        self.assertIn("workflow n8n", output)
+        self.assertIn("Editorial Flow.json", output)
+        self.assertNotIn("HIGH", output)
 
 
 if __name__ == "__main__":
