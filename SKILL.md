@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.14.0"
+  version: "1.15.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman e RTK, processo proporzionato."
 ---
 
@@ -85,6 +85,11 @@ before dependent work; continue independent authorized work.
 
 ## 3. Spend context deliberately
 
+Three different surfaces leak tokens, and each has its own tool. **Caveman** shortens
+what you write to the user, **RTK** shortens what the tools write to you, **ponytail**
+shortens what you write to the repository. The third is the one that gets skipped, and
+it is the only one whose savings are permanent.
+
 - **Caveman:** load once; preserve user level/opt-out, otherwise **lite**. Italian,
   exact errors, negations, uncertainty, numbers and required updates survive.
   Code, documents and review records use normal prose. Missing: concise fallback.
@@ -92,6 +97,12 @@ before dependent work; continue independent authorized work.
   supported filters for noisy discovery/status/test output. Codex calls CLI
   explicitly unless a compatible hook is verified; Claude may already rewrite.
   Never double-prefix, auto-run `rtk init`, or copy hook JSON between hosts.
+- **Ponytail:** the cheapest code is the code not written. Run it **before building at
+  T2/T3, and whenever the answer adds a dependency, a layer of abstraction or a
+  configuration option** — not when the solution "feels" oversized, which is a judgement
+  the author never makes against themselves. It has levels like Caveman (lite, full,
+  ultra) and it owns the decision, not the veto: if it says delete something the task
+  needs, the task wins and the reason is written down.
 - **Exact evidence:** use unfiltered reads or `rtk proxy` for instructions, edited
   source, final diffs, protocol JSON and absence/exact-match checks. A filtered
   summary is not proof of absence. Recover error details and preserve exit codes.
@@ -143,7 +154,7 @@ Choose one skill per need; domain specialists still apply.
 | T2/T3 completion | `superpowers:verification-before-completion` |
 | T2+ AND HIGH+ | `verify-agent`, opposite model family |
 | Finished branch integration | `superpowers:finishing-a-development-branch` |
-| Solution looks larger than the problem | `ponytail` before building; `ponytail-review` on a diff, `ponytail-audit` on a repo |
+| Before building at T2/T3, or when the answer adds a dependency, an abstraction or an option | `ponytail`; `ponytail-review` on the finished diff, `ponytail-audit` on a repo only when asked |
 | Library, framework or API surface | Context7, never a remembered signature |
 | Prose to publish | `humanizer` for AI tells; the writing/design guideline skills for review |
 | **Anything a person will look at** — page, component, dashboard, deck, banner | `references/design.md`: the UI/UX role, its stages and its gate |

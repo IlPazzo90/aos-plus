@@ -149,6 +149,7 @@ bureaucracy.
 | **UX/Product** | Does this actually solve the user's problem, or just the ticket? |
 | **Designer (UI/UX)** | Would someone who designs for a living read this as designed, or as assembled? (`design.md`) |
 | **Future maintainer** | What will surprise the next person, and is it written down? |
+| **CTO** | Is this worth owning for the next two years, and what does keeping it alive cost? Only at T3 or when a choice locks in a dependency, a vendor or a data model — its output is the one next-investment advisory in `output-contract.md`, not a fourth opinion on the diff |
 
 Synthesise findings into one list. Do not write one report per role.
 
@@ -171,7 +172,10 @@ unchecked box is not a failure — an unverified check is.
       declared, with the reason
 - [ ] Where it ran: `BRIEF.md` and `REVIEW-LOG.md` moved out of `tmp/` into
       `docs/verifiche/<slug>/` and **committed** — a verdict left in an ignored
-      directory is a verification that did not happen
+      directory is a verification that did not happen. Check it, do not remember it:
+      `ls -d tmp/verify/*/ 2>/dev/null` must come back empty, or each one it lists is a
+      record nobody will find. Counted once across four active repositories: 73 review
+      logs still sitting in ignored `tmp/`
 - [ ] Performance checked where it matters
 - [ ] Where a person looks at the result: the design gate in `references/design.md` §5
       was run against the rendered thing where it runs — a browser for the web, a

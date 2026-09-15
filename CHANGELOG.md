@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.15.0-public — 2026-09-15
+
+An audit across four axes — design, token cost, context organization, orchestration —
+with the measurement kept next to each finding. The first two corrections come from
+running the design gate against a real product rather than from reasoning about it.
+
+**Design.** The §5 gate never said to check **both themes**. On the first product it was
+run against, all five contrast failures found existed **only in the light theme**, which
+had never once been measured. A target also has **two axes**: a min-height utility passed
+a height-only check while the element was 11px wide, twice, on two different elements.
+The 16px input rule now says `any-pointer`, not `pointer` — `pointer` describes the
+primary pointer, so a tablet with a keyboard attached reports fine and keeps the small
+text it is being typed into with a thumb.
+
+**New section: how to measure.** A measurement that finds nothing and a measurement that
+*cannot* find anything produce the same zero. It is the empty-round trap from
+`quality-gates.md` §3 one floor down, and it is answered the same way: plant the defect
+the probe is meant to catch, confirm it screams, then remove it. Four traps documented
+with their countermeasure — an element's rect is not its touch target, computed colours
+come back in `oklch`/`lab` rather than `rgb()`, a rule nested in `@layer` escapes a
+non-recursive CSSOM walk, and the tool's viewport is not the user's. When the driven
+browser cannot resize below its own width or apply page zoom, the 375px and 200% boxes
+are not ticked: the substitution is declared.
+
+**Ponytail** was one routing line behind a trigger nobody fires against themselves — "the
+solution looks larger than the problem" — and absent from the file about spending less.
+It is now framed with the other two savers, because they work on three different
+surfaces: Caveman shortens what goes to the user, RTK what the tools send back, ponytail
+what lands in the repository. Only the third saves anything permanently. Its trigger is
+mechanical now: before building at T2/T3, and whenever the answer adds a dependency, an
+abstraction or a configuration option.
+
+**Stale catalog.** A catalog hit is a claim about a path, not proof the skill is there:
+one measured install had 20 of 399 entries pointing at a directory a plugin had since
+moved out of. A dead path means the index is old — never that the capability is missing.
+
+**A commit is not an install.** Editing one host's copy leaves the other on the old
+version, and the drift is invisible from inside either session. After changing AOS,
+install for the other host in the same intervention and confirm with `aos-doctor.py`.
+
+**Review logs.** The gate said to move `BRIEF.md` and `REVIEW-LOG.md` out of `tmp/`, and
+nothing checked. Counted once across four active repositories: **73 logs still sitting in
+ignored directories**. The Definition of Done box now carries the command that proves it.
+
+**CTO role** added to the multi-role table with its limit written down: T3 only, or when
+a choice locks in a dependency, a vendor or a data model. Its output is the single
+next-investment advisory, not a fourth opinion on the diff.
+
+
 ## 1.14.0-public — 2026-09-15
 
 **Reviewed across four adversarial rounds before this line was written.** Ten findings,

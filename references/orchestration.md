@@ -24,7 +24,12 @@ Below the external-gate threshold, no routine cross-model call.
 ## Availability and host adaptation
 
 1. Use the current catalog. If absent, search through skill-library once for the
-   needed capability; read its original SKILL.md, following symlinks.
+   needed capability; read its original SKILL.md, following symlinks. **A catalog hit
+   is a claim about a path, not proof the skill is there**: the index is generated once
+   and goes stale when a collection moves — one measured install had 20 of 399 entries
+   pointing at a skills directory a plugin had since moved out of. A dead path means the
+   catalog is old, never that the capability is missing: check the host's live catalog
+   before saying so.
 2. Translate host operations, not names literally: Read/Grep/Bash to local tools;
    Agent/Task only to authorized runtime delegation; questions to host input tools.
 3. Check model-invocation restrictions. A user-only command cannot be launched
@@ -35,6 +40,11 @@ Below the external-gate threshold, no routine cross-model call.
 AOS is user-maintained. Do not edit third-party skills or install speculative
 replacements. Claude and Codex copies of AOS are separate installations; use
 `bin/aos-install.sh --host claude|codex --from <source>` to update with backup.
+**Editing one host's copy leaves the other on the old version.** A commit is not an
+install: after changing AOS, run the installer for the *other* host in the same
+intervention and confirm with `aos-doctor.py`, which compares the two and reports the
+files that differ. This is how one host ends up reading an instruction the other does
+not have, and it is invisible from inside either session.
 Do not transplant host permissions/hooks. Use `--dry-run` and verify the selected
 host; preserve unrelated target state.
 

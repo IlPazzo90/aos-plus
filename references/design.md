@@ -121,9 +121,20 @@ what you wrote; it does not tell you what shipped.
       second accent fails either way
 - [ ] Type scale declared and respected, and the family count matches the direction;
       the default allows two
-- [ ] Body contrast ≥ 4.5:1, UI and large text ≥ 3:1 — measured, not judged by eye
-- [ ] Touch targets ≥ 44×44px; any input the user types into has ≥ 16px font, or
-      mobile Safari zooms the page on focus
+- [ ] **Both themes, if the product has two.** Light and dark are not the same design
+      with the lightness flipped, and the one nobody works in is the one that fails.
+      On the first product this gate was run against, five contrast failures existed
+      **only in the light theme**, which had never once been measured
+- [ ] Body contrast ≥ 4.5:1, UI and large text ≥ 3:1 — measured, not judged by eye,
+      and measured against the surface the element actually sits on: a chip inside a
+      card inside a page has three candidate backgrounds and only one of them is right
+- [ ] Touch targets ≥ 44×44px **on both axes**, measured on the element holding the
+      shortest real content. Height usually comes from padding and passes; width comes
+      from the text and does not. A row link on a two-letter surname measured 11×44 and
+      passed a height-only check twice
+- [ ] Any input the user types into has ≥ 16px font wherever a finger can reach it, or
+      mobile Safari zooms the page on focus. `any-pointer`, not `pointer`: `pointer`
+      describes the *primary* pointer, so a tablet with a keyboard reports fine
 - [ ] Every animation honours `prefers-reduced-motion`
 - [ ] Focus is visible on every interactive element, and the keyboard reaches all of
       them in a sensible order
@@ -139,6 +150,31 @@ what you wrote; it does not tell you what shipped.
 or device for native, the exported file for print and video. A page that renders broken
 still returns a clean scan if nothing is measured on it. Screenshot it, read the
 computed values, then judge.
+
+### Prove the detector before you believe its zeros
+
+A measurement that finds nothing and a measurement that cannot find anything produce the
+same output. This is the empty-round trap from `quality-gates.md` §3, one level down:
+there an unanswered round looks like a PASS, here a broken probe looks like a clean page.
+So before reporting a zero, **plant the defect the probe is meant to catch and confirm it
+screams** — then remove it and confirm the page is byte-identical. Four traps that each
+return a confident zero:
+
+- **A rect is not a touch target.** `getBoundingClientRect()` describes the element; what
+  the finger hits is whatever `document.elementFromPoint` returns. Grow from the centre
+  until it stops answering, and scroll the element into view first — in a background tab
+  the rect is all zeros.
+- **Colours do not come back as you wrote them.** `getComputedStyle` hands back `oklch`
+  or `lab`, so a contrast routine expecting `rgb()` silently reads nothing. Paint the
+  value into a 1×1 canvas and read the pixel.
+- **A rule can be present and never apply.** Walk the CSSOM recursively: a top-level pass
+  misses everything nested inside `@layer` and `@media`, and reports zero matches for a
+  rule that is right there.
+- **The tool's viewport is not the user's.** When the driven browser cannot resize below
+  its own width or apply page zoom — most cannot — do not tick the 375px or 200% box.
+  Apply by hand the declarations that breakpoint computes, measure that, and **say in the
+  report that it is a substitution**. A box ticked by a check that could not run is worse
+  than an empty box.
 
 ## 6. What it costs and what it sends
 

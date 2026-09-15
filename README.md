@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.14.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.15.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -19,7 +19,10 @@ bash bin/aos-install.sh --host claude --from "$PWD"
 ```
 
 Targets are `~/.agents/skills/aos` and `~/.claude/skills/aos`. Existing installations
-are backed up. Install only the hosts you use; restart the agent session to refresh
+are backed up. Each run touches only the host you named, which is where the two copies
+drift: **a commit is not an install.** After changing AOS, run the installer for the
+other host in the same sitting and confirm with `python3 bin/aos-doctor.py`, which
+compares the two and names the files that differ. Install only the hosts you use; restart the agent session to refresh
 skill discovery. Invoke `$aos` in Codex or `/aos` in Claude Code. Keep host-specific
 permissions and hooks separate. Installation does not grant deployment authority.
 
@@ -61,8 +64,11 @@ Tests do not call model providers or prove cross-model behavior.
 
 ## Optional integrations
 
-RTK, Caveman, Superpowers, verify-agent and the design skills are discovered separately,
-not bundled. `references/design.md` lists the skills each stage can use; where none are
+RTK, Caveman, ponytail, Superpowers, verify-agent and the design skills are discovered
+separately, not bundled. The three cost tools work on three different surfaces and are
+easy to confuse: Caveman shortens what the agent writes to you, RTK shortens what the
+shell writes back to the agent, ponytail shortens what the agent writes into your
+repository. Only the last one saves anything after the session ends. `references/design.md` lists the skills each stage can use; where none are
 installed, the stages and the gate still apply — they cost more attention, not less
 correctness.
 Missing dependencies must be reported according to the applicable gate. No external
