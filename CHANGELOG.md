@@ -11,9 +11,13 @@
   not documentation: it ships scripts, may require paid API keys and may send data off
   the machine, with the agent's own permissions. The check has four points — what it
   executes, what it asks for, where it sends, what it can reach — and comes from
-  measuring a real install: scripts inside folders that looked like plain Markdown,
-  nine distinct API keys expected across image, music and speech generation, and a
-  deploy helper that uploads the project directory to a third-party endpoint.
+  measuring a real install: 213 `.mjs`, 42 `.py` and 2 `.sh` inside folders that read
+  as plain Markdown, eleven distinct API keys expected across image, music and speech
+  generation, a deploy helper that uploads the project directory to a third-party
+  endpoint, and analytics that post to a third-party product-analytics host with the
+  project key embedded in the skill. The check says to follow symlinks: an installer
+  that writes one copy and links the rest makes an unqualified `find` report zero
+  scripts on the path the agent actually loads.
 - A pre-commit check now refuses to publish content that names the maintainer, their
   machine or their clients: this distribution is assembled by copying files out of a
   private repository, and that copy is where sanitization gets skipped. Enable it in a

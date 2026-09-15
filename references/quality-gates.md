@@ -206,9 +206,12 @@ they run with full agent permissions."*
 
 Check a newly installed capability before relying on it, and record what you found:
 
-1. **What it executes.** `find <dir> -type f \( -name '*.sh' -o -name '*.py' -o -name
-   '*.mjs' -o -name '*.js' \)`. A set of Markdown files is instructions; a set of
-   scripts is software you did not review. Count them before you trust the folder.
+1. **What it executes.** `find -L <dir> -type f \( -name '*.sh' -o -name '*.py' -o
+   -name '*.mjs' -o -name '*.js' \)`. A set of Markdown files is instructions; a set
+   of scripts is software you did not review. Count them before you trust the folder,
+   and count them on every path the agent can reach: an installer that writes one copy
+   and symlinks the rest leaves `find` without `-L` reporting zero scripts on the
+   linked path — zero on exactly the directory the agent loads.
 2. **What it asks for.** Grep the tree for `API_KEY`, `TOKEN`, `SECRET`. Credentials
    the skill expects are costs and blast radius: a media skill wanting four different
    generation keys will spend real money the first time it runs unattended.
