@@ -58,7 +58,9 @@ correlated with its output. A clean red team is weak evidence, not strong eviden
 conversation — and is prompted to prove the work wrong. Every finding it returns is
 then verified mechanically before it is accepted or refuted. Max 6 rounds, closed early
 on convergence or on a sterile round. A quota error, an interrupted stream or an empty
-report is a round that did not run — never a PASS.
+report is a round that did not run — never a PASS. A quota error is the one case with a
+second path: the round is retried on a reserve model and comes back marked `degraded`,
+which is a weaker thing than a round — see precondition 2.
 
 ### When it fires
 
@@ -87,6 +89,19 @@ report is a round that did not run — never a PASS.
    local model answering PASS is not evidence that the work is sound — most likely it did
    not follow the brief. When the user asks for such a backend, run it and say in the
    report how little the verdict weighs.
+
+   **A spent account is not a finished review.** When the reviewer's quota runs out
+   mid-gate, `verify-agent` retries the round once on a reserve model and marks it
+   `degraded` — and the weighting is asymmetric, which is the part worth remembering:
+
+   - a **finding** from the reserve model counts in full, because every finding is
+     confirmed mechanically by the arbiter anyway, so who found it does not matter;
+   - a **PASS** from it does not close the gate, because the absence of findings is
+     exactly what depends on the strength of whoever looked.
+
+   So a gate whose only PASS came from the reserve is **VERIFICATO CON RISERVE** at
+   best, never VERIFICATO, and the verdict names the model. Do not re-run the earlier
+   rounds on the reserve to reach convergence: that manufactures a PASS.
 3. **Where the log will end up.** Raw traces belong in ignored `tmp/verify/`.
    Commit a sanitized brief and review record under `docs/verifiche/<slug>/`.
    Check exclusion rules before writing traces; never publish sensitive review data.
@@ -109,7 +124,8 @@ has a bigger problem than verification.
 
 ### Reading the verdict
 
-- **VERIFICATO** — a real gate passed. Say so.
+- **VERIFICATO** — a real gate passed. Say so. Not available when the PASS came from a
+  `degraded` round: check `status.json` before writing this word.
 - **VERIFICATO CON RISERVE** — the reservations go in the report's `## Rischi aperti`,
   one per line. They do not disappear because the verdict was not red.
 - **INCOMPLETO** — a required backend or packet did not complete. Preserve completed

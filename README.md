@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.15.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.15.1, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -63,6 +63,11 @@ other host. Use the selected-host installer verification when only one is instal
 Tests do not call model providers or prove cross-model behavior.
 
 ## Optional integrations
+
+When the reviewer's quota runs out mid-gate, the round is retried once on a reserve
+model and comes back marked `degraded`: **its findings count, its PASS does not**, because
+the absence of defects is what depends on the strength of whoever looked. A gate closed
+that way is VERIFICATO CON RISERVE, never VERIFICATO.
 
 RTK, Caveman, ponytail, Superpowers, verify-agent and the design skills are discovered
 separately, not bundled. The three cost tools work on three different surfaces and are

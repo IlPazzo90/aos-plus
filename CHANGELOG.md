@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.15.1-public — 2026-09-15
+
+**A spent reviewer account is not a finished review.** Until now a quota running out
+mid-gate simply ended the verification: nothing distinguished "the reviewer found
+nothing" from "the reviewer's account is empty", and both arrived as a failed round.
+The round is now retried once on a reserve model when the provider's own usage-limit
+wording is present — only on that wording, because retrying a crashed or silent round on
+a weaker model is how a broken round turns into a weak PASS.
+
+The weighting is asymmetric, and that is the part worth keeping:
+
+- a **finding** from the reserve model counts in full, because the arbiter confirms every
+  finding mechanically anyway, so who found it does not matter;
+- a **PASS** from it does not close the gate, because the absence of findings is exactly
+  what depends on the strength of whoever looked.
+
+A gate whose only PASS came from the reserve is VERIFICATO CON RISERVE, never VERIFICATO,
+and the verdict names the model. The earlier rounds are not re-run on the reserve to
+reach convergence: that manufactures a PASS.
+
+
 ## 1.15.0-public — 2026-09-15
 
 An audit across four axes — design, token cost, context organization, orchestration —
