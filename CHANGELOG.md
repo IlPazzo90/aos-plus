@@ -33,16 +33,26 @@ mechanical now: before building at T2/T3, and whenever the answer adds a depende
 abstraction or a configuration option.
 
 **Stale catalog.** A catalog hit is a claim about a path, not proof the skill is there:
-one measured install had 20 of 399 entries pointing at a directory a plugin had since
-moved out of. A dead path means the index is old — never that the capability is missing.
+one measured install had 20 of 399 entries pointing into a plugin cache that no longer
+existed, while every one of those skills was installed and reachable elsewhere. A dead
+path means the index is old — never that the capability is missing. The index is not
+repaired by hand: it is generated from a runtime snapshot, and fixing rows manually
+leaves it diverging from the next regeneration. Regenerate, or leave it stale and say so.
 
 **A commit is not an install.** Editing one host's copy leaves the other on the old
 version, and the drift is invisible from inside either session. After changing AOS,
 install for the other host in the same intervention and confirm with `aos-doctor.py`.
 
-**Review logs.** The gate said to move `BRIEF.md` and `REVIEW-LOG.md` out of `tmp/`, and
-nothing checked. Counted once across four active repositories: **73 logs still sitting in
-ignored directories**. The Definition of Done box now carries the command that proves it.
+**Review logs, and how to count them.** The gate said to move `BRIEF.md` and
+`REVIEW-LOG.md` out of `tmp/`, and nothing checked. Counting what sits under `tmp/` turned
+out to be the wrong count — the working copy stays next to the one that was preserved. Of
+73 directories across four repositories, **71 were already saved and 2 were not**. The
+Definition of Done box now compares the slugs instead of checking for emptiness.
+
+**An update is an install.** §7 checked a capability once, at install, and a skill that
+updated afterwards shipped new scripts under the trust the old ones earned. Now: not a
+re-audit every time, but a checksum list compared against the copy already checked, which
+reopens the question only when the executables changed.
 
 **CTO role** added to the multi-role table with its limit written down: T3 only, or when
 a choice locks in a dependency, a vendor or a data model. Its output is the single

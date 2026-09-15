@@ -172,10 +172,20 @@ unchecked box is not a failure — an unverified check is.
       declared, with the reason
 - [ ] Where it ran: `BRIEF.md` and `REVIEW-LOG.md` moved out of `tmp/` into
       `docs/verifiche/<slug>/` and **committed** — a verdict left in an ignored
-      directory is a verification that did not happen. Check it, do not remember it:
-      `ls -d tmp/verify/*/ 2>/dev/null` must come back empty, or each one it lists is a
-      record nobody will find. Counted once across four active repositories: 73 review
-      logs still sitting in ignored `tmp/`
+      directory is a verification that did not happen. Check it, do not remember it —
+      and check the right thing. **Counting what sits in `tmp/` does not count what was
+      lost**, because the working copy usually stays next to the one that was preserved.
+      Compare the slugs:
+
+      ```sh
+      for d in tmp/verify/*/; do
+        [ -d "docs/verifiche/$(basename "$d")" ] || echo "NEVER SAVED: $d"
+      done
+      ```
+
+      Counted once across four active repositories: 73 directories under ignored `tmp/`,
+      of which **71 were already preserved and 2 were not**. The first version of this
+      line called all 73 lost
 - [ ] Performance checked where it matters
 - [ ] Where a person looks at the result: the design gate in `references/design.md` §5
       was run against the rendered thing where it runs — a browser for the web, a
@@ -234,6 +244,21 @@ Check a newly installed capability before relying on it, and record what you fou
 None of this proves a capability is safe. It establishes what it *can* do, which is
 the part a clean scan never gives you. Do not extend an authorization to a new
 capability because a similar one already had it.
+
+**An update is an install.** The check above fires once, at install, and a skill that
+updates afterwards ships new scripts under the trust the old ones earned — silently,
+because nothing announces it. Do not re-audit on every update; re-audit when the answer
+to point 1 or 2 changed. That is one command against the copy you already checked:
+
+```sh
+find -L <dir> -type f \( -name '*.sh' -o -name '*.py' -o -name '*.mjs' -o -name '*.js' \) \
+  -exec shasum {} + | sort -k2 > /tmp/<name>.now
+diff /tmp/<name>.checked /tmp/<name>.now
+```
+
+A new script, or a changed one, puts the capability back at point 1. An unchanged list
+means only that the executables are the same — it says nothing about what the Markdown
+now instructs the agent to do with them.
 
 ## Anti-patterns this file exists to prevent
 

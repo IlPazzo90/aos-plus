@@ -27,9 +27,12 @@ Below the external-gate threshold, no routine cross-model call.
    needed capability; read its original SKILL.md, following symlinks. **A catalog hit
    is a claim about a path, not proof the skill is there**: the index is generated once
    and goes stale when a collection moves — one measured install had 20 of 399 entries
-   pointing at a skills directory a plugin had since moved out of. A dead path means the
-   catalog is old, never that the capability is missing: check the host's live catalog
-   before saying so.
+   pointing into a plugin cache that no longer existed, while every one of those skills
+   was installed and reachable elsewhere. A dead path means the catalog is old, never
+   that the capability is missing: check the host's live catalog before saying so.
+   **Do not hand-edit the index to make it look fresh:** it is generated from a runtime
+   snapshot, and repairing rows by hand leaves it diverging from what the next
+   regeneration produces. Regenerate it, or leave it stale and say so.
 2. Translate host operations, not names literally: Read/Grep/Bash to local tools;
    Agent/Task only to authorized runtime delegation; questions to host input tools.
 3. Check model-invocation restrictions. A user-only command cannot be launched
