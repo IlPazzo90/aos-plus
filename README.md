@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.13.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.14.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -22,6 +22,22 @@ Targets are `~/.agents/skills/aos` and `~/.claude/skills/aos`. Existing installa
 are backed up. Install only the hosts you use; restart the agent session to refresh
 skill discovery. Invoke `$aos` in Codex or `/aos` in Claude Code. Keep host-specific
 permissions and hooks separate. Installation does not grant deployment authority.
+
+## The UI/UX role
+
+When a change is something a person looks at, `references/design.md` adds a designer to
+the process rather than leaving the appearance to whatever the implementer reaches for
+first. Seven stages, each owing one artifact somebody can inspect: plan review, a written
+direction, tokens, library choice, variants, motion, and a final review that returns
+findings rather than an approval. It routes to design skills that may already be present
+in the host — the file names them per stage — and it names the ones a model is not allowed
+to invoke, which the user runs instead.
+
+Its acceptance gate is checked on the **rendered** result: a driven browser, a simulator,
+the exported file. Not the source, and not one theme only — light and dark do not behave
+the same way. Contrast, target size, field font size on touch, focus, reduced motion and
+the declared direction are each a checkable line. A stage with no artifact was not
+executed, and a gate item checked by reading the CSS was not checked.
 
 ## Context and verification
 
@@ -45,7 +61,10 @@ Tests do not call model providers or prove cross-model behavior.
 
 ## Optional integrations
 
-RTK, Caveman, Superpowers and verify-agent are discovered separately, not bundled.
+RTK, Caveman, Superpowers, verify-agent and the design skills are discovered separately,
+not bundled. `references/design.md` lists the skills each stage can use; where none are
+installed, the stages and the gate still apply — they cost more attention, not less
+correctness.
 Missing dependencies must be reported according to the applicable gate. No external
 review is supplied merely by installing AOS. Do not copy another user's permissions.
 
