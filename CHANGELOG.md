@@ -56,6 +56,18 @@ Checks: 61 tests (5 new, one per introduced behaviour), `bash -n`, `py_compile`,
 mechanical security pass, and both host installations confirmed identical by
 `aos-doctor.py`.
 
+**Two limits found by using it once**, written down here rather than discovered in six
+months. The first real record's `elapsed_seconds` does not cover the work: the rule
+requiring it was written during that work, so `start` ran after the implementation was
+finished. That circumstance will not repeat, but nothing in the code forces `start` to
+actually sit at the beginning. The second matters more: **the outcome is written by the
+author before the user has spoken.** `accepted` there means "delivered without
+rejection", not "accepted", and the record is immutable by construction — it cannot be
+completed twice. As long as the author closes that axis, it measures their own opinion of
+their own work, which is the judgement this release set out to replace. The remedy is not
+in this version: either the record stays open until the user's next turn, or the outcome
+is written when the user answers.
+
 ## 1.15.1-public — 2026-09-15
 
 **A spent reviewer account is not a finished review.** Until now a quota running out
