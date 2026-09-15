@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.18.0, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.19.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -64,8 +64,10 @@ python3 bin/aos-doctor.py
 The doctor checks the Codex link and the maintained files of the one installation; a
 real directory on the Codex path is reported as `COPIA` even when its contents are
 identical, because a copy is a Codex that will read an older AOS the day the
-installation changes. Without Codex, ignore that one line. Tests do not call model
-providers or prove cross-model behavior.
+installation changes. Without Codex, ignore that one line. The doctor also warns,
+without failing, when `tmp/` exceeds 200 MB and, if a `DISTRIBUTION` file names a
+checkout of a derived edition, when that checkout is at another version. Tests do not
+call model providers or prove cross-model behavior.
 
 You do not have to remember to run the doctor: `aos-profile.sh`, which runs at the
 start of the work anyway, prints the loaded AOS version and the state of the link.
@@ -77,7 +79,7 @@ Every T2/T3 task closes with a record, not an impression:
 ```sh
 RECORD="docs/misure/$(date -u +%F)-short-slug.json"
 python3 bin/aos-measure.py start --record "$RECORD" \
-  --task "What was asked" --runtime codex --model configured --version 1.18.0
+  --task "What was asked" --runtime codex --model configured --version 1.19.0
 python3 bin/aos-measure.py finish --record "$RECORD" --outcome delivered --corrections 1
 # later, once the user has said what they think of it:
 python3 bin/aos-measure.py judge --record "$RECORD" --verdict accepted

@@ -137,6 +137,43 @@ class Doctor:
         else:
             self.fail("MANCANTE", str(codex_root), f"creare il link a {claude_root} con bash bin/aos-install.sh --host codex --link")
 
+    TMP_WARN_BYTES = 200 * 1024 * 1024
+
+    def distribution(self, root):
+        # Optional: a DISTRIBUTION file naming the public edition's checkout. "Same
+        # intervention" had no check, and 1.17.0 never reached it.
+        marker = root / "DISTRIBUTION"
+        if not marker.is_file():
+            return
+        try:
+            target = Path(marker.read_text().strip()).expanduser()
+            here = (root / "VERSION").read_text().strip()
+            there = (target / "VERSION").read_text().strip() if (target / "VERSION").is_file() else None
+        except (OSError, UnicodeError):
+            self.warn("DISTRIBUZIONE", str(marker), "file illeggibile: correggerlo o rimuoverlo")
+            return
+        if there is None:
+            self.warn("DISTRIBUZIONE", str(target), "checkout assente: correggere DISTRIBUTION o clonare la distribuzione")
+        elif there != here:
+            self.warn("DISTRIBUZIONE", f"{target} è a {there}, questa installazione a {here}", "portare le modifiche alla distribuzione nello stesso intervento")
+
+    def tmp_weight(self, root):
+        # tmp/ is ignored by Git and nobody counts it: 936 MB sat in one clone's tmp/
+        # until the directory was backed up whole. Size, not age, because a single
+        # research dump is what fills it.
+        tmp = root / "tmp"
+        if not tmp.is_dir():
+            return
+        total = 0
+        for path in tmp.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        if total > self.TMP_WARN_BYTES:
+            self.warn("TMP", f"{tmp} pesa {total // (1024 * 1024)} MB", "è ignorata da Git: archiviare o cancellare ciò che non serve")
+
     def run(self, codex_root, claude_root):
         print(f"Python {sys.version.split()[0]}: {sys.executable}; sola verifica locale")
         if sys.version_info < (3, 9):
@@ -149,6 +186,8 @@ class Doctor:
             raw = self.read(claude_root, relative)
             if raw is not None:
                 self.check_file(claude_root, relative, raw)
+        self.distribution(claude_root)
+        self.tmp_weight(claude_root)
         for root in (codex_root, claude_root):
             router = root.parent / "skill-library"
             try:
@@ -161,7 +200,7 @@ class Doctor:
         print("Frontmatter: presenza campi; sintassi YAML completa non verificata (usare quick_validate).")
         print(f"CLI opzionali (solo PATH): {runtime}. Autenticazione e backend non verificati.")
         print(f"{'ERRORE' if self.errors else 'OK'}: {len(maintained)} file mantenuti in {claude_root}, "
-              f"{self.errors} anomalie, {self.warnings} avvisi di catalogo; nessuna modifica.")
+              f"{self.errors} anomalie, {self.warnings} avvisi; nessuna modifica.")
         return 1 if self.errors else 0
 
 

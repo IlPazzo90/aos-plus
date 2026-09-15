@@ -123,6 +123,41 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("AVVISO CATALOGO", result.stdout)
         self.assertIn("OK", result.stdout)
 
+    def test_a_distribution_left_behind_is_a_warning_at_the_source(self):
+        # 1.17.0 never reached the public edition: "same intervention" had no check.
+        codex, claude = self.roots
+        (claude / "VERSION").write_text("1.19.0\n")
+        public = self.base / "public"
+        public.mkdir()
+        (public / "VERSION").write_text("1.16.0\n")
+        (claude / "DISTRIBUTION").write_text(str(public) + "\n")
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AVVISO DISTRIBUZIONE", result.stdout)
+        self.assertIn("1.16.0", result.stdout)
+        (public / "VERSION").write_text("1.19.0\n")
+        self.assertNotIn("DISTRIBUZIONE", self.run_doctor().stdout)
+        (claude / "DISTRIBUTION").write_text(str(self.base / "nowhere") + "\n")
+        self.assertIn("checkout assente", self.run_doctor().stdout)
+        # Bytes that are not text are a warning too, not a traceback (found by review).
+        (claude / "DISTRIBUTION").write_bytes(b"\xff\n")
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("file illeggibile", result.stdout)
+
+    def test_a_heavy_tmp_is_a_warning_and_a_light_one_is_silent(self):
+        # 936 MB of research sat in one clone's ignored tmp/ and nobody had counted it.
+        codex, claude = self.roots
+        (claude / "tmp").mkdir()
+        with (claude / "tmp/dump.bin").open("wb") as stream:
+            stream.truncate(250 * 1024 * 1024)  # sparse: size without the bytes
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AVVISO TMP", result.stdout)
+        self.assertIn("250 MB", result.stdout)
+        (claude / "tmp/dump.bin").write_bytes(b"small")
+        self.assertNotIn("AVVISO TMP", self.run_doctor().stdout)
+
     def test_the_real_manifest_ships_every_test_file(self):
         # Two copies were reported aligned with 61 tests on one side and 56 on the other:
         # tests/ was outside the manifest, so the comparison could not see the drift.

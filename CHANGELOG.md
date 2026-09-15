@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.19.0-public — 2026-09-15
+
+Two warnings the doctor did not have, both from things nobody counted.
+
+**A derived edition left behind.** "Same intervention" had no check, and one release of
+the source never reached this edition. The doctor reads an optional `DISTRIBUTION` file
+naming a checkout and warns (`AVVISO DISTRIBUZIONE`, exit 0) when that checkout's
+`VERSION` differs or the checkout is missing; `aos-profile.sh` repeats the warning at
+the start of work. This edition ships no such file.
+
+**`tmp/` nobody weighs.** Ignored by Git, it held 936 MB of research on one install,
+found only because a backup copied it whole. `AVVISO TMP` above 200 MB, from the doctor
+and the profile.
+
+Tests: 93 on Python 3.12 and 3.9 (3 skipped for `tomllib`).
+
 ## 1.18.0-public — 2026-09-15
 
 The six findings of the second audit, the one written at the end of 1.17.0. Four are

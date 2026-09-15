@@ -76,6 +76,9 @@ if [ -n "$host_python" ] && [ -f "$SCRIPT_DIR/aos-doctor.py" ]; then
   # Every error code, not only the link ones: a doctor failing on SINTASSI alone used
   # to leave this line saying "condivisa (link verificato)", which was true and useless.
   drift="$(printf '%s\n' "$doctor_out" | grep -E '^(COPIA|MANIFEST|MANCANTE|ROUTER|SINTASSI|RIFERIMENTO|PREREQUISITO):' || true)"
+  # Two warnings belong here, at the start of work: the public edition left behind,
+  # and a tmp/ nobody counts. The catalog warnings do not; they are a maintenance task.
+  printf '%s\n' "$doctor_out" | grep -E '^AVVISO (DISTRIBUZIONE|TMP):' | sed 's/^/  /'
   if [ -z "$drift" ]; then
     echo "  installazione Claude/Codex: condivisa (link e file verificati dal doctor)"
   else
