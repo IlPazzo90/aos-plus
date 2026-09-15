@@ -206,6 +206,10 @@ unchecked box is not a failure — an unverified check is.
 - [ ] Where a person looks at the result: the design gate in `references/design.md` §5
       was run against the rendered thing where it runs — a browser for the web, a
       simulator or device for native, the export at final size — not against the source
+- [ ] The measurement record exists and is complete — `bin/aos-measure.py finish` ran,
+      with the outcome the user would recognise, and the file is committed with the work
+      (`SKILL.md` §5). A task closed without one leaves nothing to compare the next one
+      against, which is how "is this process working?" stays unanswerable for a year
 - [ ] Docs updated where the change makes existing docs wrong
 - [ ] Config, migration and rollback handled where relevant
 - [ ] Final verification run against **real output**, in this turn

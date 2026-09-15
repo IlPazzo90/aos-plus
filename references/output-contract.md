@@ -31,8 +31,12 @@ new capability is justified, recommend measuring or maintaining the current one.
 
 ## Learning without instruction accumulation
 
-After significant work, identify a wrong assumption, the decisive check and any
-recurring correction. Keep a fact only if it changes future decisions. A reusable
+After **every** T2/T3 task, identify a wrong assumption, the decisive check and any
+recurring correction, and state what the review found — including "nessun apprendimento
+durevole" when it genuinely found none. An explicit empty result, not a skipped step:
+"after significant work" was the previous wording, and significance is judged by the
+author, about their own work, at the moment they most want to be finished.
+Keep a fact only if it changes future decisions. A reusable
 proposal needs its source and scope: project-specific convention, personal durable
 preference, existing-skill fix, new skill, or automation. Distinguish a one-off
 incident from recurrence; link evidence instead of copying a session narrative.

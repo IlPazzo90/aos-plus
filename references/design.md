@@ -170,9 +170,15 @@ return a confident zero:
 - **A rule can be present and never apply.** Walk the CSSOM recursively: a top-level pass
   misses everything nested inside `@layer` and `@media`, and reports zero matches for a
   rule that is right there.
-- **The tool's viewport is not the user's.** When the driven browser cannot resize below
-  its own width or apply page zoom — most cannot — do not tick the 375px or 200% box.
-  Apply by hand the declarations that breakpoint computes, measure that, and **say in the
+- **The tool's viewport is not the user's, and it will not tell you.** The danger is not
+  a resize that refuses — it is one that reports success and changes nothing. Measured on
+  2026-09-15: `resize_window` answered `Successfully resized window ... to 375x812`, and
+  `window.innerWidth` stayed **1920**; repeated at 600×800 after a three-second wait, same
+  declared success, same 1920. A responsive check trusting that reply would have reported
+  "verified at 375px" while measuring the desktop. So **read `window.innerWidth` back
+  after every resize and compare it to the target**; if it diverges, the check did not
+  run. When the viewport genuinely cannot be reached — and page zoom usually cannot —
+  apply by hand the declarations that breakpoint computes, measure that, and **say in the
   report that it is a substitution**. A box ticked by a check that could not run is worse
   than an empty box.
 

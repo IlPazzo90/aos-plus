@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.16.0-public — 2026-09-15
+
+**AOS did not measure itself, and it had already said so.** An earlier revision closed
+by naming its own next investment: measure a sample of real completed tasks. The tool to
+do it, `bin/aos-measure.py`, already existed and was complete — locking, a versioned
+schema, mandatory provenance on any provider counter, a record that cannot be completed
+twice. The only instruction that named it lived in `references/token-efficiency.md`, a
+file loaded **only on request**, and read "use only for a requested comparison". Records
+produced in the meantime: **zero**. The tool was never the missing part. The trigger was.
+
+Measurement now lives in the core (`SKILL.md` §5) and applies to **every T2/T3 task**,
+not only to a requested comparison. The record goes to `docs/misure/` and is committed
+with the work, for the same reason review logs are: an ignored directory is where
+evidence goes to disappear. The Definition of Done in `quality-gates.md` checks it.
+
+`--outcome` gains **`blocked`**. Work stopped by a missing capability, an exhausted quota
+or a declared gate produced nothing to accept in part; filing it as `partial` was the
+only option available and it made the record lie. `start` now also creates the record's
+directory — `docs/misure/` will not exist the first time, and that must not become the
+convenient excuse for closing without a measurement.
+
+Same defect, same remedy in `output-contract.md`: the learning step said "after
+**significant** work". Significance is judged by the author, about their own work, at the
+moment they most want to be finished. It is now unconditional at T2/T3 and admits an
+explicit empty result — an outcome, not a skipped step. The same trap is documented one
+ecosystem over: gstack's skill instructions carry issue #2402, where 43 of 44 learnings
+arrived only from an explicit command because "if you discovered" read as optional.
+
+**Drift between the two host copies stops being invisible.** `aos-doctor.py` has always
+compared the Claude and Codex installations file by file, but it only ran when somebody
+thought to ask — and somebody who has just edited one host does not think to ask. Now
+`aos-profile.sh`, which runs at the start of the work anyway, prints the loaded version
+and the result of that comparison, reusing aos-doctor rather than inventing a weaker
+check. It reports only the drift codes: catalog anomalies are a separate, known condition,
+and printing forty of them there would bury the one line that matters.
+
+**The design gate believed a false success.** The viewport rule said "when the driven
+browser cannot resize below its own width". Measured: `resize_window` answers
+`Successfully resized window ... to 375x812` while `window.innerWidth` stays **1920**;
+repeated at 600×800 after a three-second wait, same declared success, same 1920. The
+danger is not a resize that refuses, it is one that says yes and does nothing — a
+responsive check would have reported "verified at 375px" having measured the desktop.
+The rule now requires reading `window.innerWidth` back and comparing it to the target; if
+it diverges, the check did not run.
+
+**A deploy claim was corrected.** The profile said a git push does not deploy. With a
+Git integration active, every push to the production branch goes live on its own —
+observed on a Next.js project whose deployments carried the `…-git-main-…` alias with no
+`vercel` command ever issued. An instruction that denies a release is worse than no
+instruction: it gets intermediate states committed to `main` in the belief that they stay
+local.
+
+Checks: 61 tests (5 new, one per introduced behaviour), `bash -n`, `py_compile`, the
+mechanical security pass, and both host installations confirmed identical by
+`aos-doctor.py`.
+
 ## 1.15.1-public — 2026-09-15
 
 **A spent reviewer account is not a finished review.** Until now a quota running out

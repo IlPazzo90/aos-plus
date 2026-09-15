@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.15.1"
+  version: "1.16.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman e RTK, processo proporzionato."
 ---
 
@@ -192,6 +192,14 @@ Both directions require Git for the record; only Codex reviewer requires repo cw
 If unavailable, follow the declared fallback in quality-gates, never fake independence.
 Move BRIEF.md and REVIEW-LOG.md from ignored tmp to `docs/verifiche/<slug>/` and commit;
 raw transcripts stay outside Git. Same-family/self-review is not cross-model review.
+
+**T2/T3 close with a record, not an impression.** `bin/aos-measure.py start` before the
+first change and `finish` at the end, into `docs/misure/<date>-<slug>.json`, committed
+with the work. `--outcome` is the honest one of `accepted | rejected | partial | blocked`,
+including when the user rejected the result. Unavailable provider counters stay null;
+never estimate them. No secrets or client identities in `--task`. **This step is not
+conditional on the work feeling worth measuring** — that judgement is the one the record
+exists to replace, and a step phrased as conditional is a step that never runs.
 
 Report outcome, evidence and material limits in Italian; code/comments/commits in
 English. T0: two lines. T1: short. T2/T3: `references/output-contract.md`; backlog

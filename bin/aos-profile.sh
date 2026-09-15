@@ -59,6 +59,34 @@ echo "=== AOS PROJECT PROFILE ==="
 echo "path: $(pwd)"
 echo
 
+# ------------------------------------------------------------------------- aos
+# The Claude and Codex copies drift in silence: editing one leaves the other on the
+# old instructions, and from inside either session that is invisible. aos-doctor
+# already compares them file by file, so this reuses it instead of inventing a
+# weaker check — but it reports only the drift codes. The catalog anomalies are a
+# separate, known, long-standing condition; printing forty of them here would bury
+# the one line that matters and train the reader to skip the block.
+echo "--- AOS ---"
+AOS_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+aos_version="$(tr -d ' \n' < "$AOS_ROOT/VERSION" 2>/dev/null)"
+echo "  versione caricata: ${aos_version:-sconosciuta} ($AOS_ROOT)"
+if [ -n "$host_python" ] && [ -f "$SCRIPT_DIR/aos-doctor.py" ]; then
+  # Never let the doctor's exit code become ours: this is orientation, not a gate.
+  doctor_out="$("$host_python" -I "$SCRIPT_DIR/aos-doctor.py" 2>&1 || true)"
+  drift="$(printf '%s\n' "$doctor_out" | grep -E '^(HASH|MANIFEST|MANCANTE|ROUTER):' || true)"
+  if [ -z "$drift" ]; then
+    echo "  copie Claude/Codex: allineate (confronto SHA-256 dei file mantenuti)"
+  else
+    echo "  copie Claude/Codex: DIVERGONO su $(printf '%s\n' "$drift" | wc -l | tr -d ' ') voci —"
+    echo "  un host sta leggendo istruzioni che l'altro non ha. Sincronizza con"
+    echo "  bin/aos-install.sh prima di fidarti di questo processo:"
+    printf '%s\n' "$drift" | head -5 | sed 's/^/    /'
+  fi
+else
+  echo "  copie Claude/Codex: non confrontate (python3 o aos-doctor.py assenti)"
+fi
+echo
+
 # ---------------------------------------------------------------- instructions
 echo "--- INSTRUCTIONS (these outrank AOS) ---"
 found_instr=0
@@ -215,7 +243,15 @@ if [ -n "$(anyfile 'deploy*.sh')" ]; then
   echo "  script: $(anyfile 'deploy*.sh')"; found_deploy=1
 fi
 if has vercel.json || has vercel.ts || has .vercel; then
-  echo "  Vercel: verifica integrazione Git, ambiente e procedura di deploy del progetto"; found_deploy=1
+  # Non dire mai che il push non rilascia. Con l'integrazione Git di Vercel attiva ogni
+  # push sul branch di produzione va live da solo: misurato su un progetto Next.js dove
+  # i deploy portavano l'alias ...-git-main-... senza che nessun comando vercel fosse
+  # mai partito. Un'istruzione che nega un rilascio fa committare stati intermedi su
+  # main convinti che restino locali.
+  echo "  Vercel: 'vercel --prod' rilascia. Il push su git PUO' rilasciare da solo:"
+  echo "  con l'integrazione Git attiva ogni push sul branch di produzione va live."
+  echo "  Verificalo ('vercel project inspect' o gli alias dei deploy), non assumerlo."
+  found_deploy=1
 fi
 if [ "$is_wp" -eq 1 ]; then
   echo "  WordPress: verifica tooling e destinazione nelle istruzioni del progetto"

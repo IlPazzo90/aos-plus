@@ -68,6 +68,9 @@ def start(args):
                              "cached_input_tokens": None, "source": None},
         "rtk_estimate": {"saved": None, "source": None},
     }
+    # The record is mandatory at T2/T3, so a missing parent directory must not be the
+    # reason a task closes without one. Only the explicit --record path is created.
+    args.record.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(args.record, data, exclusive=True)
 
 
@@ -123,7 +126,11 @@ def main():
         command.add_argument("--record", required=True, type=Path)
     for name in ("task", "runtime", "model", "version"):
         begin.add_argument("--" + name, required=True, type=text_value)
-    end.add_argument("--outcome", required=True, choices=("accepted", "rejected", "partial"))
+    # "blocked" is not a shade of "partial": a task stopped by a missing capability,
+    # an exhausted quota or a declared gate produced no deliverable to accept in part.
+    # Without it that ending gets recorded as partial, and the record stops being honest.
+    end.add_argument("--outcome", required=True,
+                     choices=("accepted", "rejected", "partial", "blocked"))
     for name in ("corrections", "input-tokens", "output-tokens", "cached-input-tokens", "rtk-saved-estimate"):
         end.add_argument("--" + name, type=nonnegative)
     for name in ("metric-source", "rtk-source"):

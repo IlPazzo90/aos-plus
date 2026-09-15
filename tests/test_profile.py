@@ -155,6 +155,27 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("-m unittest discover -s tests", output)
         self.assertNotIn("py_compile", output)
 
+    def test_the_profile_states_which_aos_is_loaded_and_whether_the_hosts_agree(self):
+        # The two host copies drift in silence; aos-doctor could always see it, but it
+        # only ran when someone thought to ask. Assert the block and its two claims,
+        # never the verdict: whether they are aligned right now is machine state.
+        output = self.profile({"app.py": ""})
+        self.assertIn("--- AOS ---", output)
+        self.assertIn("versione caricata:", output)
+        self.assertRegex(output, r"copie Claude/Codex: (allineate|DIVERGONO|non confrontate)")
+
+    def test_the_profile_never_promises_that_a_git_push_cannot_deploy(self):
+        # It used to say the push does NOT deploy. With Vercel's Git integration every
+        # push to the production branch goes live, so that sentence sent intermediate
+        # states to production while the agent believed they stayed local.
+        # Anchored to the invariant, not to one wording: the line must point at the Git
+        # integration instead of denying it. The public distribution phrases it its own
+        # way, and a test that pinned this copy's sentence would fail there for no reason.
+        output = self.profile({"vercel.json": "{}", "package.json": json.dumps({"scripts": {}})})
+        self.assertIn("vercel", output.lower())
+        self.assertNotIn("NON rilascia", output)
+        self.assertIn("ntegrazione Git", output)
+
     def test_lockfiles_select_matching_commands(self):
         for lock, manager in [("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun"), ("bun.lockb", "bun")]:
             with self.subTest(lock=lock):

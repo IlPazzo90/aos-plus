@@ -136,19 +136,37 @@ https://github.com/rtk-ai/rtk (output filtering and measurement limitations).
 
 ## Explicit measurement record
 
-Use `bin/aos-measure.py` only for a requested comparison or measurement. `start`
-creates a task record; `finish` adds outcome, corrections and elapsed wall time.
-Provider counters are optional, attributed to `--metric-source`; unknown values
-remain null. RTK saved-token estimates have their own field/source and are never
-added to provider usage or converted to money. No personal histories or runtime
-configuration are collected. See `--help` on the selected subcommand.
+`bin/aos-measure.py` runs on **every T2/T3 task**, not only on a requested comparison,
+and `SKILL.md` §5 is where that obligation lives. `start` creates a task record;
+`finish` adds outcome, corrections and elapsed wall time. Provider counters are
+optional, attributed to `--metric-source`; unknown values remain null. RTK saved-token
+estimates have their own field/source and are never added to provider usage or
+converted to money. No personal histories or runtime configuration are collected.
+See `--help` on the selected subcommand.
+
+**Why it is not optional, measured.** Until 2026-09-15 the only instruction naming this
+tool was this section, and it read "use only for a requested comparison" — inside a file
+that is itself loaded only on request. Records produced in the meantime, across the whole
+machine: **zero**. AOS 1.10 had already named measuring real tasks as its own next
+investment and shipped the tool to do it. The tool was never the missing part; the
+trigger was. The same trap is documented one ecosystem over: gstack's skill instructions
+carry issue #2402, where 43 of 44 learnings arrived only from an explicit command because
+"if you discovered" read as optional. A conditional step is a step the author never fires
+against themselves.
 
 ```bash
-python3 "$AOS_DIR/bin/aos-measure.py" start --record ./tmp/aos-task.json \
-  --task "Fix CSV export" --runtime codex --model configured --version 1.11.0
-python3 "$AOS_DIR/bin/aos-measure.py" finish --record ./tmp/aos-task.json \
+RECORD="docs/misure/$(date -u +%F)-fix-csv-export.json"
+python3 "$AOS_DIR/bin/aos-measure.py" start --record "$RECORD" \
+  --task "Fix CSV export" --runtime codex --model configured --version 1.16.0
+python3 "$AOS_DIR/bin/aos-measure.py" finish --record "$RECORD" \
   --outcome accepted --corrections 1
 ```
+
+The record belongs in the project's `docs/misure/` and gets committed with the work, for
+the reason the review logs do: an ignored directory is where evidence goes to disappear.
+Outside a repository, put it where that project's durable task record already lives and
+say where. `--outcome blocked` exists so a task stopped by a missing capability, an
+exhausted quota or a declared gate is not filed as `partial`.
 
 For comparison use the same task acceptance and comparable model/runtime; record
 both successes and rejected outcomes. A single record is a baseline, not evidence

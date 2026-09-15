@@ -2,7 +2,7 @@
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
-Interpretable Context Methodology (ICM). Public edition 1.15.1, with a fresh history. Repository: `aos-plus`.
+Interpretable Context Methodology (ICM). Public edition 1.16.0, with a fresh history. Repository: `aos-plus`.
 The installed skill remains named `aos` for Claude Code and Codex compatibility.
 
 ## Installation
@@ -61,6 +61,30 @@ python3 bin/aos-doctor.py
 The doctor compares two installations; with one host it will report the missing
 other host. Use the selected-host installer verification when only one is installed.
 Tests do not call model providers or prove cross-model behavior.
+
+Since 1.16.0 you do not have to remember to run the doctor: `aos-profile.sh`, which runs
+at the start of the work anyway, prints the loaded AOS version and whether the two host
+copies are aligned. Editing one host and leaving the other behind is invisible from
+inside either session, and it is the most common way an agent ends up reading an
+instruction its counterpart does not have.
+
+### The measurement record
+
+Every T2/T3 task closes with a record, not an impression:
+
+```sh
+RECORD="docs/misure/$(date -u +%F)-short-slug.json"
+python3 bin/aos-measure.py start --record "$RECORD" \
+  --task "What was asked" --runtime codex --model configured --version 1.16.0
+python3 bin/aos-measure.py finish --record "$RECORD" --outcome accepted --corrections 1
+```
+
+`--outcome` is one of `accepted | rejected | partial | blocked`; `blocked` exists so a
+task stopped by a missing capability or an exhausted quota is not filed as partial.
+Provider counters are optional and must name their `--metric-source`; unknown values stay
+null and are never estimated. Nothing is collected automatically, no history is read, and
+no provider is contacted. The record is committed with the work — a measurement left in an
+ignored directory is a measurement nobody will ever compare anything against.
 
 ## Optional integrations
 

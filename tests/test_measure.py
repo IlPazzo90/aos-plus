@@ -129,6 +129,34 @@ class MeasureTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(self.record.read_bytes(), before)
 
+    def test_a_blocked_task_is_not_filed_as_partial(self):
+        # A task stopped by a missing capability produced no deliverable to accept in
+        # part. Without its own value the record would have to lie to close.
+        self.start()
+        result = self.run_cli("finish", "--outcome", "blocked")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())["outcome"], "blocked")
+
+    def test_a_completion_word_is_not_an_outcome(self):
+        # The report vocabulary and the acceptance axis answer different questions;
+        # accepting "DONE" here would record the author's opinion as the user's verdict.
+        self.start()
+        before = self.record.read_bytes()
+        result = self.run_cli("finish", "--outcome", "DONE")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_a_missing_directory_is_not_a_reason_to_close_without_a_record(self):
+        # The record is mandatory at T2/T3 and docs/misure/ will not exist the first
+        # time. Failing here would make "I could not measure it" the default excuse.
+        nested = Path(self.temp.name) / "docs/misure/2026-09-15-task.json"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "start", "--record", str(nested),
+             "--task", "Explicit task", "--runtime", "claude", "--model", "m", "--version", "v"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(nested.read_text())["schema"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
