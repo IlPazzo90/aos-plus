@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "1.22.0"
+  version: "1.22.1"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -162,7 +162,7 @@ Choose one skill per need; domain specialists still apply.
 | Finished branch integration | `superpowers:finishing-a-development-branch` |
 | Before building at T2/T3, or when the answer adds a dependency, an abstraction or an option | `ponytail`; `ponytail-review` on the finished diff, `ponytail-audit` on a repo only when asked |
 | Library, framework or API surface | Context7, never a remembered signature |
-| Prose to publish | `humanizer` for AI tells; the writing/design guideline skills for review |
+| Prose a person will read | a structure skill **before** drafting (here `testo-umano`, from StoryScope: surface edits leave narrative tells intact); `humanizer` after, for surface tells; the writing/design guideline skills for review |
 | **Anything a person will look at** — page, component, dashboard, deck, banner | `references/design.md`: the UI/UX role, its stages and its gate |
 
 Larger-than-session decision map: suggest user-run `/wayfinder`; do not invoke it.

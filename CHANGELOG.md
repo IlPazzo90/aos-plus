@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.22.1-public — 2026-09-19
+
+**Prose routing.** SKILL.md §4, row "Prose a person will read": a structure skill runs
+**before** drafting, `humanizer` after. StoryScope (arXiv 2604.03136) measures why: with
+every stylistic feature removed, narrative choices alone separate human from AI fiction
+at 93.2% macro-F1, and surface editing leaves that at 93.9%. A gate that only runs after
+the draft cannot see what was decided before the first sentence. The structure skill
+named in the row is the maintainer's; any equivalent fits.
+
 ## 1.22.0-public — 2026-09-15
 
 **Model routing.** SKILL.md §3 and `references/orchestration.md` §Model routing: the main
