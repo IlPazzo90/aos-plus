@@ -202,6 +202,7 @@ class BenchTests(unittest.TestCase):
         cmd = run.call_args_list[0].args[0]
         self.assertEqual(cmd[:2], ["codex", "exec"])
         self.assertIn("--approve-for-me", cmd)
+        self.assertIn("git diff HEAD", bench.REVIEW_PROMPT)
         self.assertNotIn("--sandbox", cmd)  # refused together with --approve-for-me
         self.assertIn("--json", cmd)
         self.assertEqual(cmd[cmd.index("-C") + 1], "/wt")
@@ -238,6 +239,13 @@ class BenchTests(unittest.TestCase):
             bench.stage_new_files(wt)
             self.assertEqual(bench.diff_lines(wt), 5)
             self.assertIn("new.py", bench.diff_text(wt))
+            # Reviewer round 5: a deleted tracked file must stay visible after staging.
+            (Path(wt) / "a").unlink()
+            bench.stage_new_files(wt)
+            self.assertIn("a", [l.split("\t")[-1] for l in subprocess.run(
+                ["git", "-C", wt, "diff", "HEAD", "--numstat"], capture_output=True, text=True).stdout.splitlines()])
+            self.assertIn("deleted file", bench.diff_text(wt))
+            self.assertEqual(bench.diff_lines(wt), 2)  # new.py +1, a (one line at HEAD) -1
             # The commit's test file is the judge: restored from the commit, tampering undone.
             task = {"repo": str(repo), "commit": head, "test": "true", "test_files": ["a"]}
             bench.restore_tests(wt, task)

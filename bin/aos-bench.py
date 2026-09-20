@@ -27,7 +27,7 @@ REVIEW_PROMPT = """You are reviewing a diff produced by another agent for this t
 
 {prompt}
 
-Run `git diff` in this directory and report defects only. Severity: high = wrong
+Run `git diff HEAD` in this directory and report defects only. Severity: high = wrong
 behavior or security; medium = incomplete or fragile; low = style. No findings is
 a valid answer."""
 
@@ -183,14 +183,19 @@ def stage_new_files(wt):
     recorded diff of zero lines, and the reviewer, running `git diff` itself, judged
     an empty change.
     """
-    # The node_modules link is ours, not the worker's.
-    subprocess.run(["git", "-C", wt, "add", "--intent-to-add", "--all", "--", ".", ":!node_modules"],
-                   capture_output=True)
+    # Only the untracked files: `--all` also staged deletions, and a staged deletion
+    # vanishes from a plain `git diff` (reviewer round 5). The node_modules link is ours.
+    untracked = subprocess.run(["git", "-C", wt, "ls-files", "--others", "--exclude-standard", "--", ".", ":!node_modules"],
+                               capture_output=True, text=True).stdout.split("\n")
+    untracked = [f for f in untracked if f]
+    if untracked:
+        subprocess.run(["git", "-C", wt, "add", "--intent-to-add", "--", *untracked], capture_output=True)
 
 
 def diff_text(wt, exclude=()):
     spec = ["--", "."] + [f":!{f}" for f in exclude]
-    return subprocess.run(["git", "-C", wt, "diff", *spec], capture_output=True, text=True).stdout[:60000]
+    # Against HEAD: whatever the worker staged or deleted is still the work.
+    return subprocess.run(["git", "-C", wt, "diff", "HEAD", *spec], capture_output=True, text=True).stdout[:60000]
 
 
 def make_reviewer(prompt):
@@ -209,7 +214,7 @@ def make_reviewer(prompt):
 def diff_lines(wt, exclude=()):
     # The restored test files differ from the parent too; they are the judge, not the work.
     spec = ["--", "."] + [f":!{f}" for f in exclude]
-    out = subprocess.run(["git", "-C", wt, "diff", "--numstat", *spec], capture_output=True, text=True).stdout
+    out = subprocess.run(["git", "-C", wt, "diff", "HEAD", "--numstat", *spec], capture_output=True, text=True).stdout
     total = 0
     for line in out.splitlines():
         cols = line.split("\t")
