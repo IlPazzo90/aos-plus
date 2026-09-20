@@ -70,6 +70,13 @@ echo "--- AOS ---"
 AOS_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
 aos_version="$(tr -d ' \n' < "$AOS_ROOT/VERSION" 2>/dev/null)"
 echo "  versione caricata: ${aos_version:-sconosciuta} ($AOS_ROOT)"
+# OpenCode is the third host and the open-model runtime (2.0.0). Its absence is
+# not an error: it only means delegation to an open model is unavailable here.
+if command -v opencode >/dev/null 2>&1; then
+  echo "  opencode: $(opencode --version 2>/dev/null | head -1 | tr -d '\n')"
+else
+  echo "  opencode: assente (delega a modello open non disponibile)"
+fi
 if [ -n "$host_python" ] && [ -f "$SCRIPT_DIR/aos-doctor.py" ]; then
   # Never let the doctor's exit code become ours: this is orientation, not a gate.
   doctor_out="$("$host_python" -I "$SCRIPT_DIR/aos-doctor.py" 2>&1 || true)"

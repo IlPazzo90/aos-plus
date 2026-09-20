@@ -108,6 +108,30 @@ The ranking, the names and the reason live in the user's global instructions
   representative checks show adequacy; higher effort for ambiguity is not a
   guarantee. Do not hardcode a provider ranking, benchmark result or price into AOS.
 
+- **Open runtime = OpenCode on the user's open working model** (2.0.0), for the
+  same bounded T0/T1 work at risk ≤ MEDIUM that may leave the main session, and
+  only when the main session can check the result by observation: a test, a
+  rendered page, a diff against a known expectation. Not eligible: T2+,
+  HIGH/CRITICAL, auth, payments, personal data, migrations, deploys, and any
+  change whose only check is "looks right". Invocation, from a clean repo:
+  `python3 "$AOS_DIR/bin/aos-delegate.py" --repo <path> --model <provider/model> --brief <file> --json`.
+  The script runs `opencode run --pure --auto --format json` and prints exit
+  code, diff stat, seconds, the reply and usage summed from the JSON events
+  (null when not reported, never estimated); it never runs tests or commits.
+  The main session runs the check. One failed check → one retry with the
+  failure output appended to the brief. A second failure → the main session
+  does the work itself and writes `escalated` in the task record. The model
+  comes from the user's global instructions (role name: *open working model*);
+  AOS never names it and never carries a ranking, benchmark result or price.
+  OpenCode reads `~/.claude/skills`, `~/.claude/CLAUDE.md` and the project
+  `CLAUDE.md`/`AGENTS.md`, so the brief carries the task, not the rules — and
+  every run pays that catalog as input tokens, so a delegated task must be
+  worth more than one prompt. Providers live in `~/.config/opencode/opencode.json`;
+  any OpenAI-compatible endpoint is one block —
+  `{"provider":{"<id>":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"…/v1","apiKey":"{file:~/.secrets/<name>}"},"models":{"<model>":{}}}}}`
+  — with `zeroDataRetention: true` on models that receive client source. No
+  `model` key in that file: every run names its model.
+
 ## Independence and persistence
 
 Codex main calls Claude Code; Claude main calls Codex, using verify-agent's

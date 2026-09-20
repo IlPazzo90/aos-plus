@@ -101,6 +101,22 @@ null and are never estimated. Nothing is collected automatically, no history is 
 no provider is contacted. The record is committed with the work — a measurement left in an
 ignored directory is a measurement nobody will ever compare anything against.
 
+## Open runtime (2.0.0)
+
+[OpenCode](https://opencode.ai) is a third host — it already loads `~/.claude/skills`
+and the `CLAUDE.md`/`AGENTS.md` files — and the runtime for bounded T0/T1 work at risk
+≤ MEDIUM that has an observable check. `bin/aos-delegate.py` runs one `opencode run`
+in a repo and reports exit code, diff, seconds and usage read from the JSON events
+(null when not reported, never estimated), with cost and step caps enforced on the
+stream. Providers live in `~/.config/opencode/opencode.json`; any OpenAI-compatible
+endpoint is one block, and the delegate denies every skill for the run (the catalog
+cost 42k input tokens per step; 7k without it). No model name lives in AOS: the open
+working model is chosen with `bin/aos-bench.py`, which replays real commits from the
+user's own repositories against each model — the commit's test is the spec the worker
+reads and the judge it cannot rewrite — and writes first-pass, retry, escalation,
+seconds, tokens, cost and reviewer findings side by side. The corpus and the records
+are the user's and stay out of this distribution.
+
 ## Optional integrations
 
 When the reviewer's quota runs out mid-gate, the round is retried once on a reserve

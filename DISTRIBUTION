@@ -1,0 +1,24 @@
+~/Progetti/Strumenti/aos-plus
+# Files the public edition keeps byte-identical to this one. The rest (README,
+# CHANGELOG, profiler, security scan, some references, catalog) carries its own
+# sanitized wording and is ported by hand.
+SKILL.md
+VERSION
+bin/aos-bench.py
+bin/aos-delegate.py
+bin/aos-doctor.py
+bin/aos-install.sh
+bin/aos-measure.py
+bin/profile-python.py
+bin/skill-library.py
+catalog/skill-library/SKILL.md
+evals/scenarios.json
+references/design.md
+references/output-contract.md
+tests/test_bench.py
+tests/test_delegate.py
+tests/test_doctor.py
+tests/test_install.py
+tests/test_measure.py
+tests/test_profile.py
+tests/test_security.py

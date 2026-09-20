@@ -122,8 +122,11 @@ it is the only one whose savings are permanent.
   strongest model the user configured and keeps classification, T2/T3 work,
   verification, arbitration, the final report and anything HIGH/CRITICAL; bounded
   T0/T1 work at risk ≤ MEDIUM may go to a subagent on the host's working model
-  (Claude `Agent` `model`; Codex `spawn_agent`, default in `[agents]`). Model names
-  live in the user's global instructions, never in AOS. If the main session is on a
+  (Claude `Agent` `model`; Codex `spawn_agent`, default in `[agents]`), or to the
+  open runtime (`bin/aos-delegate.py`, OpenCode on the user's open working model)
+  when the result has a check the main session can run — rule in
+  `references/orchestration.md` §Model routing. Model names live in the user's
+  global instructions, never in AOS. If the main session is on a
   weaker model and the task is T2+ or HIGH+, say so and ask for the switch before the
   first change. An advisor answers a decision; a worker owns a deliverable; neither
   replaces verification. Mechanics: `references/orchestration.md` §Model routing.

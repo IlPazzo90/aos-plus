@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.0.0-public — 2026-09-21
+
+**Open runtime.** OpenCode as a third host (it already reads the skills and the
+`CLAUDE.md` files) and `bin/aos-delegate.py` for bounded T0/T1 work with an observable
+check: one `opencode run --pure --auto --format json` in the repo, usage summed from
+the `step_finish` events or null, a per-run config that denies every skill (42,621 →
+7,260 input tokens per step, measured), cost and step caps on the stream, `PWD` and
+`--dir` naming the repo because OpenCode resolves its directory from `PWD`, not the
+process cwd. Routing rule in `references/orchestration.md` §Model routing; model names
+stay in the user's instructions.
+
+**Benchmark harness.** `bin/aos-bench.py` replays real commits in throwaway worktrees
+against each model: the commit's test files are checked out before the run and before
+every test, one retry with the failure output, a Codex reviewer with a JSON schema,
+untracked files staged before diff and review, records with diff and finding titles,
+`--check` to prove every task (fails on the parent, passes on the commit). The
+maintainer's first run: three defects in the harness before any model was measured,
+then 20 tasks × 3 runners; the winner is written in the maintainer's instructions,
+not here.
+
+`aos-profile.sh` reports OpenCode. 28 new tests.
+
 ## 1.22.1-public — 2026-09-19
 
 **Prose routing.** SKILL.md §4, row "Prose a person will read": a structure skill runs

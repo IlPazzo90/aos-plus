@@ -59,6 +59,8 @@ bin/aos-profile.sh
 bin/profile-python.py
 bin/aos-doctor.py
 bin/aos-measure.py
+bin/aos-bench.py
+bin/aos-delegate.py
 bin/aos-security.sh
 bin/aos-install.sh
 bin/skill-library.py
@@ -66,6 +68,9 @@ catalog/core.json
 catalog/index.json
 catalog/skill-library/SKILL.md
 evals/scenarios.json
+evals/opencode-run-sample.jsonl
+tests/test_bench.py
+tests/test_delegate.py
 tests/test_doctor.py
 tests/test_install.py
 tests/test_measure.py
