@@ -97,6 +97,14 @@ class BenchTests(unittest.TestCase):
         self.assertTrue(spend.exceeded())
         self.assertIn("fermati dal tetto", bench.summary([r]))
 
+    def test_capped_record_still_stages_new_files(self):
+        # Reviewer round 4: the capped branch returned before stage_new_files, so a
+        # module the worker created vanished from the record and with the worktree.
+        runner = fake_runner([(0, {"cost_usd": 0.8, "cost_known_usd": 0.8})])
+        with mock.patch.object(bench, "stage_new_files") as stage:
+            run_task(runner=runner, tester=lambda wt: (1, "FAILED"), spend=bench.Spend(cap=0.5))
+        stage.assert_called_once_with("/wt")
+
     def test_retry_runs_under_the_cap(self):
         runner = fake_runner([(0, {"cost_usd": 0.1, "cost_known_usd": 0.1}), (0, {"cost_usd": 0.1, "cost_known_usd": 0.1})])
         outcomes = iter([(1, "FAILED"), (0, "ok")])

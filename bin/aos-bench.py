@@ -258,6 +258,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
         if code != 0 and spend.exceeded():
             result["capped"] = True
             result["findings"] = None
+            stage_new_files(wt)  # the record keeps what the worker created (reviewer round 4)
             result["diff_lines"] = differ(wt)
             result["diff"] = diff_text(wt, task.get("test_files") or ())
             result["test_tail"] = out
