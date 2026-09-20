@@ -202,12 +202,48 @@ class BenchTests(unittest.TestCase):
         cmd = run.call_args_list[0].args[0]
         self.assertEqual(cmd[:2], ["codex", "exec"])
         self.assertIn("--approve-for-me", cmd)
-        self.assertIn("git diff HEAD", bench.REVIEW_PROMPT)
         self.assertNotIn("--sandbox", cmd)  # refused together with --approve-for-me
         self.assertIn("--json", cmd)
         self.assertEqual(cmd[cmd.index("-C") + 1], "/wt")
         self.assertNotIn("-m", cmd)
         self.assertEqual(run.call_args_list[0].kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_reviewer_reads_the_work_without_the_restored_tests(self):
+        # Reviewer round 6: `git diff HEAD` also showed the test files the bench had
+        # restored from the commit, attributing them to the worker.
+        task = dict(TASK, test_files=["tests/t.py", "scripts/v.mjs"])
+        self.assertEqual(bench.review_diff_command(task), "git diff HEAD -- . ':!tests/t.py' ':!scripts/v.mjs'")
+        self.assertEqual(bench.review_diff_command(TASK), "git diff HEAD")
+        with mock.patch.object(bench.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+            bench.make_reviewer(task)("/wt")
+        prompt = run.call_args.args[0][-1]
+        self.assertIn("':!tests/t.py'", prompt)
+        self.assertIn("do it", prompt)
+
+    def test_stage_new_files_handles_quoted_names_and_failures(self):
+        # Reviewer round 6: without -z, "caf\303\251.py" was passed quoted to git add
+        # and the failure was swallowed.
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            (Path(tmp) / "base").write_text("b\n")
+            subprocess.run(["git", "-C", tmp, "add", "."], check=True)
+            subprocess.run(["git", "-C", tmp, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"], check=True)
+            (Path(tmp) / "café.py").write_text("x\n")
+            (Path(tmp) / "plain.py").write_text("y\n")
+            staged = bench.stage_new_files(tmp)
+            self.assertEqual(sorted(staged), ["café.py", "plain.py"])
+            self.assertIn("café.py", bench.diff_text(tmp))
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            if "ls-files" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="plain.py\0", stderr="")
+            raise subprocess.CalledProcessError(128, cmd, stderr="fatal")
+        with mock.patch.object(bench.subprocess, "run", side_effect=fake):
+            with self.assertRaises(subprocess.CalledProcessError):
+                bench.stage_new_files("/wt")
 
     def test_codex_usage_from_json_events(self):
         ev = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 5}})

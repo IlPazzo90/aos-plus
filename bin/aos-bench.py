@@ -27,9 +27,10 @@ REVIEW_PROMPT = """You are reviewing a diff produced by another agent for this t
 
 {prompt}
 
-Run `git diff HEAD` in this directory and report defects only. Severity: high = wrong
-behavior or security; medium = incomplete or fragile; low = style. No findings is
-a valid answer."""
+Run `{diff_command}` in this directory and report defects only — that command
+excludes the test files, which were supplied to the agent as its specification and
+are not its work. Severity: high = wrong behavior or security; medium = incomplete
+or fragile; low = style. No findings is a valid answer."""
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -185,27 +186,41 @@ def stage_new_files(wt):
     """
     # Only the untracked files: `--all` also staged deletions, and a staged deletion
     # vanishes from a plain `git diff` (reviewer round 5). The node_modules link is ours.
-    untracked = subprocess.run(["git", "-C", wt, "ls-files", "--others", "--exclude-standard", "--", ".", ":!node_modules"],
-                               capture_output=True, text=True).stdout.split("\n")
-    untracked = [f for f in untracked if f]
+    # -z: without it git quotes non-ASCII names ("caf\303\251.py") and the quoted
+    # string names no file (reviewer round 6). A failed staging is an error, not a
+    # silent zero: the record would then miss the file the worker created.
+    listed = subprocess.run(["git", "-C", wt, "ls-files", "-z", "--others", "--exclude-standard",
+                             "--", ".", ":!node_modules"], capture_output=True, text=True)
+    untracked = [f for f in listed.stdout.split("\0") if f]
     if untracked:
-        subprocess.run(["git", "-C", wt, "add", "--intent-to-add", "--", *untracked], capture_output=True)
+        subprocess.run(["git", "-C", wt, "add", "--intent-to-add", "--", *untracked],
+                       check=True, capture_output=True, text=True)
+    return untracked
 
 
 def diff_text(wt, exclude=()):
     spec = ["--", "."] + [f":!{f}" for f in exclude]
     # Against HEAD: whatever the worker staged or deleted is still the work.
-    return subprocess.run(["git", "-C", wt, "diff", "HEAD", *spec], capture_output=True, text=True).stdout[:60000]
+    return subprocess.run(["git", "-C", wt, "-c", "core.quotepath=false", "diff", "HEAD", *spec],
+                          capture_output=True, text=True).stdout[:60000]
 
 
-def make_reviewer(prompt):
+def review_diff_command(task):
+    """The diff the reviewer must read: the worker's work, not the restored tests."""
+    excludes = " ".join(f"':!{f}'" for f in task.get("test_files") or ())
+    return "git diff HEAD -- . " + excludes if excludes else "git diff HEAD"
+
+
+def make_reviewer(task):
+    prompt = REVIEW_PROMPT.format(prompt=task["prompt"], diff_command=review_diff_command(task))
+
     def reviewer(wt):
         with tempfile.TemporaryDirectory() as tmp:
             schema = Path(tmp) / "schema.json"
             schema.write_text(json.dumps(REVIEW_SCHEMA))
             report = Path(tmp) / "report.json"
             subprocess.run(["codex", "exec", "--sandbox", "read-only", "-C", wt, "-c", "mcp_servers={}",
-                            "--output-schema", str(schema), "-o", str(report), REVIEW_PROMPT.format(prompt=prompt)],
+                            "--output-schema", str(schema), "-o", str(report), prompt],
                            capture_output=True, text=True, stdin=subprocess.DEVNULL)
             return parse_findings(report.read_text() if report.exists() else "")
     return reviewer
@@ -368,7 +383,7 @@ def main():
             if record.exists():
                 rows.append(json.loads(record.read_text()))
                 continue
-            r = run_task(task, model, runner, make_tester(task), make_reviewer(task["prompt"]),
+            r = run_task(task, model, runner, make_tester(task), make_reviewer(task),
                          make_worktree, remove_worktree, spend=spend)
             r["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             record.write_text(json.dumps(r, ensure_ascii=False, indent=2))
