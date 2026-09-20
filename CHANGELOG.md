@@ -20,7 +20,11 @@ maintainer's first run: three defects in the harness before any model was measur
 then 20 tasks × 3 runners; the winner is written in the maintainer's instructions,
 not here.
 
-`aos-profile.sh` reports OpenCode. 28 new tests.
+`aos-profile.sh` reports OpenCode. Cross-model review, six rounds: 15 findings, all
+accepted, eight of them born from earlier fixes in two functions — the delegate's
+`invoke()` (kill the whole process group, always) and the bench's `run_task()` (the
+spend cap between attempts and on the known part; untracked files staged with `-z`;
+the work read against `HEAD` without the restored tests). 45 new tests.
 
 ## 1.22.1-public — 2026-09-19
 
