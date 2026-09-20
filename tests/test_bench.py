@@ -72,6 +72,42 @@ class BenchTests(unittest.TestCase):
         outcomes = iter([(1, "fail"), (0, "ok")])
         r = run_task(runner=runner, tester=lambda wt: next(outcomes))
         self.assertIsNone(r["cost_usd"])
+        # Reviewer round 1: the known attempt must still reach the spend cap.
+        self.assertEqual(r["attempt_costs"], [None, 0.02])
+        spend = bench.Spend(cap=0.01)
+        for cost in r["attempt_costs"]:
+            spend.add(cost)
+        self.assertTrue(spend.exceeded())
+        self.assertEqual(spend.unknown, 1)
+
+    def test_known_cost_inside_an_attempt_reaches_the_cap(self):
+        # Reviewer round 2: 0.8 $ reported then an unreported step → cost_usd None,
+        # cost_known_usd 0.8; the cap counts the known part.
+        runner = fake_runner([(0, {"cost_usd": None, "cost_known_usd": 0.8})])
+        r = run_task(runner=runner)
+        self.assertIsNone(r["cost_usd"])
+        self.assertEqual(r["known_costs"], [0.8])
+        spend = bench.Spend(cap=0.5)
+        for cost in r["known_costs"]:
+            spend.add(cost)
+        self.assertTrue(spend.exceeded())
+
+    def test_worktree_removed_when_preparation_fails(self):
+        # Reviewer round 1: a failing restore_tests left the worktree registered.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            env = ["-c", "user.email=t@t", "-c", "user.name=t"]
+            for n in ("one", "two"):
+                (repo / "a").write_text(n)
+                subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+                subprocess.run(["git", "-C", str(repo), *env, "commit", "-qm", n], check=True)
+            head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            with self.assertRaises(subprocess.CalledProcessError):
+                bench.make_worktree({"repo": str(repo), "commit": head, "test_files": ["missing.py"]})
+            listed = subprocess.run(["git", "-C", str(repo), "worktree", "list"], capture_output=True, text=True).stdout
+            self.assertEqual(len(listed.strip().splitlines()), 1)  # only the main checkout
 
     def test_cleanup_runs_even_when_runner_raises(self):
         removed = []

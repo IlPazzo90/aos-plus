@@ -73,11 +73,17 @@ def make_worktree(task):
     wt = tempfile.mkdtemp(prefix="aos-bench-")
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", wt, task["commit"] + "^"],
                    check=True, capture_output=True, text=True)
-    # A worktree has no node_modules; the main checkout's are read-only for a test run.
-    modules = repo / "node_modules"
-    if modules.is_dir():
-        os.symlink(modules, Path(wt) / "node_modules")
-    restore_tests(wt, task)
+    # The worktree exists from here: a failure in its preparation must not leave it
+    # registered (reviewer's repro: a missing test file left a worktree behind).
+    try:
+        # A worktree has no node_modules; the main checkout's are read-only for a test run.
+        modules = repo / "node_modules"
+        if modules.is_dir():
+            os.symlink(modules, Path(wt) / "node_modules")
+        restore_tests(wt, task)
+    except Exception:
+        remove_worktree(wt)
+        raise
     return wt
 
 
@@ -239,12 +245,20 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
         result = {"task": task["id"], "model": model, "first_pass": code == 0, "retry_pass": None,
                   "escalated": False, "seconds": first["seconds"], "cost_usd": first["usage"].get("cost_usd"),
                   "input_tokens": first["usage"].get("input_tokens"), "output_tokens": first["usage"].get("output_tokens"),
-                  "exit_code": first["exit_code"], "diff_stat": first["diff_stat"]}
+                  "exit_code": first["exit_code"], "diff_stat": first["diff_stat"],
+                  "attempt_costs": [first["usage"].get("cost_usd")],
+                  # The reported part of each attempt, for the cap; the total above is
+                  # null when any step went unreported (reviewer round 2).
+                  "known_costs": [first["usage"].get("cost_known_usd")]}
         if code != 0:
             second = runner(wt, model, brief_for(task, failure=out))
             code, out = tester(wt)
             result["retry_pass"] = code == 0
             result["seconds"] += second["seconds"]
+            # The per-task total is null when one attempt is unknown; the known part is
+            # kept apart, because the spend cap must count every dollar it can see.
+            result["attempt_costs"] = [result["cost_usd"], second["usage"].get("cost_usd")]
+            result["known_costs"].append(second["usage"].get("cost_known_usd"))
             result["cost_usd"] = add_cost(result["cost_usd"], second["usage"].get("cost_usd"))
             result["input_tokens"] = add_cost(result["input_tokens"], second["usage"].get("input_tokens"))
             result["output_tokens"] = add_cost(result["output_tokens"], second["usage"].get("output_tokens"))
@@ -338,7 +352,8 @@ def main():
             r["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             record.write_text(json.dumps(r, ensure_ascii=False, indent=2))
             rows.append(r)
-            spend.add(r["cost_usd"])
+            for cost in r.get("known_costs", r.get("attempt_costs", [r["cost_usd"]])):
+                spend.add(cost)
             print(f"{task['id']} × {model}: first={r['first_pass']} retry={r['retry_pass']} esc={r['escalated']} "
                   f"{r['seconds']:.0f}s cost={r['cost_usd']}", flush=True)
             if spend.exceeded():

@@ -1,6 +1,7 @@
 """aos-delegate: one opencode run, evidence out; usage read from JSON events or null."""
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -56,7 +57,8 @@ class DelegateTests(unittest.TestCase):
     def test_usage_null_when_absent(self):
         usage = delegate.parse_usage("plain text, no events\n{not json\n")
         self.assertEqual(usage, {"input_tokens": None, "output_tokens": None, "reasoning_tokens": None,
-                                 "cache_read_tokens": None, "cost_usd": None, "session_id": None, "steps": 0})
+                                 "cache_read_tokens": None, "cost_usd": None, "cost_known_usd": None,
+                                 "session_id": None, "steps": 0})
 
     def test_usage_from_fixture(self):
         usage = delegate.parse_usage(FIXTURE.read_text())
@@ -75,6 +77,63 @@ class DelegateTests(unittest.TestCase):
         with mock.patch.object(delegate, "invoke", return_value=(1, ev, "")):
             result = delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False)
         self.assertEqual(result["error"], "Free tier users do not have access")
+
+    def test_usage_field_missing_from_a_step_stays_null(self):
+        # Reviewer round 1: a step without `cost` produced cost_usd 0.0, an estimate.
+        no_cost = json.dumps({"type": "step_finish", "sessionID": "ses_1",
+                              "part": {"tokens": {"input": 10, "output": 2}}})
+        usage = delegate.parse_usage(no_cost)
+        self.assertEqual((usage["input_tokens"], usage["output_tokens"]), (10, 2))
+        self.assertIsNone(usage["cost_usd"])
+        self.assertIsNone(usage["reasoning_tokens"])
+        self.assertIsNone(usage["cache_read_tokens"])
+        full = json.dumps(self.step(0.5))
+        usage = delegate.parse_usage(full + "\n" + no_cost + "\n")
+        self.assertEqual(usage["input_tokens"], 20)
+        self.assertIsNone(usage["cost_usd"])  # one step unknown → total unknown
+        self.assertEqual(usage["steps"], 2)
+
+    def test_known_cost_survives_an_unreported_step(self):
+        # Reviewer round 2: 0.80 $ reported, then a step without cost → total null, but
+        # the 0.80 $ must still reach a spend cap.
+        events = json.dumps(self.step(0.8)) + "\n" + json.dumps(
+            {"type": "step_finish", "sessionID": "ses_1", "part": {"tokens": {"input": 10}}})
+        usage = delegate.parse_usage(events)
+        self.assertIsNone(usage["cost_usd"])
+        self.assertAlmostEqual(usage["cost_known_usd"], 0.8)
+        self.assertIsNone(delegate.parse_usage("")["cost_known_usd"])
+        self.assertAlmostEqual(delegate.parse_usage(json.dumps(self.step(0.3)))["cost_known_usd"], 0.3)
+
+    def test_timeout_kills_the_grandchild_when_the_parent_already_exited(self):
+        # Reviewer round 2: parent exits at once, grandchild keeps the pipes; the
+        # timeout fired but the group was not killed.
+        worker = ("import subprocess, sys\n"
+                  "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+                  "print(p.pid, flush=True)\n")
+        code, out, err = delegate.invoke([sys.executable, "-c", worker], self.temp.name, timeout=0.5)
+        self.assertEqual(code, delegate.EXIT_TIMEOUT)
+        pid = int(out.strip())
+        time.sleep(0.2)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_unparsable_field_does_not_leave_a_partial_contribution(self):
+        bad = json.dumps({"type": "step_finish", "sessionID": "ses_1",
+                          "part": {"tokens": {"input": 10, "output": "many"}, "cost": 0.1}})
+        usage = delegate.parse_usage(bad)
+        self.assertEqual(usage["input_tokens"], 10)
+        self.assertIsNone(usage["output_tokens"])
+        self.assertEqual(usage["cost_usd"], 0.1)
+
+    def test_timeout_kills_the_grandchild_too(self):
+        # Reviewer round 1: a child holding stderr kept invoke() waiting 3 s on a 0.2 s timeout.
+        worker = ("import subprocess, sys, time\n"
+                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+                  "time.sleep(30)\n")
+        started = time.monotonic()
+        code, out, err = delegate.invoke([sys.executable, "-c", worker], self.temp.name, timeout=0.5)
+        self.assertEqual(code, delegate.EXIT_TIMEOUT)
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_usage_sums_steps(self):
         ev = json.dumps({"type": "step_finish", "sessionID": "ses_1",

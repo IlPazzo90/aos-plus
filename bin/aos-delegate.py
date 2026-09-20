@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -67,7 +68,8 @@ def ensure_clean(repo, allow_dirty):
 
 
 EMPTY_USAGE = {"input_tokens": None, "output_tokens": None, "reasoning_tokens": None,
-               "cache_read_tokens": None, "cost_usd": None, "session_id": None, "steps": 0}
+               "cache_read_tokens": None, "cost_usd": None, "cost_known_usd": None,
+               "session_id": None, "steps": 0}
 
 
 def parse_usage(text):
@@ -79,6 +81,10 @@ def parse_usage(text):
     """
     usage = dict(EMPTY_USAGE)
     totals = {"input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cache_read_tokens": 0, "cost_usd": 0.0}
+    # A field absent from even one step makes its total unknown: a default of 0 would
+    # be an estimate, and 0.0 $ is the most misleading estimate there is.
+    missing = set()
+    steps_with_cost = 0
     for line in text.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -93,17 +99,28 @@ def parse_usage(text):
             continue
         part = event.get("part") or {}
         tokens = part.get("tokens") or {}
-        try:
-            totals["input_tokens"] += int(tokens["input"])
-            totals["output_tokens"] += int(tokens["output"])
-            totals["reasoning_tokens"] += int(tokens.get("reasoning", 0))
-            totals["cache_read_tokens"] += int((tokens.get("cache") or {}).get("read", 0))
-            totals["cost_usd"] += float(part.get("cost", 0))
-        except (KeyError, TypeError, ValueError):
-            continue
+        cache = tokens.get("cache") or {}
+        fields = {"input_tokens": tokens.get("input"), "output_tokens": tokens.get("output"),
+                  "reasoning_tokens": tokens.get("reasoning"), "cache_read_tokens": cache.get("read"),
+                  "cost_usd": part.get("cost")}
+        parsed = {}
+        for key, value in fields.items():
+            if value is None:
+                missing.add(key)
+                continue
+            try:
+                parsed[key] = float(value) if key == "cost_usd" else int(value)
+            except (TypeError, ValueError):
+                missing.add(key)
+        # Validate the whole event before touching the totals: no partial contributions.
+        for key, value in parsed.items():
+            totals[key] += value
+        steps_with_cost += "cost_usd" in parsed
         usage["steps"] += 1
     if usage["steps"]:
-        usage.update(totals)
+        usage.update({k: (None if k in missing else v) for k, v in totals.items()})
+        # What the provider did report, for a spend cap: null only when no step said.
+        usage["cost_known_usd"] = totals["cost_usd"] if steps_with_cost else None
     return usage
 
 
@@ -151,17 +168,27 @@ def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
     and 6.5M input tokens for a diff of zero lines.
     """
     started = time.monotonic()
+    # Its own session: opencode forks a server, and killing only the parent left the
+    # grandchild holding stderr open past the timeout (reviewer's repro: 3 s on a 0.2 s
+    # timeout, and a worker still running).
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, stdin=subprocess.DEVNULL, env=env)
+                            text=True, stdin=subprocess.DEVNULL, env=env, start_new_session=True)
     # A worker that goes silent would block a plain readline past the timeout; the
-    # reader thread turns the stream into a queue the loop can wait on with a deadline.
+    # reader threads turn both streams into buffers the loop can wait on with a deadline.
     queue = Queue()
+    err_chunks = []
 
     def reader():
         for line in proc.stdout:
             queue.put(line)
         queue.put(None)
+
+    def err_reader():
+        for line in proc.stderr:
+            err_chunks.append(line)
     Thread(target=reader, daemon=True).start()
+    err_thread = Thread(target=err_reader, daemon=True)
+    err_thread.start()
     lines = []
     cost, steps, code = 0.0, 0, None
     try:
@@ -192,11 +219,25 @@ def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
     except subprocess.TimeoutExpired:
         code = EXIT_TIMEOUT
     finally:
+        # Always on a cut run: the leader may already be gone while its descendants
+        # hold the pipes (reviewer round 2: parent exited, grandchild alive after 124).
+        if code in (EXIT_CAP, EXIT_TIMEOUT) or proc.poll() is None:
+            kill_group(proc)
+    err_thread.join(timeout=2)
+    return code, "".join(lines), "".join(err_chunks)
+
+
+def kill_group(proc):
+    """Kill the worker and everything it spawned; the group id is the leader's pid."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)  # start_new_session: pgid == pid
+    except (ProcessLookupError, PermissionError, OSError):
         if proc.poll() is None:
             proc.kill()
-            proc.wait()
-    err = proc.stderr.read() if proc.stderr else ""
-    return code, "".join(lines), err
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None):
