@@ -219,10 +219,10 @@ def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
     except subprocess.TimeoutExpired:
         code = EXIT_TIMEOUT
     finally:
-        # Always on a cut run: the leader may already be gone while its descendants
-        # hold the pipes (reviewer round 2: parent exited, grandchild alive after 124).
-        if code in (EXIT_CAP, EXIT_TIMEOUT) or proc.poll() is None:
-            kill_group(proc)
+        # Always, whatever the exit: the leader may be gone while its descendants hold
+        # the pipes (reviewer rounds 2 and 3: grandchild alive after 124, then after 0
+        # with only stderr open). A run is over when nothing of it is left running.
+        kill_group(proc)
     err_thread.join(timeout=2)
     return code, "".join(lines), "".join(err_chunks)
 

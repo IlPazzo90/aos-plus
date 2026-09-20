@@ -235,21 +235,33 @@ def add_cost(a, b):
     return None if a is None or b is None else a + b
 
 
-def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=None):
+def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=None, spend=None):
     if differ is None:
         differ = lambda wt: diff_lines(wt, task.get("test_files") or ())  # noqa: E731
+    spend = spend if spend is not None else Spend(None)
     wt = worktree(task)
     try:
         first = runner(wt, model, brief_for(task))
         code, out = tester(wt)
         result = {"task": task["id"], "model": model, "first_pass": code == 0, "retry_pass": None,
-                  "escalated": False, "seconds": first["seconds"], "cost_usd": first["usage"].get("cost_usd"),
+                  "escalated": False, "capped": False, "seconds": first["seconds"],
+                  "cost_usd": first["usage"].get("cost_usd"),
                   "input_tokens": first["usage"].get("input_tokens"), "output_tokens": first["usage"].get("output_tokens"),
                   "exit_code": first["exit_code"], "diff_stat": first["diff_stat"],
                   "attempt_costs": [first["usage"].get("cost_usd")],
                   # The reported part of each attempt, for the cap; the total above is
                   # null when any step went unreported (reviewer round 2).
                   "known_costs": [first["usage"].get("cost_known_usd")]}
+        # The cap is checked between attempts, not after both (reviewer round 3): a
+        # retry that starts past the cap is money the cap was meant to stop.
+        spend.add(result["known_costs"][0])
+        if code != 0 and spend.exceeded():
+            result["capped"] = True
+            result["findings"] = None
+            result["diff_lines"] = differ(wt)
+            result["diff"] = diff_text(wt, task.get("test_files") or ())
+            result["test_tail"] = out
+            return result
         if code != 0:
             second = runner(wt, model, brief_for(task, failure=out))
             code, out = tester(wt)
@@ -259,6 +271,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
             # kept apart, because the spend cap must count every dollar it can see.
             result["attempt_costs"] = [result["cost_usd"], second["usage"].get("cost_usd")]
             result["known_costs"].append(second["usage"].get("cost_known_usd"))
+            spend.add(result["known_costs"][1])
             result["cost_usd"] = add_cost(result["cost_usd"], second["usage"].get("cost_usd"))
             result["input_tokens"] = add_cost(result["input_tokens"], second["usage"].get("input_tokens"))
             result["output_tokens"] = add_cost(result["output_tokens"], second["usage"].get("output_tokens"))
@@ -286,6 +299,7 @@ def summary(rows):
         fp = sum(1 for r in rs if r["first_pass"])
         rp = sum(1 for r in rs if r["retry_pass"])
         esc = sum(1 for r in rs if r["escalated"])
+        capped = sum(1 for r in rs if r.get("capped"))
         secs = sum(r["seconds"] for r in rs) / n
         known = [r["cost_usd"] for r in rs if r["cost_usd"] is not None]
         unknown = n - len(known)
@@ -293,7 +307,8 @@ def summary(rows):
         hml = "/".join(str(sum(x[k] for x in f)) for k in ("high", "medium", "low")) if f else "n/d"
         cost = f"{sum(known):.2f} $" + (f" (costo n/d: {unknown})" if unknown else "")
         diff = sum(r.get("diff_lines", 0) for r in rs) / n
-        lines.append(f"| {model} | {fp}/{n} | {rp}/{n} | {esc}/{n} | {secs:.0f} | {cost} | {hml} | {diff:.0f} |")
+        esc_cell = f"{esc}/{n}" + (f" (+{capped} fermati dal tetto)" if capped else "")
+        lines.append(f"| {model} | {fp}/{n} | {rp}/{n} | {esc_cell} | {secs:.0f} | {cost} | {hml} | {diff:.0f} |")
     return "\n".join(lines)
 
 
@@ -348,14 +363,12 @@ def main():
                 rows.append(json.loads(record.read_text()))
                 continue
             r = run_task(task, model, runner, make_tester(task), make_reviewer(task["prompt"]),
-                         make_worktree, remove_worktree)
+                         make_worktree, remove_worktree, spend=spend)
             r["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             record.write_text(json.dumps(r, ensure_ascii=False, indent=2))
             rows.append(r)
-            for cost in r.get("known_costs", r.get("attempt_costs", [r["cost_usd"]])):
-                spend.add(cost)
             print(f"{task['id']} × {model}: first={r['first_pass']} retry={r['retry_pass']} esc={r['escalated']} "
-                  f"{r['seconds']:.0f}s cost={r['cost_usd']}", flush=True)
+                  f"capped={r.get('capped', False)} {r['seconds']:.0f}s cost={r['cost_usd']}", flush=True)
             if spend.exceeded():
                 print(f"tetto superato: {spend.total:.2f} $ > {spend.cap} $ — fermo", file=sys.stderr)
                 stopped = True

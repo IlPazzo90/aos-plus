@@ -30,13 +30,13 @@ def fake_runner(results):
     return run
 
 
-def run_task(task=TASK, model="m", runner=None, tester=None, reviewer=None, differ=None):
+def run_task(task=TASK, model="m", runner=None, tester=None, reviewer=None, differ=None, spend=None):
     return bench.run_task(task, model,
                           runner=runner or fake_runner([(0, {"cost_usd": 0.01}), (0, {"cost_usd": 0.01})]),
                           tester=tester or (lambda wt: (0, "ok")),
                           reviewer=reviewer or (lambda wt: NO_FINDINGS),
                           worktree=lambda t: "/wt", cleanup=lambda wt: None,
-                          differ=differ or (lambda wt: 4))
+                          differ=differ or (lambda wt: 4), spend=spend)
 
 
 class BenchTests(unittest.TestCase):
@@ -79,6 +79,33 @@ class BenchTests(unittest.TestCase):
             spend.add(cost)
         self.assertTrue(spend.exceeded())
         self.assertEqual(spend.unknown, 1)
+
+    def test_retry_does_not_start_past_the_cap(self):
+        # Reviewer round 3: the retry started after the first attempt had already
+        # crossed --cap-usd; the cap is checked between attempts.
+        runner = fake_runner([(0, {"cost_usd": 0.8, "cost_known_usd": 0.8}), (0, {"cost_usd": 0.8, "cost_known_usd": 0.8})])
+        outcomes = iter([(1, "FAILED"), (0, "ok")])
+        spend = bench.Spend(cap=0.5)
+        r = run_task(runner=runner, tester=lambda wt: next(outcomes), spend=spend,
+                     reviewer=lambda wt: self.fail("no review of a capped task"))
+        self.assertEqual(len(runner.calls), 1)
+        self.assertTrue(r["capped"])
+        self.assertFalse(r["first_pass"])
+        self.assertIsNone(r["retry_pass"])
+        self.assertFalse(r["escalated"])
+        self.assertIsNone(r["findings"])
+        self.assertTrue(spend.exceeded())
+        self.assertIn("fermati dal tetto", bench.summary([r]))
+
+    def test_retry_runs_under_the_cap(self):
+        runner = fake_runner([(0, {"cost_usd": 0.1, "cost_known_usd": 0.1}), (0, {"cost_usd": 0.1, "cost_known_usd": 0.1})])
+        outcomes = iter([(1, "FAILED"), (0, "ok")])
+        spend = bench.Spend(cap=0.5)
+        r = run_task(runner=runner, tester=lambda wt: next(outcomes), spend=spend)
+        self.assertEqual(len(runner.calls), 2)
+        self.assertTrue(r["retry_pass"])
+        self.assertFalse(r["capped"])
+        self.assertAlmostEqual(spend.total, 0.2)
 
     def test_known_cost_inside_an_attempt_reaches_the_cap(self):
         # Reviewer round 2: 0.8 $ reported then an unreported step → cost_usd None,

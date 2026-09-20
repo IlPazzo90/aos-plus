@@ -117,6 +117,20 @@ class DelegateTests(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
+    def test_normal_exit_still_reaps_a_descendant_holding_stderr(self):
+        # Reviewer round 3: parent exits 0, grandchild keeps only stderr open; the run
+        # returned 0 after 2 s and left the grandchild alive.
+        worker = ("import subprocess, sys\n"
+                  "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], stdout=subprocess.DEVNULL)\n"
+                  "print(p.pid, flush=True)\n")
+        started = time.monotonic()
+        code, out, err = delegate.invoke([sys.executable, "-c", worker], self.temp.name, timeout=10)
+        self.assertEqual(code, 0)
+        self.assertLess(time.monotonic() - started, 8)
+        time.sleep(0.2)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(out.strip()), 0)
+
     def test_unparsable_field_does_not_leave_a_partial_contribution(self):
         bad = json.dumps({"type": "step_finish", "sessionID": "ses_1",
                           "part": {"tokens": {"input": 10, "output": "many"}, "cost": 0.1}})
