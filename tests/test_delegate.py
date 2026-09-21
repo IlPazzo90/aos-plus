@@ -1,7 +1,9 @@
 """aos-delegate: one opencode run, evidence out; usage read from JSON events or null."""
 import importlib.util
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +32,14 @@ class DelegateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        # Hermetic: never the machine's config directory or OpenCode variables
+        # (reviewer round 11).
+        env = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(self.temp.name) / "xdg"),
+                                           "HOME": self.temp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        for name in delegate.OPENCODE_ENV:
+            os.environ.pop(name, None)
         self.repo = Path(self.temp.name) / "repo"
         self.repo.mkdir()
         git_repo(self.repo)
@@ -54,6 +64,13 @@ class DelegateTests(unittest.TestCase):
             delegate.ensure_clean(self.repo, allow_dirty=False)
         self.assertEqual(ctx.exception.code, delegate.EXIT_DIRTY)
         delegate.ensure_clean(self.repo, allow_dirty=True)  # no raise
+        # A user's status.showUntrackedFiles=no does not hide an untracked file (round 17).
+        (self.repo / "a.txt").write_text("a\n")
+        subprocess.run(["git", "-C", str(self.repo), "config", "status.showUntrackedFiles", "no"], check=True)
+        (self.repo / "stray.txt").write_text("s\n")
+        with self.assertRaises(SystemExit):
+            delegate.ensure_clean(self.repo, allow_dirty=False)
+        (self.repo / "stray.txt").unlink()
 
     def test_diff_stat_lists_new_files(self):
         self.assertEqual(delegate.diff_stat(self.repo), "")
@@ -64,6 +81,35 @@ class DelegateTests(unittest.TestCase):
         stat = delegate.diff_stat(self.repo)
         self.assertIn("a.txt", stat.splitlines()[0])
         self.assertTrue(stat.endswith("?? caf\u00e9.txt\n?? new.py"))
+        # A file the worker staged is neither unstaged nor untracked (reviewers, round 6).
+        subprocess.run(["git", "-C", str(self.repo), "add", "new.py"], check=True)
+        stat = delegate.diff_stat(self.repo)
+        self.assertIn("new.py", stat)
+        self.assertNotIn("?? new.py", stat)
+        # A repo without a commit yet: index and tree, no HEAD to diff against.
+        bare = Path(self.temp.name) / "fresh"
+        bare.mkdir()
+        subprocess.run(["git", "init", "-q", str(bare)], check=True)
+        (bare / "s.py").write_text("s\n")
+        subprocess.run(["git", "-C", str(bare), "add", "s.py"], check=True)
+        (bare / "u.py").write_text("u\n")
+        stat = delegate.diff_stat(bare)
+        self.assertIn("s.py", stat)
+        self.assertTrue(stat.endswith("?? u.py"))
+        # A --repo below the toplevel still reports a file created above it (round 15).
+        sub = self.repo / "sub"
+        sub.mkdir()
+        self.assertIn("?? caf\u00e9.txt", delegate.diff_stat(sub))
+        subprocess.run(["git", "-C", str(self.repo), "config", "diff.relative", "true"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "color.ui", "always"], check=True)
+        stat = delegate.diff_stat(sub)
+        self.assertIn("a.txt", stat)  # a user's diff.relative does not hide it (round 16)
+        self.assertNotIn("\x1b[", stat)
+        long = self.repo / "src/components/settings/notifications/NotificationPreferencesPanel.test.tsx"
+        long.parent.mkdir(parents=True)
+        long.write_text("x\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", str(long)], check=True)
+        self.assertIn("src/components/settings/notifications/NotificationPreferencesPanel.test.tsx", delegate.diff_stat(self.repo))
 
     def test_usage_null_when_absent(self):
         usage = delegate.parse_usage("plain text, no events\n{not json\n")
@@ -226,10 +272,12 @@ class DelegateTests(unittest.TestCase):
         self.assertTrue(out.endswith("partial\n"))
 
     def test_run_config_denies_every_skill_and_keeps_providers(self):
-        user = Path(self.temp.name) / "opencode.json"
+        home = Path(self.temp.name) / "xdg" / "opencode"
+        home.mkdir(parents=True, exist_ok=True)
+        user = home / "opencode.json"
         user.write_text(json.dumps({"provider": {"vercel": {"models": {"x": {}}}}, "permission": {"bash": "allow"}}))
-        path = delegate.run_config(user)
-        self.addCleanup(lambda: Path(path).exists() and Path(path).unlink())
+        path = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path).parents[1], ignore_errors=True))
         cfg = json.loads(Path(path).read_text())
         self.assertEqual(cfg["permission"]["skill"], {"*": "deny"})
         self.assertEqual(cfg["provider"]["vercel"]["models"], {"x": {}})
@@ -239,12 +287,12 @@ class DelegateTests(unittest.TestCase):
         self.assertEqual(cfg["permission"]["bash"]["git push *"], "deny")
         # A user who denied every command keeps that denial (reviewer round 1).
         user.write_text(json.dumps({"permission": {"bash": "deny"}}))
-        path3 = delegate.run_config(user)
-        self.addCleanup(lambda: Path(path3).unlink())
+        path3 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path3).parents[1], ignore_errors=True))
         self.assertEqual(json.loads(Path(path3).read_text())["permission"]["bash"]["*"], "deny")
         # No user config at all still yields a valid run config.
-        path2 = delegate.run_config(Path(self.temp.name) / "missing.json")
-        self.addCleanup(lambda: Path(path2).unlink())
+        path2 = delegate.run_config(config_dir=Path(self.temp.name) / "missing", inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path2).parents[1], ignore_errors=True))
         cfg2 = json.loads(Path(path2).read_text())
         self.assertEqual(cfg2["permission"]["skill"], {"*": "deny"})
         for key in ("external_directory", "webfetch", "websearch", "task"):
@@ -253,33 +301,241 @@ class DelegateTests(unittest.TestCase):
     def test_run_config_guards_win_over_the_user_map_and_come_last(self):
         # The later matching rule wins in OpenCode and a trailing "*": "allow" cancels
         # every deny before it (probed 2026-09-21): the user's entries stay, ours close.
-        user = Path(self.temp.name) / "opencode.json"
-        user.write_text(json.dumps({"permission": {"bash": {"curl *": "allow", "*": "allow", "make *": "ask"}}}))
-        path = delegate.run_config(user)
-        self.addCleanup(lambda: Path(path).unlink())
+        home = Path(self.temp.name) / "xdg" / "opencode"
+        home.mkdir(parents=True, exist_ok=True)
+        user = home / "opencode.json"
+        user.write_text(json.dumps({"permission": {"bash": {"curl *": "allow", "curl https://*": "allow",
+                                                              "*": "allow", "make *": "ask"}}}))
+        path = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path).parents[1], ignore_errors=True))
         bash = json.loads(Path(path).read_text())["permission"]["bash"]
         self.assertEqual(bash["curl *"], "deny")
+        self.assertNotIn("curl https://*", bash)  # a longer pattern for a denied command goes too (round 12)
+        self.assertEqual(bash["npx vercel@*"], "deny")
+        self.assertEqual(bash["git fetch *"], "deny")
         self.assertEqual(bash["make *"], "ask")
         keys = list(bash)
         self.assertEqual(keys[:2], ["*", "make *"])
         self.assertTrue(all(bash[k] == "deny" for k in keys[2:]))
-        self.assertEqual(len(keys), 2 + 2 * len(delegate.DENIED_BASH))
+        expected = sum(1 if n.endswith("*") else 2 for n in delegate.DENIED_BASH)
+        self.assertEqual(len(keys), 2 + expected)
+        # A "*" the user wrote keeps its place (reviewer round 7: moving it first
+        # turned `{"rm *": "allow", "*": "deny"}` into an allow); ours still close.
+        user.write_text(json.dumps({"permission": {"bash": {"rm *": "allow", "*": "deny"}}}))
+        path2 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path2).parents[1], ignore_errors=True))
+        bash = json.loads(Path(path2).read_text())["permission"]["bash"]
+        self.assertEqual(list(bash.items())[:2], [("rm *", "allow"), ("*", "deny")])
+        self.assertEqual(list(bash)[-1], "sudo *")
+        # A string "*" written after `bash` overrode the whole map in the user's
+        # order (round 8): only that "*" survives, then our denies.
+        user.write_text(json.dumps({"permission": {"bash": {"rm *": "allow"}, "*": "deny"}}))
+        path4 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path4).parents[1], ignore_errors=True))
+        bash = json.loads(Path(path4).read_text())["permission"]["bash"]
+        self.assertEqual(list(bash.items())[0], ("*", "deny"))
+        self.assertNotIn("rm *", bash)
+        # A "*" written as a map counts by its own "*", or as deny (round 9), and its
+        # specific rules seed the bash map (round 10: `rm *` stays denied).
+        user.write_text(json.dumps({"permission": {"bash": {"rm *": "allow"}, "*": {"*": "deny"}}}))
+        path5 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path5).parents[1], ignore_errors=True))
+        bash = json.loads(Path(path5).read_text())["permission"]["bash"]
+        keys = list(bash)
+        self.assertGreater(keys.index("*"), keys.index("rm *"))  # the later "*" deny still wins
+        self.assertEqual(bash["*"], "deny")
+        user.write_text(json.dumps({"permission": {"*": {"*": "allow", "rm *": "deny"}}}))
+        path6 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path6).parents[1], ignore_errors=True))
+        bash = json.loads(Path(path6).read_text())["permission"]["bash"]
+        self.assertEqual(list(bash.items())[:2], [("*", "allow"), ("rm *", "deny")])
+        # The same pattern in the "*" map and in a bash map written after it: the
+        # later value wins (round 11); a "*" map without its own "*" allows (--auto).
+        user.write_text(json.dumps({"permission": {"*": {"*": "allow", "rm *": "allow"}, "bash": {"rm *": "deny"}}}))
+        path7 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path7).parents[1], ignore_errors=True))
+        bash = json.loads(Path(path7).read_text())["permission"]["bash"]
+        self.assertEqual(bash["rm *"], "deny")
+        user.write_text(json.dumps({"permission": {"*": {"*": "allow", "rm *": "allow"}, "bash": "deny"}}))
+        path8 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path8).parents[1], ignore_errors=True))
+        bash = json.loads(Path(path8).read_text())["permission"]["bash"]
+        self.assertEqual(list(bash.items())[0], ("*", "deny"))
+        self.assertNotIn("rm *", bash)
+        # A pattern the later map repeats moves to the later position (round 12).
+        for perm in ({"*": {"*": "allow", "rm *": "allow"}, "bash": {"*": "deny"}},
+                     {"bash": {"*": "allow", "rm *": "allow"}, "*": {"*": "deny"}}):
+            user.write_text(json.dumps({"permission": perm}))
+            path = delegate.run_config(config_dir=home, inherited="")
+            bash = json.loads(Path(path).read_text())["permission"]["bash"]
+            shutil.rmtree(Path(path).parents[1], ignore_errors=True)
+            self.assertGreater(list(bash).index("*"), list(bash).index("rm *"), perm)
+            self.assertEqual(bash["*"], "deny", perm)
+        # An empty "*" map after bash adds no rule and replaces nothing (round 13);
+        # the copy writes "*" as a string, its rules already in bash.
+        user.write_text(json.dumps({"permission": {"bash": {"rm *": "deny"}, "*": {}}}))
+        path10 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path10).parents[1], ignore_errors=True))
+        perm = json.loads(Path(path10).read_text())["permission"]
+        self.assertEqual(perm["bash"]["rm *"], "deny")
+        self.assertEqual(perm["*"], {})
+        # A permission key that names bash by glob counts too (round 15), and a
+        # user pattern with no space or extra spaces for a denied command goes.
+        user.write_text(json.dumps({"permission": {"ba*": {"rm *": "deny"}, "bash": {"curl*": "allow", "git  commit": "allow"}}}))
+        path11 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path11).parents[1], ignore_errors=True))
+        perm = json.loads(Path(path11).read_text())["permission"]
+        self.assertEqual(perm["bash"]["rm *"], "deny")
+        self.assertNotIn("curl*", perm["bash"])
+        self.assertNotIn("git  commit", perm["bash"])
+        self.assertEqual(perm["ba*"], {"rm *": "deny"})
+        user.write_text(json.dumps({"permission": {"bash": {"rm *": "deny"}, "[b]ash": "allow"}}))
+        path13 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path13).parents[1], ignore_errors=True))
+        self.assertEqual(json.loads(Path(path13).read_text())["permission"]["bash"]["rm *"], "deny")  # "[" literal (round 16)
+        # A key that expands to "bash" through {env:…} is a bash rule (round 17).
+        user.write_text(json.dumps({"permission": {"{env:AOS_TEST_TOOL}": "deny"}}))
+        with mock.patch.dict(os.environ, {"AOS_TEST_TOOL": "bash"}):
+            path14 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path14).parents[1], ignore_errors=True))
+        self.assertEqual(list(json.loads(Path(path14).read_text())["permission"]["bash"].items())[0], ("*", "deny"))
+        user.write_text(json.dumps({"permission": {"*": None, "b*": "deny"}}))
+        path12 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path12).parents[1], ignore_errors=True))
+        perm = json.loads(Path(path12).read_text())["permission"]
+        self.assertEqual(perm["*"], "allow")
+        self.assertEqual(list(perm["bash"].items())[0], ("*", "deny"))
+        user.write_text(json.dumps({"permission": {"*": {"rm -rf *": "deny"}}}))
+        path9 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path9).parents[1], ignore_errors=True))
+        perm = json.loads(Path(path9).read_text())["permission"]
+        self.assertEqual(list(perm["bash"].items())[:2], [("*", "allow"), ("rm -rf *", "deny")])
+        # The map stays as written: it rules read and edit too (round 14).
+        self.assertEqual(perm["*"], {"rm -rf *": "deny"})
+        # A permission-level string is the user's rule for commands too.
+        user.write_text(json.dumps({"permission": "deny"}))
+        path3 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path3).parents[1], ignore_errors=True))
+        perm = json.loads(Path(path3).read_text())["permission"]
+        self.assertEqual(perm["*"], "deny")
+        self.assertEqual(perm["bash"]["*"], "deny")
+
+    def test_user_config_merges_every_global_layer(self):
+        # config.json, opencode.json, opencode.jsonc and the inherited OPENCODE_CONFIG,
+        # in OpenCode's order, key by key (reviewer round 7: a provider defined only
+        # there vanished from the run).
+        home = Path(self.temp.name) / "xdg" / "opencode"
+        home.mkdir(parents=True)
+        (home / "config.json").write_text(json.dumps({"provider": {"a": {"models": {"x": {}}}}, "theme": "old"}))
+        (home / "opencode.json").write_text(json.dumps({"provider": {"b": {"models": {"y": {}}}}, "theme": "new"}))
+        (home / "opencode.jsonc").write_text('{"provider": {"a": {"options": {"apiKey": "k"}}}}')
+        inherited = Path(self.temp.name) / "inherited.json"
+        inherited.write_text(json.dumps({"provider": {"c": {}}, "permission": {"edit": "allow"}}))
+        merged = delegate.user_config(home, str(inherited))
+        # OPENCODE_PERMISSION in its string form is the rule for everything (round 14);
+        # {env:} keys expand in the inherited variables too (round 18).
+        self.assertEqual(delegate.user_config(home, "", "", '"deny"')["permission"], "deny")
+        with mock.patch.dict(os.environ, {"AOS_TEST_TOOL": "bash"}):
+            self.assertEqual(delegate.user_config(home, "", '{"permission": {"{env:AOS_TEST_TOOL}": "ask"}}', "")["permission"], {"bash": "ask"})
+            self.assertEqual(delegate.user_config(home, "", "", '{"{env:AOS_TEST_TOOL}": "ask"}')["permission"], {"bash": "ask"})
+        self.assertEqual(merged["theme"], "new")
+        self.assertEqual(merged["provider"]["a"], {"models": {"x": {}}, "options": {"apiKey": "k"}})
+        self.assertEqual(set(merged["provider"]), {"a", "b", "c"})
+        self.assertEqual(merged["permission"], {"edit": "allow"})
+        # A jsonc with comments and a trailing comma is still read (round 8).
+        (home / "opencode.jsonc").write_text('{// c\n"theme": "x", /* "theme": "y" */ "s": "a//b", "t": ", }",}')
+        self.assertEqual(delegate.user_config(home, "")["theme"], "x")
+        self.assertEqual(delegate.user_config(home, "")["s"], "a//b")
+        self.assertEqual(delegate.user_config(home, "")["t"], ", }")  # a comma inside a string stays (round 9)
+        # A relative config path and an {env:…} reference (round 9).
+        rel = Path(os.path.relpath(home / "opencode.jsonc"))
+        self.assertTrue(delegate.load_json(rel)["theme"])
+        self.assertEqual(delegate.absolute_files({"k": "{file:{env:HOME}/x}"}, Path("/tmp")), {"k": "{file:{env:HOME}/x}"})
+        self.assertEqual(delegate.absolute_files({"k": "Bearer {file:./t} {file:./u}"}, Path("/b")),
+                         {"k": "Bearer {file:/b/t} {file:/b/u}"})
+        self.assertEqual(delegate.absolute_files({"k": "{file:./keys/{env:P}.txt}"}, Path("/b")),
+                         {"k": "{file:/b/keys/{env:P}.txt}"})
+        # A relative {file:…} is resolved against the file it came from (round 8).
+        (home / "opencode.jsonc").write_text('{"provider": {"a": {"options": {"apiKey": "{file:./k}"}}}}')
+        self.assertEqual(delegate.user_config(home, "")["provider"]["a"]["options"]["apiKey"],
+                         "{file:" + str((home / "k").resolve()) + "}")
+        path = delegate.run_config(config_dir=home, inherited=str(inherited))
+        self.addCleanup(lambda: shutil.rmtree(Path(path).parents[1], ignore_errors=True))
+        cfg = json.loads(Path(path).read_text())
+        self.assertEqual(set(cfg["provider"]), {"a", "b", "c"})
+        self.assertEqual(cfg["permission"]["edit"], "allow")
+
+    def test_run_refuses_a_repo_with_its_own_opencode_config(self):
+        # A project config merges after ours and a pattern it adds lands after our
+        # denies (reviewer round 7); there is no order that closes it, so no run.
+        (self.repo / "opencode.json").write_text("{}")
+        self.assertEqual(delegate.project_config(self.repo), (self.repo / "opencode.json").resolve())
+        with mock.patch.object(delegate, "invoke") as invoke, self.assertRaises(SystemExit) as ctx:
+            delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=True)
+        self.assertEqual(ctx.exception.code, delegate.EXIT_PROJECT_CONFIG)
+        invoke.assert_not_called()
+        # With --json the refusal is a payload too (round 17).
+        brief = self.repo / "brief.txt"
+        brief.write_text("b")
+        with mock.patch.object(sys, "argv", ["aos-delegate", "--repo", str(self.repo), "--model", "x/y",
+                                             "--brief", str(brief), "--json", "--allow-dirty"]), \
+                mock.patch.object(shutil, "which", return_value="/usr/bin/opencode"), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            code = delegate.main()
+        self.assertEqual(code, delegate.EXIT_PROJECT_CONFIG)
+        self.assertEqual(json.loads(out.getvalue())["exit_code"], delegate.EXIT_PROJECT_CONFIG)
+        brief.unlink()
+        (self.repo / "opencode.json").unlink()
+        (self.repo / ".opencode").mkdir()
+        self.assertIsNotNone(delegate.project_config(self.repo))
+        (self.repo / ".opencode").rmdir()
+        self.assertIsNone(delegate.project_config(self.repo))
+        # The search stops at the git toplevel, where OpenCode stops (round 8).
+        (self.repo.parent / "opencode.json").write_text("{}")
+        self.assertIsNone(delegate.project_config(self.repo))
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (self.repo / "opencode.jsonc").write_text("{}")
+        self.assertEqual(delegate.project_config(sub), (self.repo / "opencode.jsonc").resolve())
+
+    def test_run_config_survives_a_config_that_is_not_an_object(self):
+        # Valid JSON that is not a config (reviewers, round 6): guards, no traceback.
+        home = Path(self.temp.name) / "xdg" / "opencode"
+        home.mkdir(parents=True, exist_ok=True)
+        user = home / "opencode.json"
+        for text in ("null", "[]", '"x"', '{"permission": null}', '{"permission": [1]}', '{"permission": {"bash": null}}'):
+            user.write_text(text)
+            path = delegate.run_config(config_dir=home, inherited="")
+            perm = json.loads(Path(path).read_text())["permission"]
+            shutil.rmtree(Path(path).parents[1], ignore_errors=True)
+            self.assertEqual(perm["webfetch"], "deny", text)
+            self.assertEqual(list(perm["bash"])[0], "*", text)
+            self.assertEqual(perm["*"], "allow", text)
 
     def test_run_config_guards_close_the_permission_map_too(self):
         # A wildcard at the permission level after our keys would reopen them
         # (reviewer round 4); a string permission is the user's rule for everything.
-        user = Path(self.temp.name) / "opencode.json"
+        home = Path(self.temp.name) / "xdg" / "opencode"
+        home.mkdir(parents=True, exist_ok=True)
+        user = home / "opencode.json"
         user.write_text(json.dumps({"permission": {"bash": "allow", "webfetch": "allow", "*": "allow"}}))
-        path = delegate.run_config(user)
-        self.addCleanup(lambda: Path(path).unlink())
+        path = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path).parents[1], ignore_errors=True))
         perm = json.loads(Path(path).read_text())["permission"]
         self.assertEqual(list(perm)[0], "*")
         self.assertEqual(list(perm)[-1], "bash")
         self.assertEqual(perm["webfetch"], "deny")
         self.assertEqual(perm["bash"]["*"], "allow")
+        # No wildcard from the user: "*" is still the first key of both maps.
+        user.write_text(json.dumps({"permission": {"edit": "allow"}}))
+        path3 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path3).parents[1], ignore_errors=True))
+        perm = json.loads(Path(path3).read_text())["permission"]
+        self.assertEqual(list(perm)[:2], ["*", "edit"])
+        self.assertEqual(list(perm["bash"])[0], "*")
         user.write_text(json.dumps({"permission": "allow"}))
-        path2 = delegate.run_config(user)
-        self.addCleanup(lambda: Path(path2).unlink())
+        path2 = delegate.run_config(config_dir=home, inherited="")
+        self.addCleanup(lambda: shutil.rmtree(Path(path2).parents[1], ignore_errors=True))
         perm = json.loads(Path(path2).read_text())["permission"]
         self.assertEqual(list(perm)[0], "*")
         self.assertEqual(perm["task"], "deny")
@@ -288,21 +544,219 @@ class DelegateTests(unittest.TestCase):
         seen = {}
 
         def fake_invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
-            seen["config"] = env["OPENCODE_CONFIG"]
+            # The copy is the only layer, the global one of a temporary XDG root; every
+            # OpenCode config variable inherited from the caller is dropped (rounds 6-8).
+            seen["config"] = Path(env["XDG_CONFIG_HOME"]) / "opencode" / "opencode.json"
+            seen["content"] = json.loads(seen["config"].read_text())
+            seen["inherited"] = any(name in env for name in delegate.OPENCODE_ENV)
+            seen["linked"] = (Path(env["XDG_CONFIG_HOME"]) / "git").is_symlink()
+            seen["agents_linked"] = (Path(env["XDG_CONFIG_HOME"]) / "opencode" / "agent").exists()
+            seen["modules_linked"] = (Path(env["XDG_CONFIG_HOME"]) / "opencode" / "node_modules").is_symlink()
             seen["pwd"] = env["PWD"]
             seen["dir"] = cmd[cmd.index("--dir") + 1]
-            seen["exists"] = Path(env["OPENCODE_CONFIG"]).exists()
+            seen["exists"] = seen["config"].exists()
             seen["caps"] = (max_cost, max_steps)
             return 0, FIXTURE.read_text(), ""
-        with mock.patch.object(delegate, "invoke", fake_invoke):
+        inherited = Path(self.temp.name) / "inherited.json"
+        inherited.write_text(json.dumps({"provider": {"only-here": {}}}))
+        # The user's XDG root (never the machine's: reviewer round 8), with a
+        # sibling entry the worker's own tools must still find.
+        xdg = Path(self.temp.name) / "xdg"
+        (xdg / "git").mkdir(parents=True)
+        (xdg / "opencode").mkdir()
+        (xdg / "opencode" / "opencode.json").write_text(json.dumps(
+            {"mcp": {"remote": {}}, "theme": "t", "share": "auto", "tools": {"webfetch": True},
+             "agent": {"build": {"permission": {"bash": "allow"}, "tools": {"bash": True}}}}))
+        (xdg / "opencode" / "agent").mkdir()
+        (xdg / "opencode" / "agent" / "build.md").write_text("---\npermission:\n  bash: allow\n---\n")
+        (xdg / "opencode" / "node_modules").mkdir()
+        with mock.patch.object(delegate, "invoke", fake_invoke), \
+                mock.patch.dict(os.environ, {"OPENCODE_CONFIG": str(inherited), "XDG_CONFIG_HOME": str(xdg),
+                                             "OPENCODE_PERMISSION": '{"bash": {"rm -rf *": "deny"}}', "OPENCODE_AUTO_SHARE": "1",
+                                             "OPENCODE_CONFIG_CONTENT": '{"provider": {"only-env": {}}}'}):
             result = delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False,
                                   max_cost=2.0, max_steps=10)
         self.assertTrue(seen["exists"])
-        self.assertFalse(Path(seen["config"]).exists())
+        self.assertFalse(seen["config"].parents[1].exists())
+        self.assertFalse(seen["inherited"])
+        self.assertTrue(seen["linked"])
+        self.assertIn("only-here", seen["content"]["provider"])
+        self.assertIn("only-env", seen["content"]["provider"])
+        # Only the providers and the reworked permission survive (rounds 8-10: mcp,
+        # agent.*.permission — measured, the worker ran curl — tools, share); the
+        # agent definitions and skills of the config directory are not linked in.
+        self.assertEqual(set(seen["content"]), {"provider", "permission", "share", "small_model"})
+        self.assertEqual(seen["content"]["share"], "disabled")
+        self.assertEqual(seen["content"]["small_model"], "vercel/x/y")  # the title agent too (round 14)
+        self.assertFalse(seen["agents_linked"])
+        self.assertTrue(seen["modules_linked"])
+        self.assertEqual(seen["content"]["permission"]["webfetch"], "deny")
+        self.assertEqual(seen["content"]["permission"]["codesearch"], "deny")
+        self.assertEqual(seen["content"]["permission"]["bash"]["rm -rf *"], "deny")  # OPENCODE_PERMISSION merged
+        # The temporary root is gone; the targets of its links are not.
+        self.assertTrue((xdg / "git").is_dir())
+        self.assertTrue((xdg / "opencode" / "node_modules").is_dir())
+        self.assertEqual(list(seen["content"]["permission"]["bash"])[0], "*")
         self.assertEqual(seen["caps"], (2.0, 10))
         self.assertEqual(seen["pwd"], str(self.repo.resolve()))
         self.assertEqual(seen["dir"], str(self.repo.resolve()))
         self.assertIsNone(result["error"])
+        self.assertEqual(result["head_before"], result["head_after"])
+
+    def test_record_says_when_the_worker_moved_head(self):
+        def fake_invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            (self.repo / "a.txt").write_text("moved\n")
+            subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-qam", "x"], check=True)
+            return 0, "", ""
+        with mock.patch.object(delegate, "invoke", fake_invoke), \
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(self.temp.name) / "xdg")}):
+            result = delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False)
+        self.assertEqual(result["diff_stat"], "")
+        self.assertNotEqual(result["head_before"], result["head_after"])
+
+    def test_no_git_runs_on_a_repo_whose_git_config_the_worker_changed(self):
+        # Reproduced (round 18): `core.fsmonitor` written by the worker was run by
+        # this script's own `git diff`. Any change to .git config/info/hooks: no git.
+        def fake_invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            subprocess.run(["git", "-C", str(self.repo), "config", "core.fsmonitor", "false"], check=True)
+            (self.repo / "b.txt").write_text("b\n")
+            return 0, "", ""
+        with mock.patch.object(delegate, "invoke", fake_invoke):
+            result = delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False)
+        self.assertTrue(result["git_meta_changed"])
+        self.assertIsNone(result["diff_stat"])
+        self.assertIsNone(result["head_after"])
+        self.assertIn(".git", result["error"])
+        # Hooks and info count too; an untouched .git does not.
+        paths = delegate.git_meta_paths(self.repo)
+        before = delegate.git_meta(paths)
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("* filter=x\n")
+        self.assertNotEqual(before, delegate.git_meta(paths))
+        self.assertEqual(delegate.git_meta(paths), delegate.git_meta(paths))
+
+    def test_git_meta_covers_a_linked_worktree_and_included_configs(self):
+        # A linked worktree's own dir has no config/hooks: they are the common dir's,
+        # shared with the user's real repo; and a config may include a file the
+        # worker can edit without touching the watched ones (reviewers, round 19).
+        wt = Path(self.temp.name) / "wt"
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", "--detach", str(wt), "HEAD"], check=True)
+        included = self.repo / "extra.gitconfig"
+        included.write_text("[user]\n\tname = t\n")
+        subprocess.run(["git", "-C", str(self.repo), "config", "include.path", "../extra.gitconfig"], check=True)
+        paths = delegate.git_meta_paths(wt)
+        self.assertIn((self.repo / ".git" / "config").resolve(), paths)
+        self.assertIn((self.repo / ".git" / "hooks").resolve(), paths)
+        self.assertIn(included.resolve(), paths)
+        before = delegate.git_meta(paths)
+        self.assertTrue(before)
+        with included.open("a") as f:
+            f.write("[core]\n\tfsmonitor = false\n")
+        self.assertNotEqual(before, delegate.git_meta(paths))
+        # Nested and quoted includes are followed (round 20); the pointers git
+        # follows — the worktree's `.git` file, `<gitdir>/commondir` — are watched.
+        nested = self.repo / "nested.gitconfig"
+        nested.write_text("[user]\n\temail = t@t\n")
+        with included.open("a") as f:
+            f.write('[include]\n\tpath = "./nested.gitconfig"\n')
+        paths = delegate.git_meta_paths(wt)
+        self.assertIn(nested.resolve(), paths)
+        self.assertIn((wt / ".git").resolve(), paths)
+        before = delegate.git_meta(paths)
+        # As git reads includes (round 21): `Path =`, a comment after the value,
+        # the key on the header's line.
+        (self.repo / "c1.gitconfig").write_text("[user]\n\tname = a\n")
+        (self.repo / "c2.gitconfig").write_text("[user]\n\tname = b\n")
+        with (self.repo / ".git" / "config").open("a") as f:
+            f.write("[include]\n\tPath = ../c1.gitconfig # local rules\n[include] path = ../c2.gitconfig ; note\n")
+        paths = delegate.git_meta_paths(wt)
+        self.assertIn((self.repo / "c1.gitconfig").resolve(), paths)
+        self.assertIn((self.repo / "c2.gitconfig").resolve(), paths)
+        # core.hooksPath, the global files' includes and an inherited GIT_CONFIG_GLOBAL
+        # are watched too; quotes inside a value and continuation lines are read
+        # as git reads them (round 23).
+        (self.repo / "myhooks").mkdir()
+        subprocess.run(["git", "-C", str(self.repo), "config", "core.hooksPath", "myhooks"], check=True)
+        home_cfg = Path(self.temp.name) / ".gitconfig"
+        home_cfg.write_text("[include]\n\tpath = ~/.gitconfig.local\n")
+        (Path(self.temp.name) / ".gitconfig.local").write_text("")
+        inherited_global = Path(self.temp.name) / "inherited.gitconfig"
+        inherited_global.write_text("")
+        with (self.repo / ".git" / "config").open("a") as f:
+            f.write('[include]\n\tpath = "../c3".gitconfig\n\tpath = ../c4\\\n.gitconfig\n\tpath = "../c5\\"q.gitconfig"\n')
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(inherited_global)}):
+            paths = delegate.git_meta_paths(wt)
+        # A relative core.hooksPath counts from the worktree git runs in, as git does.
+        resolved = [p.resolve() for p in paths]
+        for expected in (wt / "myhooks", Path(self.temp.name) / ".gitconfig.local", inherited_global,
+                         self.repo / "c3.gitconfig", self.repo / "c4.gitconfig", self.repo / 'c5"q.gitconfig'):
+            self.assertIn(expected.resolve(), resolved)
+        subprocess.run(["git", "-C", str(self.repo), "config", "--unset", "core.hooksPath"], check=True)
+        # With --repo below the toplevel the toplevel's `.git` is the pointer watched.
+        sub = wt / "sub"
+        sub.mkdir()
+        self.assertIn((wt / ".git").resolve(), delegate.git_meta_paths(sub))
+        self.assertNotIn((sub / ".git").resolve(), delegate.git_meta_paths(sub))
+        # An unreadable file is a stable marker: unreadable before and after is not a
+        # change, readable before and unreadable after is (round 22).
+        before = delegate.git_meta(paths)
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
+            self.assertEqual(delegate.git_meta(paths), delegate.git_meta(paths))
+            self.assertNotEqual(before, delegate.git_meta(paths))
+        # A link re-pointed to another file, and a mode change, are changes (round 22).
+        (self.repo / "cfg-a").write_text(""); (self.repo / "cfg-b").write_text("")
+        real = (self.repo / ".git" / "config").read_text()
+        (self.repo / ".git" / "config").unlink()
+        (self.repo / ".git" / "config").symlink_to(self.repo / "cfg-a")
+        (self.repo / "cfg-a").write_text(real)
+        (self.repo / "cfg-b").write_text(real)
+        paths = delegate.git_meta_paths(wt)
+        before = delegate.git_meta(paths)
+        (self.repo / ".git" / "config").unlink()
+        (self.repo / ".git" / "config").symlink_to(self.repo / "cfg-b")
+        self.assertNotEqual(before, delegate.git_meta(paths))
+        hook = self.repo / ".git" / "hooks" / "post-checkout"
+        hook.write_text("#!/bin/sh\n")
+        before = delegate.git_meta(paths)
+        hook.chmod(0o755)
+        self.assertNotEqual(before, delegate.git_meta(paths))
+        pointer = wt / ".git"
+        pointer.write_text(pointer.read_text() + "\n")
+        self.assertNotEqual(before, delegate.git_meta(paths))
+        pointer.write_text(pointer.read_text().rstrip("\n") + "\n")
+        commondir = self.repo / ".git" / "worktrees" / "wt" / "commondir"
+        self.assertIn(commondir.resolve(), paths)
+        # The main repo's `.git` directory is a marker: its index may change freely.
+        main_paths = delegate.git_meta_paths(self.repo)
+        self.assertEqual(delegate.git_meta(main_paths)[str((self.repo / ".git").resolve())], b"<dir>")
+        # After the run, the snapshot is plain reads: no git on the tampered repo.
+        with mock.patch.object(delegate.subprocess, "run", side_effect=AssertionError("git ran")):
+            delegate.git_meta(paths)
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "remove", "--force", str(wt)], check=True)
+
+    def test_global_git_config_is_neither_read_nor_left_unnoticed(self):
+        # A worker can append to ~/.gitconfig with a shell redirect (round 22): the
+        # script's own git reads no global or system config, and the record says
+        # the file changed.
+        hook = Path(self.temp.name) / "hook.sh"
+        marker = Path(self.temp.name) / "ran"
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        hook.chmod(0o755)
+
+        def fake_invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            cfg = Path(os.environ["XDG_CONFIG_HOME"]) / "git" / "config"
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(f"[core]\n\tfsmonitor = {hook}\n")
+            (self.repo / "a.txt").write_text("changed\n")
+            return 0, "", ""
+        with mock.patch.object(delegate, "invoke", fake_invoke):
+            result = delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False)
+        self.assertTrue(result["git_meta_changed"])
+        self.assertFalse(marker.exists())
+        # Even with the hook in place and no fingerprint, the script's git ignores it.
+        self.assertIn("a.txt", delegate.diff_stat(self.repo))
+        self.assertFalse(marker.exists())
 
     def test_cap_exit_is_named_in_the_record(self):
         with mock.patch.object(delegate, "invoke", return_value=(delegate.EXIT_CAP, "", "")):

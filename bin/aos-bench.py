@@ -7,6 +7,7 @@ or null; a null never counts as zero and is never estimated.
 """
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 import shutil
@@ -18,6 +19,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DELEGATE = HERE / "aos-delegate.py"
+_spec = importlib.util.spec_from_file_location("aos_delegate", DELEGATE)
+delegate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(delegate)
 # Per attempt. A worker past these is looping, not working: the first run of this
 # benchmark spent 3.30 $ and 140 steps on a diff of zero lines.
 MAX_COST_USD = 1.0
@@ -72,15 +76,18 @@ class Spend:
 def make_worktree(task):
     repo = Path(os.path.expanduser(task["repo"]))
     wt = tempfile.mkdtemp(prefix="aos-bench-")
-    subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", wt, task["commit"] + "^"],
-                   check=True, capture_output=True, text=True)
+    delegate.git(repo, "worktree", "add", "--detach", wt, task["commit"] + "^", check=True)
     # The worktree exists from here: a failure in its preparation must not leave it
     # registered (reviewer's repro: a missing test file left a worktree behind).
     try:
-        # A worktree has no node_modules; the main checkout's are read-only for a test run.
+        # A worktree has no node_modules. A copy, not a link: through a link the
+        # worker wrote into the user's real checkout, unseen by diff and record
+        # (reviewer round 23). On APFS `cp -c` clones blocks, seconds not minutes.
         modules = repo / "node_modules"
         if modules.is_dir():
-            os.symlink(modules, Path(wt) / "node_modules")
+            cloned = subprocess.run(["cp", "-Rc", str(modules), str(Path(wt) / "node_modules")], capture_output=True)
+            if cloned.returncode != 0:
+                shutil.copytree(modules, Path(wt) / "node_modules", symlinks=True)
         restore_tests(wt, task)
     except Exception:
         remove_worktree(wt)
@@ -92,13 +99,16 @@ def restore_tests(wt, task):
     """The commit's test files are the spec the worker sees and the judge it cannot rewrite."""
     files = task.get("test_files") or []
     if files:
-        subprocess.run(["git", "-C", wt, "checkout", task["commit"], "--", *files],
-                       check=True, capture_output=True, text=True)
+        delegate.git(wt, "checkout", task["commit"], "--", *files, check=True)
 
 
 def remove_worktree(wt):
-    subprocess.run(["git", "-C", wt, "worktree", "remove", "--force", wt], capture_output=True)
+    delegate.git(wt, "worktree", "remove", "--force", wt)
     shutil.rmtree(wt, ignore_errors=True)
+
+
+# The delegate's exits before any worker ran: a refusal, not a run (aos-delegate.py).
+DELEGATE_REFUSED = (3, 4, 5)
 
 
 def opencode_runner(wt, model, brief):
@@ -106,11 +116,26 @@ def opencode_runner(wt, model, brief):
                            "--brief", "-", "--json", "--allow-dirty",
                            "--max-cost", str(MAX_COST_USD), "--max-steps", str(MAX_STEPS)],
                           input=brief, capture_output=True, text=True)
+    record = {"exit_code": proc.returncode, "seconds": 0, "usage": {}, "diff_stat": "",
+              "reply": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
     try:
-        return json.loads(proc.stdout)
+        # A refusal payload (exit 3/4/5) has no usage or seconds: the defaults fill
+        # it (reviewer round 21: the bench crashed on it).
+        record.update(json.loads(proc.stdout))
     except json.JSONDecodeError:
-        return {"exit_code": proc.returncode, "seconds": 0, "usage": {}, "diff_stat": "",
-                "reply": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
+        pass
+    return record
+
+
+def attempt_state(record):
+    """"ok", "refused" (the delegate never ran a worker) or "tampered" — which also
+    covers a record that cannot say whether the shared .git was left alone: a
+    crashed delegate after the run says nothing, and nothing is not "no" (round 21)."""
+    if record.get("git_meta_changed") is False:
+        return "ok"
+    if record.get("exit_code") in DELEGATE_REFUSED and "git_meta_changed" not in record:
+        return "refused"
+    return "tampered"
 
 
 def codex_usage(text):
@@ -144,10 +169,18 @@ def codex_runner(wt, model, brief):
     cmd = ["codex", "exec", "--approve-for-me", "--json", "-C", wt, "-c", "mcp_servers={}"]
     if model.startswith("codex:"):
         cmd += ["-m", model.split(":", 1)[1]]
+    # The same .git fingerprint as the delegate's: the reference worker shares the
+    # user's real .git too (round 21).
+    meta_paths = delegate.git_meta_paths(wt)
+    meta_before = delegate.git_meta(meta_paths)
     proc = subprocess.run(cmd + [brief], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    try:
+        tampered = delegate.git_meta(meta_paths) != meta_before
+    except Exception:
+        tampered = True
     return {"exit_code": proc.returncode, "seconds": round(time.monotonic() - started, 3),
-            "usage": codex_usage(proc.stdout),
-            "diff_stat": subprocess.run(["git", "-C", wt, "diff", "--stat"], capture_output=True, text=True).stdout.strip(),
+            "usage": codex_usage(proc.stdout), "git_meta_changed": tampered,
+            "diff_stat": None if tampered else delegate.diff_stat(wt),
             "reply": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
 
 
@@ -189,20 +222,17 @@ def stage_new_files(wt):
     # -z: without it git quotes non-ASCII names ("caf\303\251.py") and the quoted
     # string names no file (reviewer round 6). A failed staging is an error, not a
     # silent zero: the record would then miss the file the worker created.
-    listed = subprocess.run(["git", "-C", wt, "ls-files", "-z", "--others", "--exclude-standard",
-                             "--", ".", ":!node_modules"], capture_output=True, text=True)
+    listed = delegate.git(wt, "ls-files", "-z", "--others", "--exclude-standard", "--", ".", ":!node_modules")
     untracked = [f for f in listed.stdout.split("\0") if f]
     if untracked:
-        subprocess.run(["git", "-C", wt, "add", "--intent-to-add", "--", *untracked],
-                       check=True, capture_output=True, text=True)
+        delegate.git(wt, "add", "--intent-to-add", "--", *untracked, check=True)
     return untracked
 
 
 def diff_text(wt, exclude=()):
     spec = ["--", "."] + [f":!{f}" for f in exclude]
     # Against HEAD: whatever the worker staged or deleted is still the work.
-    return subprocess.run(["git", "-C", wt, "-c", "core.quotepath=false", "diff", "HEAD", *spec],
-                          capture_output=True, text=True).stdout[:60000]
+    return delegate.git(wt, "-c", "core.quotepath=false", "diff", "HEAD", *spec).stdout[:60000]
 
 
 def review_diff_command(task):
@@ -229,7 +259,7 @@ def make_reviewer(task):
 def diff_lines(wt, exclude=()):
     # The restored test files differ from the parent too; they are the judge, not the work.
     spec = ["--", "."] + [f":!{f}" for f in exclude]
-    out = subprocess.run(["git", "-C", wt, "diff", "HEAD", "--numstat", *spec], capture_output=True, text=True).stdout
+    out = delegate.git(wt, "diff", "HEAD", "--numstat", *spec).stdout
     total = 0
     for line in out.splitlines():
         cols = line.split("\t")
@@ -260,9 +290,54 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
         differ = lambda wt: diff_lines(wt, task.get("test_files") or ())  # noqa: E731
     spend = spend if spend is not None else Spend(None)
     wt = worktree(task)
+    tampered = False
+    # The bench's own fingerprint of the shared .git, taken before the first attempt
+    # and checked after every tester run: the test command executes the worker's
+    # code, which can write what the delegate's window did not see (round 23).
+    meta_paths = delegate.git_meta_paths(wt) if os.path.isdir(wt) else None
+    meta_before = delegate.git_meta(meta_paths)
+
+    def meta_changed():
+        try:
+            return delegate.git_meta(meta_paths) != meta_before
+        except Exception:
+            return True
+
+    def tampered_record(attempts):
+        # The worker changed the .git the worktree shares with the user's real repo
+        # (config, hooks, includes, pointers): no git of ours runs there — not the
+        # tester, not the reviewer, not the worktree removal (reviewer rounds 19-20),
+        # on the first attempt or on the retry.
+        last = attempts[-1]
+        return {"task": task["id"], "model": model, "first_pass": False, "retry_pass": None,
+                "escalated": True, "capped": False, "git_tampered": True,
+                "seconds": sum(a["seconds"] for a in attempts),
+                "cost_usd": None if any(a["usage"].get("cost_usd") is None for a in attempts)
+                else sum(a["usage"]["cost_usd"] for a in attempts),
+                "input_tokens": None, "output_tokens": None, "exit_code": last["exit_code"],
+                "diff_stat": None, "attempt_costs": [a["usage"].get("cost_usd") for a in attempts],
+                "known_costs": [a["usage"].get("cost_known_usd") for a in attempts], "findings": None,
+                "diff_lines": 0, "diff": None, "test_tail": last.get("error")}
+    def refused_record(first):
+        # No worker ran (dirty worktree, project config, no opencode): escalated,
+        # nothing to test or review, the worktree cleaned as usual.
+        return {"task": task["id"], "model": model, "first_pass": False, "retry_pass": None,
+                "escalated": True, "capped": False, "refused": True, "seconds": first["seconds"],
+                "cost_usd": None, "input_tokens": None, "output_tokens": None, "exit_code": first["exit_code"],
+                "diff_stat": None, "attempt_costs": [None], "known_costs": [None], "findings": None,
+                "diff_lines": 0, "diff": None, "test_tail": str(first.get("error"))}
     try:
         first = runner(wt, model, brief_for(task))
+        state = attempt_state(first)
+        if state == "tampered":
+            tampered = True
+            return tampered_record([first])
+        if state == "refused":
+            return refused_record(first)
         code, out = tester(wt)
+        if meta_changed():
+            tampered = True
+            return tampered_record([first])
         result = {"task": task["id"], "model": model, "first_pass": code == 0, "retry_pass": None,
                   "escalated": False, "capped": False, "seconds": first["seconds"],
                   "cost_usd": first["usage"].get("cost_usd"),
@@ -285,7 +360,16 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
             return result
         if code != 0:
             second = runner(wt, model, brief_for(task, failure=out))
+            state = attempt_state(second)
+            if state == "refused":   # a worker that left an opencode.json: refused, not tampered
+                return refused_record(second)
+            if state == "tampered":
+                tampered = True
+                return tampered_record([first, second])
             code, out = tester(wt)
+            if meta_changed():
+                tampered = True
+                return tampered_record([first, second])
             result["retry_pass"] = code == 0
             result["seconds"] += second["seconds"]
             # The per-task total is null when one attempt is unknown; the known part is
@@ -305,8 +389,16 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
         result["diff"] = diff_text(wt, task.get("test_files") or ())
         result["test_tail"] = out
         return result
+    except BaseException:
+        # An exception mid-run (Ctrl-C, a tester that raises) reaches the cleanup
+        # with no verdict on the shared .git: read the fingerprint first (round 24).
+        tampered = tampered or meta_changed()
+        raise
     finally:
-        cleanup(wt)
+        if tampered:
+            shutil.rmtree(wt, ignore_errors=True)   # `git worktree remove` would run git there
+        else:
+            cleanup(wt)
 
 
 def summary(rows):
@@ -339,8 +431,7 @@ def check_task(task):
     wt = make_worktree(task)
     try:
         parent_code, _ = tester(wt)
-        subprocess.run(["git", "-C", wt, "checkout", "-q", "--detach", task["commit"]], check=True,
-                       capture_output=True, text=True)
+        delegate.git(wt, "checkout", "-q", "--detach", task["commit"], check=True)
         commit_code, tail = tester(wt)
     finally:
         remove_worktree(wt)
@@ -382,6 +473,10 @@ def main():
             record = out / f"{task['id']}-{model.replace('/', '_').replace(':', '_')}.json"
             if record.exists():
                 rows.append(json.loads(record.read_text()))
+                if rows[-1].get("git_tampered"):   # a resume does not skip the stop (round 22)
+                    print(f"{task['id']}: record di manomissione del .git di {task['repo']} — fermo; controlla "
+                          "quel repo, poi rimuovi il record per riprendere", file=sys.stderr)
+                    return 3
                 continue
             r = run_task(task, model, runner, make_tester(task), make_reviewer(task),
                          make_worktree, remove_worktree, spend=spend)
@@ -390,6 +485,11 @@ def main():
             rows.append(r)
             print(f"{task['id']} × {model}: first={r['first_pass']} retry={r['retry_pass']} esc={r['escalated']} "
                   f"capped={r.get('capped', False)} {r['seconds']:.0f}s cost={r['cost_usd']}", flush=True)
+            if r.get("git_tampered"):
+                print(f"{task['id']}: il worker ha modificato il .git condiviso con {task['repo']} — "
+                      "fermo; controlla .git/config, info e hooks di quel repo prima di qualsiasi git, "
+                      "poi `git worktree prune`", file=sys.stderr)
+                return 3
             if spend.exceeded():
                 print(f"tetto superato: {spend.total:.2f} $ > {spend.cap} $ — fermo", file=sys.stderr)
                 stopped = True

@@ -112,7 +112,9 @@ stream. Providers live in `~/.config/opencode/opencode.json`; any OpenAI-compati
 endpoint is one block, and the delegate writes a per-run config that denies every
 skill (the catalog cost 42k input tokens per step; 7k without it) and what an
 unattended worker never needs — edits outside the repo, web tools, subagents, network
-and publishing commands. A guard, not a sandbox (2.0.1). No model name lives in AOS: the open
+and publishing commands — keeping only the providers and a reworked permission map as
+the run's only config layer, and never running its own `git` on a repo whose `.git`
+config, hooks or includes the worker changed. A guard, not a sandbox (2.0.1). No model name lives in AOS: the open
 working model is chosen with `bin/aos-bench.py`, which replays real commits from the
 user's own repositories against each model — the commit's test is the spec the worker
 reads and the judge it cannot rewrite — and writes first-pass, retry, escalation,

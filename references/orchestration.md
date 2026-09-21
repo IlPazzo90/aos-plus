@@ -122,18 +122,35 @@ The ranking, the names and the reason live in the user's global instructions
   denies what a worker never needs: edits outside the repo, web tools, subagents,
   and the shell commands that carry data or changes off the machine (`curl`,
   `ssh`, `git push`, `git commit`, deploy CLIs — `DENIED_BASH` in the script).
-  That is a guard against accidents and prompt injection, not a sandbox: the
-  worker runs as the user, and an interpreter reads what `cat` may not. Nothing
-  secret or production-bound belongs in a repo handed to it.
+  The copy keeps only the providers and the reworked permission map of the user's
+  config (`config.json`, `opencode.json`, `opencode.jsonc`, the inherited
+  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION`), with sharing
+  disabled and the run's model as `small_model` too — OpenCode titles the session
+  with a "small" model it otherwise picks by itself, and the brief goes there — and is the
+  run's only layer: the global config of a temporary XDG root that links the rest
+  of the user's `~/.config` in, with every `OPENCODE_*` config variable dropped.
+  Agents, tools, MCP servers, plugins, skills, instructions and the other keys of
+  the user's setup are not there (formatter and lsp are): each is a layer that
+  merges after the permission map, or a definition the worker does not need. A repo with its
+  own `opencode.json`, `opencode.jsonc` or `.opencode` anywhere up to its git
+  toplevel is refused (exit 5), because a pattern it adds would land after the
+  denies. That is a guard against accidents and prompt injection, not a sandbox: the
+  worker runs as the user, an interpreter reads what `cat` may not, and the
+  patterns match the first word (`/usr/bin/curl`, `env curl`, `git -C . commit`
+  pass). The record's own `git` reads no global or system config and never runs
+  on a repo whose `.git` config, attributes, hooks, includes or pointers the
+  worker changed (a `core.fsmonitor` it wrote would run there): the record then
+  says so and carries no diff, and the bench stops. Nothing secret or
+  production-bound belongs in a repo handed to it.
   The main session runs the check. One failed check → one retry with the
   failure output appended to the brief. A second failure → the main session
   does the work itself and writes `escalated` in the task record. The model
   comes from the user's global instructions (role name: *open working model*);
   AOS never names it and never carries a ranking, benchmark result or price.
-  OpenCode reads `~/.claude/skills`, `~/.claude/CLAUDE.md` and the project
-  `CLAUDE.md`/`AGENTS.md`, so the brief carries the task, not the rules — and
-  every run pays that catalog as input tokens, so a delegated task must be
-  worth more than one prompt. Providers live in `~/.config/opencode/opencode.json`;
+  OpenCode reads `~/.claude/CLAUDE.md` and the project `CLAUDE.md`/`AGENTS.md`,
+  so the brief carries the task, not the rules; the skill catalog is denied for
+  the run (it cost 42k input tokens per step), so a worker never loads a skill.
+  Providers live in `~/.config/opencode/opencode.json`;
   any OpenAI-compatible endpoint is one block —
   `{"provider":{"<id>":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"…/v1","apiKey":"{file:~/.secrets/<name>}"},"models":{"<model>":{}}}}}`
   — with `zeroDataRetention: true` on models that receive client source. No

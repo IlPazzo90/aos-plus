@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.0.1-public (second review cycle) — 2026-09-21
+
+The user asked for a new check by both reviewers, Codex and Claude, in parallel:
+nineteen rounds, 40 MAJOR accepted, each with a test and, where semantics were in
+doubt, a measure. What changed since the first 2.0.1 entry:
+
+- The run's config is a **whitelist** copy of the user's config (providers and a
+  reworked permission map, `share: disabled`, the run's model as `small_model` too —
+  OpenCode titled every session with a model the user never chose), served as the
+  only layer from a temporary XDG root that links the rest of `~/.config` in; every
+  `OPENCODE_*` config variable is dropped; a repo with its own OpenCode config is
+  refused. Measured with `opencode debug config` and real runs: a global wildcard,
+  a repo config, an agent-level permission and a `tools` map each reopened the guards
+  before.
+- The permission map is rebuilt as OpenCode reads it: later rule wins, at every
+  level, every key that names `bash` by glob or `{env:}`, user patterns for denied
+  commands removed, ours last.
+- The record's own `git` reads no global or system config and never runs on a repo
+  whose `.git` config, attributes, hooks, includes or pointers the worker changed
+  (reproduced: a `core.fsmonitor` written by the worker ran in the record's git);
+  the bench takes the same fingerprint around its test command, clones
+  `node_modules` instead of linking it, and stops on tampering — on the retry, on
+  resume and on an exception mid-run.
+- `diff_stat` lists staged and untracked files from the toplevel, unfolded,
+  uncolored, with HEAD before and after.
+
+Closed by the user's choice after round 24 with reserves: the class "file written
+by the worker, executed by our git" has no closure by fingerprint — the real one is
+a process sandbox, kept as backlog. Suite 153 OK.
+
 ## 2.0.1-public — 2026-09-21
 
 Audit of the open runtime before adoption, done by running it: four OpenCode runs on a

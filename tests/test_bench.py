@@ -25,7 +25,7 @@ def fake_runner(results):
         code, usage = results.pop(0)
         calls.append(brief)
         return {"exit_code": code, "seconds": 1.0, "usage": usage, "diff_stat": "a.py | 1 +-",
-                "reply": "", "stderr_tail": ""}
+                "git_meta_changed": False, "reply": "", "stderr_tail": ""}
     run.calls = calls
     return run
 
@@ -40,6 +40,129 @@ def run_task(task=TASK, model="m", runner=None, tester=None, reviewer=None, diff
 
 
 class BenchTests(unittest.TestCase):
+    def test_a_tampered_git_stops_every_git_of_the_bench(self):
+        # The delegate says the worker changed the shared .git: no tester, no
+        # reviewer, no `git worktree remove` — the worktree dir is just deleted,
+        # and the record says escalated (reviewer round 19).
+        wt = Path(tempfile.mkdtemp())
+        called = []
+
+        def runner(worktree, model, brief):
+            return {"exit_code": 0, "seconds": 1.0, "usage": {"cost_usd": 0.01, "cost_known_usd": 0.01},
+                    "diff_stat": None, "git_meta_changed": True, "error": ".git modificato",
+                    "reply": "", "stderr_tail": ""}
+        r = bench.run_task(TASK, "m", runner=runner,
+                           tester=lambda w: called.append("tester") or (0, "ok"),
+                           reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
+                           worktree=lambda t: str(wt), cleanup=lambda w: called.append("cleanup"),
+                           differ=lambda w: called.append("differ") or 0)
+        self.assertEqual(called, [])
+        self.assertTrue(r["git_tampered"])
+        self.assertTrue(r["escalated"])
+        self.assertIsNone(r["findings"])
+        self.assertEqual(r["test_tail"], ".git modificato")
+        self.assertFalse(wt.exists())
+        # On the retry too (round 20): one tester call, then nothing.
+        wt = Path(tempfile.mkdtemp())
+        called = []
+        results = [{"exit_code": 0, "seconds": 1.0, "usage": {"cost_usd": 0.01, "cost_known_usd": 0.01},
+                    "diff_stat": "", "git_meta_changed": False, "error": None, "reply": "", "stderr_tail": ""},
+                   {"exit_code": 0, "seconds": 2.0, "usage": {"cost_usd": 0.02, "cost_known_usd": 0.02},
+                    "diff_stat": None, "git_meta_changed": True, "error": ".git modificato", "reply": "", "stderr_tail": ""}]
+        r = bench.run_task(TASK, "m", runner=lambda w, m, b: results.pop(0),
+                           tester=lambda w: called.append("tester") or (1, "fail"),
+                           reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
+                           worktree=lambda t: str(wt), cleanup=lambda w: called.append("cleanup"),
+                           differ=lambda w: called.append("differ") or 0)
+        self.assertEqual(called, ["tester"])
+        self.assertTrue(r["git_tampered"])
+        self.assertEqual(r["attempt_costs"], [0.01, 0.02])
+        self.assertEqual(r["seconds"], 3.0)
+        self.assertFalse(wt.exists())
+
+    def test_the_tester_window_is_fingerprinted_too(self):
+        # The test command runs the worker's code, which can write the shared .git
+        # after the delegate's window closed (round 23): checked after every tester.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "a").write_text("1")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one"], check=True)
+            (repo / "a").write_text("2")
+            subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "two"], check=True)
+            head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            task = dict(TASK, repo=str(repo), commit=head, test="true", files_hint=[])
+            called = []
+
+            def tester(wt):
+                with (repo / ".git" / "config").open("a") as f:
+                    f.write("[core]\n\tfsmonitor = false\n")
+                called.append("tester")
+                return 0, "ok"
+            r = bench.run_task(task, "m", runner=fake_runner([(0, {"cost_usd": 0.01, "cost_known_usd": 0.01})]),
+                               tester=tester, reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
+                               worktree=bench.make_worktree, cleanup=lambda w: called.append("cleanup"))
+            self.assertEqual(called, ["tester"])
+            self.assertTrue(r["git_tampered"])
+            # An exception mid-run (Ctrl-C) still reads the fingerprint before the
+            # cleanup: no `git worktree remove` on a .git the worker changed (round 24).
+            called = []
+
+            def runner_that_writes_then_dies(wt, model, brief):
+                with (repo / ".git" / "config").open("a") as f:
+                    f.write("[core]\n\tfsmonitor = false\n")
+                raise KeyboardInterrupt
+            with self.assertRaises(KeyboardInterrupt):
+                bench.run_task(task, "m", runner=runner_that_writes_then_dies,
+                               tester=lambda w: (0, "ok"), reviewer=lambda w: NO_FINDINGS,
+                               worktree=bench.make_worktree, cleanup=lambda w: called.append("cleanup"))
+            self.assertEqual(called, [])
+            # A refusal on the retry is a refusal, not a tampering.
+            results = [{"exit_code": 0, "seconds": 1.0, "usage": {"cost_usd": 0.01, "cost_known_usd": 0.01},
+                        "diff_stat": "", "git_meta_changed": False, "error": None, "reply": "", "stderr_tail": ""},
+                       {"exit_code": 5, "seconds": 0, "usage": {}, "diff_stat": "", "reply": "", "stderr_tail": ""}]
+            called = []
+            r = bench.run_task(TASK, "m", runner=lambda w, m, b: results.pop(0),
+                               tester=lambda w: called.append("tester") or (1, "fail"),
+                               reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
+                               worktree=lambda t: "/wt", cleanup=lambda w: called.append("cleanup"), differ=lambda w: 0)
+            self.assertEqual(called, ["tester", "cleanup"])
+            self.assertTrue(r["refused"])
+            self.assertNotIn("git_tampered", r)
+
+    def test_a_refusal_and_a_mute_record_are_told_apart(self):
+        # A refusal payload (exit 5, no run) is escalated and cleaned as usual; a
+        # record that cannot say whether .git was left alone is tampered (round 21).
+        called = []
+        r = bench.run_task(TASK, "m", runner=lambda w, m, b: {"error": "config OpenCode di progetto", "exit_code": 5,
+                                                                "model": "m", "seconds": 0, "usage": {}, "diff_stat": ""},
+                           tester=lambda w: called.append("tester") or (0, "ok"),
+                           reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
+                           worktree=lambda t: "/wt", cleanup=lambda w: called.append("cleanup"), differ=lambda w: 0)
+        self.assertEqual(called, ["cleanup"])
+        self.assertTrue(r["refused"])
+        self.assertTrue(r["escalated"])
+        self.assertEqual(r["attempt_costs"], [None])
+        wt = Path(tempfile.mkdtemp())
+        called = []
+        r = bench.run_task(TASK, "m", runner=lambda w, m, b: {"exit_code": 1, "seconds": 0, "usage": {}, "diff_stat": "",
+                                                                "reply": "", "stderr_tail": "Traceback"},
+                           tester=lambda w: called.append("tester") or (0, "ok"),
+                           reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
+                           worktree=lambda t: str(wt), cleanup=lambda w: called.append("cleanup"), differ=lambda w: 0)
+        self.assertEqual(called, [])
+        self.assertTrue(r["git_tampered"])
+        self.assertFalse(wt.exists())
+        # opencode_runner fills a refusal payload with the defaults the record needs.
+        with mock.patch.object(bench.subprocess, "run", return_value=mock.Mock(
+                stdout='{"error": "x", "exit_code": 5, "model": "m"}', stderr="", returncode=5)):
+            rec = bench.opencode_runner("/wt", "m", "brief")
+        self.assertEqual(rec["seconds"], 0)
+        self.assertEqual(rec["usage"], {})
+        self.assertEqual(bench.attempt_state(rec), "refused")
+
     def test_first_pass(self):
         r = run_task(reviewer=lambda wt: {"high": 0, "medium": 1, "low": 0})
         self.assertTrue(r["first_pass"])
@@ -196,9 +319,12 @@ class BenchTests(unittest.TestCase):
         self.assertIsNone(bench.parse_findings(""))
 
     def test_codex_runner_shape(self):
-        with mock.patch.object(bench.subprocess, "run") as run:
+        with mock.patch.object(bench.subprocess, "run") as run, \
+                mock.patch.object(bench.delegate, "git_meta_paths", return_value=[]), \
+                mock.patch.object(bench.delegate, "diff_stat", return_value=""):
             run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-            bench.codex_runner("/wt", "codex", "brief")
+            rec = bench.codex_runner("/wt", "codex", "brief")
+        self.assertFalse(rec["git_meta_changed"])  # the reference run carries the fingerprint too
         cmd = run.call_args_list[0].args[0]
         self.assertEqual(cmd[:2], ["codex", "exec"])
         self.assertIn("--approve-for-me", cmd)
@@ -265,9 +391,13 @@ class BenchTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), *env, "commit", "-qm", "two"], check=True)
             head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
             (repo / "node_modules").mkdir()
+            (repo / "node_modules" / "pkg.js").write_text("a")
             wt = bench.make_worktree({"repo": str(repo), "commit": head, "test_files": []})
             self.assertEqual((Path(wt) / "a").read_text(), "1")  # parent of the task commit
-            self.assertTrue((Path(wt) / "node_modules").is_symlink())
+            # A copy, not a link (round 23): what the worker writes there stays in the worktree.
+            self.assertFalse((Path(wt) / "node_modules").is_symlink())
+            (Path(wt) / "node_modules" / "pkg.js").write_text("evil")
+            self.assertEqual((repo / "node_modules" / "pkg.js").read_text(), "a")
             (Path(wt) / "a").write_text("1\n2\n3\n")
             self.assertEqual(bench.diff_lines(wt), 4)  # "1" without newline → 1 deleted + 3 added
             (Path(wt) / "new.py").write_text("x = 1\n")
