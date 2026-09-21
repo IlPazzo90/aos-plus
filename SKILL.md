@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "2.1.2"
+  version: "2.2.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -141,6 +141,13 @@ it is the only one whose savings are permanent.
   breakpoint you choose — research done, milestone closed, approach abandoned — not
   mid-implementation and not at the automatic threshold, where the file paths and
   partial state still in play are what gets dropped.
+- **Context budget:** before a long T2/T3 and at checkpoints, evaluate
+  `python3 "$AOS_DIR/bin/aos-context.py" state --model <executor> --tokens <n>` and
+  follow `references/context-budget.md`. Stay under target (GREEN); prefer targeted
+  retrieval once past it (YELLOW); compact structurally (ORANGE); and never keep
+  filling past the hard limit — compact or hand off (RED). Compaction drops only
+  resolved/redundant material, never acceptance criteria, open findings or safety
+  constraints.
 - **Installed capability is executable configuration.** A skill, hook or MCP server
   added from outside ships scripts, may require paid API keys and may send data off
   the machine. Before relying on a new one, inspect what it executes, what it asks

@@ -392,6 +392,24 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(nested.read_text())["schema"], 1)
 
+    def test_context_budget_file_is_stored_and_validated(self):
+        # A context-budget telemetry file becomes a nested field; a non-object is refused.
+        self.start()
+        budget = Path(self.temp.name) / "budget.json"
+        budget.write_text(json.dumps({"context_state": "ORANGE", "context_tokens": 210000,
+                                      "model": "vercel/deepseek/deepseek-v4-pro-0813"}))
+        result = self.run_cli("finish", "--outcome", "delivered",
+                              "--context-budget", str(budget))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())["context_budget"]["context_state"], "ORANGE")
+        # A non-object payload is refused without overwriting the record.
+        self.record = Path(self.temp.name) / "record2.json"
+        self.start()
+        budget.write_text("[1, 2, 3]")
+        result = self.run_cli("finish", "--outcome", "delivered", "--context-budget", str(budget))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("oggetto JSON", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

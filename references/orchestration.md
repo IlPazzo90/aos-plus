@@ -199,8 +199,20 @@ the host default; `codex exec -m` for scripted calls; `codex features list` must
 `multi_agent` enabled. Read-only search may go one step cheaper than the working
 model. Reviewers stay the strongest model of the other family: verify-agent pins the
 Claude reviewer to the strongest alias of its family; the Codex reviewer uses the
-configured model, with the reserve only on an exhausted quota, and its PASS counts
+ configured model, with the reserve only on an exhausted quota, and its PASS counts
 less.
+
+## Context budget
+
+The model chooses who runs; the budget keeps that run inside a window where the
+model still works well. `bin/aos-context.py` reads `context_policy` from
+`config/open-models.json` and classifies GREEN/YELLOW/ORANGE/RED from target, soft
+and hard limits; compaction is structural and handoff carries the state a new
+session or subtask needs. Rules and roles are in `references/context-budget.md`.
+The executor's context is not the orchestrator's: a delegated `opencode run` starts
+a fresh window per task, so budget checks apply to the session that accumulates —
+the main session on long T2/T3, and each premium review round. Never fill a window
+to its technical limit; target and soft/hard are budgets below it.
 
 ## Independence and persistence
 

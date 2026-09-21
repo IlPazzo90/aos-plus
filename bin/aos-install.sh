@@ -49,6 +49,7 @@ run() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $*"; else eval "$*"; fi; }
 
 REQUIRED_FILES="SKILL.md README.md CHANGELOG.md VERSION
 references/orchestration.md
+references/context-budget.md
 references/risk-and-tiers.md
 references/project-profiles.md
 references/quality-gates.md
@@ -60,6 +61,7 @@ bin/profile-python.py
 bin/aos-doctor.py
 bin/aos-measure.py
 bin/aos-bench.py
+bin/aos-context.py
 bin/aos-delegate.py
 bin/aos-security.sh
 bin/aos-install.sh
@@ -70,6 +72,7 @@ catalog/skill-library/SKILL.md
 evals/scenarios.json
 evals/opencode-run-sample.jsonl
 tests/test_bench.py
+tests/test_context.py
 tests/test_delegate.py
 tests/test_doctor.py
 tests/test_install.py

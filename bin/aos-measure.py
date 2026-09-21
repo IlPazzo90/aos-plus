@@ -227,6 +227,23 @@ def locked(record):
     return lock
 
 
+def load_context_budget(path):
+    """The context-budget telemetry file, as a dict, or a clear error.
+
+    A `finish` record carries the context state the manager reported at the end of
+    the task, so the budget management can be measured against outcome and cost.
+    """
+    if path is None:
+        return None
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        raise ValueError("--context-budget deve puntare a un file JSON leggibile") from None
+    if not isinstance(data, dict):
+        raise ValueError("--context-budget deve contenere un oggetto JSON")
+    return data
+
+
 def finish(args):
     counters = (args.input_tokens, args.output_tokens, args.cached_input_tokens)
     if any(value is not None for value in counters) and args.metric_source is None:
@@ -279,6 +296,8 @@ def finish(args):
         if total:
             data["workload_open_ratio"] = round((open_tokens or 0) / total, 3)
             data["premium_dependency_ratio"] = round((premium_tokens or 0) / total, 3)
+        if getattr(args, "context_budget", None) is not None:
+            data["context_budget"] = load_context_budget(args.context_budget)
         atomic_write(args.record, data)
     finally:
         lock.unlink()
@@ -334,6 +353,8 @@ def main():
     for name in ("metric-source", "rtk-source", "main-executor-runtime", "main-executor-model",
                  "main-executor-provider", "escalation-reason"):
         end.add_argument("--" + name, type=text_value)
+    end.add_argument("--context-budget", type=Path, default=None,
+                     help="JSON file with the context-budget telemetry (bin/aos-context.py)")
     for name in ("routed-by-aos", "manual-model-override"):
         end.add_argument("--" + name, type=parse_bool, default=None,
                          metavar="true|false")

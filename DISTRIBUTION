@@ -5,6 +5,7 @@
 SKILL.md
 VERSION
 bin/aos-bench.py
+bin/aos-context.py
 bin/aos-delegate.py
 bin/aos-doctor.py
 bin/aos-install.sh
@@ -15,9 +16,11 @@ bin/skill-library.py
 catalog/skill-library/SKILL.md
 config/open-models.json
 evals/scenarios.json
+references/context-budget.md
 references/design.md
 references/output-contract.md
 tests/test_bench.py
+tests/test_context.py
 tests/test_delegate.py
 tests/test_doctor.py
 tests/test_install.py

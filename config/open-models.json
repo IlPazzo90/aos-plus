@@ -1,5 +1,5 @@
 {
-  "$comment": "AOS model routing configuration (2.1.1). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Never put secrets here; this file is versioned.",
+  "$comment": "AOS model routing and context-budget configuration (2.2.0). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill. Never put secrets here; this file is versioned.",
   "schema": 1,
   "open": {
     "primary": "vercel/deepseek/deepseek-v4-pro-0813",
@@ -38,5 +38,40 @@
       "outcome"
     ],
     "ratios": ["workload_open_ratio", "premium_dependency_ratio"]
+  },
+  "context_policy": {
+    "defaults": {
+      "target_context": 80000,
+      "soft_limit": 120000,
+      "hard_limit": 180000
+    },
+    "model_classes": {
+      "deepseek": {
+        "technical_context_limit": 1000000,
+        "target_context": 100000,
+        "soft_limit": 160000,
+        "hard_limit": 250000
+      },
+      "qwen": {
+        "technical_context_limit": 262144,
+        "target_context": 60000,
+        "soft_limit": 90000,
+        "hard_limit": 130000
+      }
+    },
+    "models": {
+      "vercel/deepseek/deepseek-v4-pro-0813": {
+        "technical_context_limit": 1000000,
+        "target_context": 100000,
+        "soft_limit": 160000,
+        "hard_limit": 250000
+      },
+      "vercel/alibaba/qwen3-coder-next": {
+        "technical_context_limit": 262144,
+        "target_context": 60000,
+        "soft_limit": 90000,
+        "hard_limit": 130000
+      }
+    }
   }
 }

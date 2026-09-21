@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.2.0-public — 2026-09-21
+
+**Context budget per modello.** AOS non riempie più la finestra di contesto fino al
+limite tecnico del modello: un context manager nuovo, configurabile e
+provider/model-aware classeifica GREEN/YELLOW/ORANGE/RED e decide quando compattare
+o passare il testimone. Nessuna modifica a routing, benchmark winner, escalation o
+security policy.
+
+- **`bin/aos-context.py` (nuovo)** — policy (technical/target/soft/hard), lettura o
+  stima del contesto (`measured`/`estimated`, mai confusi), classificazione, azione
+  raccomandata, compaction strutturale e handoff. Il limite tecnico è una soglia
+  riportata nei ratio, mai un target operativo.
+- **`config/open-models.json`** — nuova sezione `context_policy` con
+  `defaults`, `model_classes` (deepseek, qwen) e `models` (i due open). Fallback
+  model → model_class → default, con `model_context_policy_source` registrato.
+- **Compaction strutturale** — rimuove solo ruoli espliciti (log risolti, output
+  verbosi, ipotesi superate, traceback spiegati, snapshot obsoleti, …); un ruolo
+  sconosciuto è sempre conservato: la riduzione del contesto non tocca mai
+  acceptance criteria, finding di sicurezza aperti, vincoli o decisioni di sicurezza.
+- **Handoff** — `build_handoff` produce lo stato strutturato per nuova sessione,
+  subtask o modello (task, acceptance, decisioni, file, test, issue aperte,
+  vincoli, retry, executor, finding, escalation pendente).
+- **Telemetria** — `aos-measure.py` accetta `--context-budget` (file JSON) e lo
+  registra come campo annidato; il manager espone `context_tokens`,
+  `context_tokens_source`, stato, ratio di utilizzo e token prima/dopo compaction.
+- **Documentazione** — `references/context-budget.md`; riferimenti in SKILL.md e
+  `references/orchestration.md`.
+
+Test: 174 → 190 passati (16 context + 1 measure), 3 skip.
+
 ## 2.1.2-public — 2026-09-21
 
 **Manutenzione mirata dopo il test end-to-end.** Tre correzioni, nessuna modifica a
