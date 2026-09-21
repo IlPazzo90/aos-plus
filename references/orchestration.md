@@ -87,7 +87,7 @@ the task needs, the configured benchmark winner and the retry/failure history. T
 manual main model of the OpenCode interface does **not** decide the executor: it is a
 fallback runtime model, and it executes only on an explicit user override or in the
 cases the routing policy reserves for it. The decision function is
-`bin/aos-router.py` (`decide` — pure and tested, 16 cases); the executable policy
+`bin/aos-router.py` (`decide` — pure and tested, decision cases); the executable policy
 lives in `config/open-models.json`. Never hardcode a provider ranking, benchmark
 result or price into AOS: names and winners are configuration, the rule is the code.
 
@@ -112,21 +112,132 @@ original roots. `--pure` deliberately disables plugins and is reserved for isola
 workers/classification, not the everyday entry. A broken classifier stops the turn.
 Read `references/opencode-entry.md` for compatibility and recovery.
 
-Routing defaults (`bin/aos-router.py` decides; config changes policy, not the code):
+Routing defaults (`bin/aos-router.py` decides; config changes policy):
 
-- **T0/LOW, T1/LOW-MEDIUM** → open executor (benchmark winner), targeted/regression check by the main session.
-- **T2/LOW-MEDIUM** → open executor, deterministic verification and open review;
-  premium escalation only after retry exhaustion.
-- **T2/HIGH** → open **only** when policy allows it and a result the main session
-  can check by observation exists; even then premium review is mandatory. Without
-  an observable check, premium executes directly.
-- **T3** → premium planning/architecture and premium final review; open runs the
-  bounded sub-tasks.
-- **CRITICAL** → unchanged: main session plus explicit approval, never routed.
-- **Explicit override** ("fallo tu", the user names the main orchestration model
-  for this task) → main executes; the record marks `manual_model_override: true`.
-  Without it, the routing above has precedence over whatever model the interface
-  opened with.
+| Tier | Planner | Executor | Reviewer | Fixer |
+|---|---|---|---|---|
+| T0 | none | open primary | deterministic | open |
+| T1 | none | open primary | deterministic; optional open review | open |
+| T2 | configured premium | open primary | opposite premium | open |
+| T3 | premium architecture/decomposition | open bounded subtasks | opposite premium integration review | open |
+
+HIGH retains the existing risk ceiling: T2 open requires the policy's observable
+check exception; otherwise premium execution is an explicit risk-policy exception.
+HIGH always requires premium review. T3 HIGH is not permission to relax that ceiling;
+its bounded subtasks must be classified individually. CRITICAL keeps the existing
+human approval path before execution. Manual overrides and host-only capabilities
+retain their existing routes; a CLI cannot promise desktop-only app tools.
+
+## Explicit role pipeline
+
+Premium: planner, reviewer, last-resort executor. Open: default executor and fixer.
+`premium_execution.default = false` is explicit in configuration. A planning or
+review call never becomes an implementation call on error.
+
+```text
+TASK
+  ↓
+PREMIUM PLANNER
+  ↓
+OPEN EXECUTOR
+  ↓
+DETERMINISTIC VERIFY
+  ↓
+PREMIUM CROSS-MODEL REVIEW
+  ↓
+VERIFY AGENT (mechanically arbitrate every finding)
+  ↓
+OPEN FIX
+  ↓
+re-verify / targeted review
+  ↓
+PASS
+
+OPEN FAILURES EXHAUSTED → PREMIUM EXECUTOR → re-verify / review
+```
+
+The planner returns a structured JSON artifact: objective, scope, files, steps,
+acceptance_criteria, risks, security_constraints, tests, architecture, dependencies,
+uncertainties, do_not_modify and ordered subtasks (`id`, `objective`, `files`, optional `tests`).
+All fields except objective/subtasks are string arrays. Tests names identify
+checks, including `diff` and `security`; include available tests/lint/typecheck/build
+and acceptance checks. The host supplies and authorizes each actual argv. Plans
+and model output are data, never permission to run commands.
+
+`bin/aos-pipeline.py` is the pure state machine, `aos-entry.py pipeline` its CLI
+adapter, and `opencode/aos-bridge.mjs` owns runtime state. `aos_pipeline` actions:
+
+1. `plan`: configured premium in read-only mode, using Verify Agent's command
+   restrictions. No writing tools or remote MCP tools.
+2. `execute`: existing `aos-delegate.py` primary worker with a bounded subtask,
+   the plan, checks and constraints. The same worker-state file tracks owned dirt.
+3. `check`: `{id, argv}` under an explicit host `bash` permission check. The two
+   reserved identifiers invoke `git diff --check` and AOS Security Gate. An exit
+   code, bounded output and worktree revision are observed by the adapter.
+4. `verify`: all required checks plus diff/security must exist for the current revision.
+   A nonfinal subtask may provide its own nonempty list of check IDs; without it,
+   all plan checks apply. Final integration and fixer verification always require
+   every plan-level check. Failure goes to open retry. T3 advances only one verified
+   subtask at a time.
+5. `review`: opposite premium receives original task, plan, full diff (including new files), test
+   evidence and prior arbitrations. It cannot write code. Oversized/binary new
+   artifacts require explicit decomposition; they are not silently omitted.
+6. `check`, then `arbitrate`: Verify Agent's coordinator confirms or refutes each
+   finding using current mechanical checks. `verdicts` contains `id`, `confirmed`,
+   `evidence`, `check_ids`. Evidence supports human/model judgment; the state
+   machine checks coverage, not the semantic truth of a claim. Unresolved findings
+   block completion. Confirmed findings alone go to the open fixer.
+7. Repeat checks/review after fixes, at most six review rounds. A false finding
+   causes no implementation. No findings plus an explicit attacked-criteria list
+   closes the review.
+
+The primary receives `retries_before_escalation` attempts, then the configured
+fallback receives the same budget. Execution and fixer attempts are separate;
+permission denials, dirty-tree refusal and repository-metadata tampering are
+blockers, not retries. `escalate` is available only after exhaustion and requires
+host permission before calling the existing premium executor. Capability/risk
+exceptions and absent providers keep legacy routing; automatic historical-success
+escalation is not enabled without a validated category dataset.
+
+Codex planner prefers Claude reviewer; Claude planner prefers Codex reviewer.
+One unavailable family means an incomplete cross-model gate, never a disguised
+same-family PASS. With no premium subscription a complex plan/review blocks;
+T0/T1 open work remains available. With no open configuration legacy main/premium
+routing remains available. Model names remain exclusively configuration-driven.
+
+The coordinator must not implement via native tools while a pipeline owns changes.
+Workers retain all existing denylist and permission restrictions. Stage calls are
+serialized; an interrupted/failed side-effecting stage needs inspection before an
+explicit new request. Completed stage output can restore state after a server
+restart; no automatic replay of an unfinished worker. New user turns reclassify
+and do not silently reuse previous authorization. Existing dirty work may require
+an isolated checkout before restarting; never use `--allow-dirty` as a shortcut.
+
+Claude/Codex direct hosts use the same contract and `aos-entry.py pipeline` JSON
+in/out stages when useful, invoking check commands only under their own shell
+permissions. They may orchestrate manually using AOS/Verify Agent; this is not
+permission to route the same parent request back to OpenCode. Host-only tools stay
+on their actual runtime. The OpenCode entry automates stage invocation, not proof
+that every model follows a plan perfectly.
+
+### Role measurements
+
+Save observed state and import it with `aos-measure.py finish --pipeline <path>`.
+`role_events` retains per-call model/provider/usage, including fallback workers;
+flat role fields show the last model and total known tokens for that role.
+`premium_executor_tokens` is separate from planner/reviewer tokens.
+`workload_open_ratio` covers execution plus fixes; `premium_dependency_ratio`
+includes premium planning, review and execution in the total model-token share.
+Token ratios use the reported input_tokens + output_tokens counters; provider cache
+semantics differ, so these are operational indicators, not billed-token or time
+shares. Raw usage is retained for audit. Unknown counters keep the ratio null.
+Finding counts expose confirmed/refuted
+claims and reviewer false positives; retries are recorded separately. Interpret
+planner comparisons as observed task outcomes, not causal quality rankings.
+`estimated_premium_tokens_saved` stays null until a comparable measured premium
+baseline exists. Premium subscriptions do not provide per-task dollar costs;
+only reported open cost is measurable. Failed/interrupted premium calls may lack
+usage and cannot be counted as zero cost or a completed review.
 
 Open execution mechanics (unchanged, `aos-delegate.py`, 2.0.1): from a clean repo,
 `python3 "$AOS_DIR/bin/aos-delegate.py" --repo <path> --model <provider/model> --brief <file> --json`.
@@ -269,3 +380,127 @@ behavior; high concurrency needs additional coordination. Do not promise token
 savings from folder layout. Treat automatic semantic tracing as future work, not
 an implemented AOS capability. Compatibility here means shared instructions and
 verified installation files; model behavior requires separate observations.
+
+## Runtime-independent Open Executor
+
+`bin/aos-open-executor.py` separates **role**, **runtime**, **provider**, **model**
+and **main_host**. The host chooses the preferred premium planner family, not the
+open model. Claude Code and Codex CLI can both host the pipeline and both serve as
+open-model harnesses. OpenCode remains supported and optional.
+
+```text
+TASK → classification → PREMIUM PLANNER → structured plan
+                                       ↓
+                                 OPEN EXECUTOR
+                         ┌─────────────┼─────────────┐
+                      Codex CLI    Claude Code    OpenCode
+                         └─────────────┼─────────────┘
+                          configured benchmark model
+                                       ↓
+                           DETERMINISTIC VERIFY
+                                       ↓
+                       PREMIUM CROSS-MODEL REVIEW
+                                       ↓
+                                VERIFY AGENT
+                                       ↓
+                                  OPEN FIXER
+                                       ↓
+                                  reverify → PASS
+
+open primary → retry → open fallback → retry → premium executor
+```
+
+### Configuration and use from either host
+
+`config/open-models.json` keeps `open.primary` and `open.fallback` unchanged.
+`executors.default_runtime` keeps the measured incumbent; `runtime_order` supplies
+an installed runtime when it is absent. `--runtime` explicitly selects a harness
+without changing the configured model. Runtime availability does not prove provider
+authentication. No selection silently substitutes an OpenAI or Anthropic model.
+
+```sh
+python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime codex-cli
+python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime claude-code
+python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime opencode --slot fallback
+```
+
+The brief contains the task, structured premium plan, acceptance criteria, relevant
+files, security constraints and required tests. The CLI emits JSON with the role,
+runtime, provider, model reference, executor model, task ID, result, changed files,
+usage, cost, exit code and existing delegate evidence. `tests: []` means no host
+verification has been observed yet. A worker's prose does not constitute a test PASS.
+
+For T2/T3, call `aos-entry.py pipeline --directory /path/to/repo` with a JSON
+`start` action and data containing `main_host` (`claude-code` or `codex-cli`),
+`executor_runtime`, `classification` and `text`. Continue one authorized stage at a
+time using the returned state. The host owns state and authorization; model-generated
+state is not trusted. An explicit `codex-cli`/`claude-code` open runtime satisfies
+that harness capability without selecting its premium model. Host-only app/MCP
+integrations remain outside the restricted worker.
+
+Codex uses the configured provider's Responses endpoint, `wire_api=responses`,
+`model_provider=aos_open`, and the model ID after its provider prefix. Claude uses
+the provider's Anthropic-compatible endpoint and the same model ID. Vercel endpoints
+are `/codex/v1` and `/claude-code`; other providers require explicit HTTPS endpoints
+for the corresponding protocol. A generic Chat Completions-only endpoint is not
+sufficient for Codex CLI. Credentials come from the configured environment-variable
+name or, for migration, the existing OpenCode provider credential reference; installing
+OpenCode is not necessary to read that JSON configuration. Secrets never enter the
+versioned policy or command arguments. Premium roles retain subscription authentication.
+Vercel account-level ZDR must remain enabled when using native CLI adapters: their
+protocols do not automatically forward OpenCode's per-model provider options.
+
+### Permission and capability boundaries
+
+The existing delegate still enforces clean-tree/retry ownership, metadata integrity,
+process-group timeout and step limits. Its OpenCode denylist and Security Gate are
+unchanged. Alternative runtimes refuse untranslatable custom OpenCode permissions
+and project/ancestor runtime configuration; refusal is a blocker, never a reason to
+escalate privileges. GREEN is the only implemented native worker profile. YELLOW
+network/dependency operations require a separately authorized host action; RED and
+CRITICAL do not gain permission from an adapter.
+
+Codex uses a workspace-only native permission profile, read-only Git/runtime metadata,
+no network, no credential environment inheritance, no apps/plugins/hooks/subagents,
+and task-scoped native command deny rules. The task-scoped trust map activates only
+the adapter's own rules; it is removed after the run. No global runtime configuration
+is modified. System toolchain directories are readable, not writable.
+
+Claude uses restricted/safe mode and only Read/Glob/Grep/Edit/Write tools.
+**Its open adapter currently declares `shell=false`.** Negative sandbox probes found
+that enabling Bash under the strict profile breaks the CLI's cwd bookkeeping. The
+adapter therefore keeps Bash denied; the host's deterministic Verify stage runs tests.
+This does not restrict the main Claude session or premium reviewer. A request that
+requires shell capability must choose a compatible runtime. Planner and reviewer
+remain read-only and cannot automatically become fixers.
+
+A required opposite-family premium reviewer that is absent or quota-blocked leaves
+the new role pipeline incomplete. Legacy single-host routing and manual override
+remain available; same-family self-review is never labeled cross-model verification.
+
+### Runtime/model benchmark and telemetry
+
+`aos-bench.py --executors executors.json --out results` accepts a list of
+`{runtime, provider, model}`; model excludes the provider prefix. Legacy `--models`
+continues to work. Results group by `runtime|provider|model`; the same model under
+two runtimes is two candidates. `--no-review` explicitly records `not_run`, never
+zero findings or reviewer acceptance. Revalidate the historical task before scoring:
+tests must fail on the parent and pass on the reference commit.
+
+Native CLI usage is recorded where reported. Codex does not report gateway dollars;
+Claude's custom-model pricing basis can be unknown. Both costs remain null and a
+requested dollar cap is rejected instead of pretended. Timeout and step caps remain.
+Do not promote a runtime from connectivity tests, two-task samples, missing review
+or unknown cost. The existing benchmark winner remains authoritative until a complete,
+comparable benchmark and its review support changing the configuration.
+
+Telemetry adds main_host; planner/executor/reviewer/fixer runtime, provider, model
+and tokens; runtime_model_pair/benchmark_pair; open success/retry/fallback facts.
+Existing premium-execution reasons, finding arbitration counts and token ratios stay.
+Savings and missing billing counters remain null without a measured baseline.
+
+Sources: [Codex provider configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+[Codex permission profiles](https://learn.chatgpt.com/docs/permissions),
+[Vercel Codex endpoint](https://vercel.com/docs/ai-gateway/coding-agents/openai-codex),
+[Vercel Claude endpoint](https://vercel.com/docs/ai-gateway/coding-agents/claude-code),
+[Claude sandbox boundaries](https://code.claude.com/docs/en/sandboxing).

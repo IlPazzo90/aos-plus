@@ -1,5 +1,40 @@
 # Changelog
 
+## Snapshot WIP sospeso — 2026-09-22
+
+Salvato il recupero sul branch di sviluppo, senza rilascio o merge in main.
+Passaggio a Claude: `docs/verifiche/premium-plan-open-execute/HANDOFF-2026-09-22.md`.
+Ultima suite completa precedente: 283 Python e 22 Node pass. Stato finale:
+11 test Open Executor pass; benchmark 33 pass e una regressione intenzionalmente
+rossa sul timeout. Prova live: policy Codex tramite symlink non applicata al
+comando vietato; rilievo HIGH aperto. Review premium e benchmark incompleti.
+Gli adapter nativi restano sperimentali e non approvati per uso operativo.
+
+## 2.4.0 — pipeline premium plan / open execute (in verifica) — 2026-09-21
+
+T2/T3 separano planner premium read-only, executor e fixer open, verifica
+meccanica e reviewer premium della famiglia opposta. Il router conserva i modelli
+del benchmark e concede l'esecuzione premium dopo esaurimento dei tentativi open,
+o per le eccezioni già previste da rischio, capacità e override.
+
+Aggiunti stato della pipeline, contratti JSON, arbitrato dei finding con evidenze,
+telemetria per ruolo e scenari sintetici. Guardie del worker, Security Gate e
+installazione Verify Agent invariati. Ripristinata l'approvazione CRITICAL anche
+per classificazioni in minuscolo. Rilascio non concluso: verifiche e verbale in
+`docs/verifiche/premium-plan-open-execute/`; review Claude indisponibile per quota.
+Ripristino: revert dei soli commit di questo intervento, quando pubblicati.
+
+Estensione del 22 settembre: Open Executor separa host, runtime, provider e modello.
+Adapter Codex CLI e Claude Code con provider open; OpenCode resta opzionale.
+Codex usa sandbox e denylist native; Claude open usa solo file tools perché il
+wrapper Bash non è compatibile con il profilo restrittivo provato. Il delegate
+aggiunge due punti di adattamento conservando i controlli di proprietà e integrità.
+Benchmark per runtime/provider/modello, telemetria per ruolo e test dei due host.
+La verifica indipendente premium resta bloccata dalla quota; nessuna promozione
+stabile né cambio del benchmark winner da questo lavoro in verifica.
+
+
+
 ## Hotfix permessi Codex — 2026-09-21
 
 Il bridge premium eredita sandbox e approvazioni dalla configurazione Codex invece

@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "2.3.0"
+  version: "2.4.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -126,11 +126,14 @@ it is the only one whose savings are permanent.
   function; `config/open-models.json` is the executable policy (primary/fallback
   open, premium reviewer/escalation). The manual main model executes only on an
   explicit user override, on CRITICAL/HIGH without an observable check, or where the
-  policy reserves premium (T3 planning, arbitration, final report). LOW/MEDIUM work
+  policy reserves premium (planning, arbitration, final report). For T2/T3 within the open policy,
+  premium produces the plan and cross-family review; open implements and fixes.
+  LOW/MEDIUM work
   within policy runs on the open benchmark winner. In the OpenCode entry, the
   global plugin selects the native model for each turn before generation and keeps
-  the shared skills and MCP. From Claude/Codex, bounded workers use a dedicated
-  `opencode run`. Premium entry tasks use the configured Claude/Codex CLI in the
+  the shared skills and MCP. From Claude/Codex, bounded workers use `bin/aos-open-executor.py`: Codex CLI,
+  Claude Code (file tools only), or OpenCode with the configured open model.
+  The main host never selects the executor model implicitly. Premium entry tasks use the configured Claude/Codex CLI in the
   same directory. A native task can decompose work under AOS; a premium worker must
   not route the same task back to the entry. Host-only plugins are not portable
   merely because a model can read their skill;
@@ -211,7 +214,7 @@ in `references/design.md` §5 is part of verification: check the rendered result
 it runs — a browser you drive, a simulator, the exported file — not the source.
 
 T2/T3: read `references/quality-gates.md` for red team, applicable roles and DoD.
-**External gate: tier ≥ T2 AND risk ≥ HIGH.** Codex main calls Claude Code;
+**External gate: T2/T3 role pipelines at every risk, and all HIGH work.** Codex main calls Claude Code;
 Claude main calls Codex via `verify-agent/scripts/review.py --caller codex|claude`.
 Reviewer returns findings only, never AOS or another reviewer. Confirm findings
 mechanically. Maximum **6 rounds**; empty, quota-blocked or interrupted is not PASS.
@@ -230,7 +233,10 @@ never estimate them. No secrets or client identities in `--task`. **This step is
 conditional on the work feeling worth measuring** — that judgement is the one the record
 exists to replace, and a step phrased as conditional is a step that never runs.
 Routing telemetry: each record exposes who really executed the task
-(`main_executor_runtime/model/provider`, `routed_by_aos`, `manual_model_override`,
+(`planner_model/provider/tokens`, `executor_model/provider/tokens`,
+`reviewer_model/provider/tokens`, `fixer_model/provider/tokens`,
+`premium_execution_used/reason`, `cross_model_review`, finding counts,
+`open_retry_count`, `estimated_premium_tokens_saved`, `main_executor_runtime/model/provider`, `routed_by_aos`, `manual_model_override`,
 `delegated_open_tasks`, `open_executor_tokens`, `premium_executor_tokens`,
 `premium_review_tokens`, `escalation_count/reason`, `workload_open_ratio`,
 `premium_dependency_ratio`) — set them at start when the router chose (executor
@@ -247,3 +253,8 @@ Never claim done from written code alone or weaken checks to save tokens.
 
 No unsolicited dependencies, refactors or new business integrations. Never modify
 third-party skills through symlinks. AOS changes itself only on the user's request.
+
+Role telemetry: `aos-measure.py finish --pipeline <observed-state.json>` imports
+successful role-call usage and finding/retry counts. Missing provider counters
+stay null; estimated savings remain null without a comparable measured baseline.
+Do not infer cost or causal planner quality from counts alone.

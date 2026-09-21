@@ -1,5 +1,9 @@
 # AOS Plus — AI Development Operating System
 
+> **WIP sospeso, non una release:** gli adapter nativi non sono approvati per uso
+> operativo. Rilievo HIGH sulle regole Codex e un test benchmark rosso aperti.
+> Ripresa: [passaggio a Claude](docs/verifiche/premium-plan-open-execute/HANDOFF-2026-09-22.md).
+
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
 Interpretable Context Methodology (ICM). Public edition 1.22.0, with a fresh history. Repository: `aos-plus`.
@@ -108,6 +112,14 @@ Since 2.1.1 the record also carries who really executed the task: `main_executor
 share of work actually done by open models is measured rather than asserted. The executor
 identity is set at `start` when the router chose; the token counts and ratios at `finish`.
 
+## Role pipeline (2.4.0, verification pending)
+
+Eligible T2/T3 work uses a read-only premium planner, open execution and fixes,
+deterministic checks, then an opposite-family premium reviewer. Findings need
+mechanical confirmation or counterevidence. Premium execution requires exhausted
+open attempts or an existing explicit policy exception. See the
+[role contract and diagram](references/orchestration.md#explicit-role-pipeline).
+
 ## Model routing and the open runtime (2.1.1)
 
 **AOS is the router.** It chooses the task executor from tier, risk, complexity,
@@ -176,3 +188,12 @@ release payload and its history. See [CHANGELOG.md](CHANGELOG.md).
 
 AOS can run automatically in OpenCode on the current project directory, selecting
 each native open turn or the premium CLI. See [setup and compatibility](references/opencode-entry.md).
+
+
+Open execution also has explicit `codex-cli` and `claude-code` adapters in
+`bin/aos-open-executor.py`. They use the configured open provider/model, independently
+of whether the main session is Claude Code or Codex. OpenCode stays optional.
+Claude's open adapter currently uses file tools only; deterministic tests run in the
+host's Verify stage. See [runtime configuration and boundaries](references/orchestration.md#runtime-independent-open-executor).
+The runtime comparison and independent release review are still pending; the measured
+OpenCode/model winner remains the default.

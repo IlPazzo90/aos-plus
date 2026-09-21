@@ -663,7 +663,7 @@ def diff_stat(repo):
     return "\n".join(lines)
 
 
-def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None, event_adapter=None):
     """The one call that leaves the machine, read as it streams.
 
     A timeout is a result (124), not a crash. The cost and step caps are enforced
@@ -707,6 +707,8 @@ def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
                 continue
             if line is None:
                 break
+            if event_adapter is not None:
+                line = event_adapter(line)
             lines.append(line)
             if line.startswith("{") and '"step_finish"' in line:
                 try:
@@ -744,7 +746,7 @@ def kill_group(proc):
         pass
 
 
-def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None, state_file=None):
+def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None, state_file=None, runner=None):
     repo = Path(repo).resolve()
     state = load_retry_state(state_file)
     if state is not None:
@@ -777,16 +779,19 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None,
     head_before = git_head(repo)
     meta_paths = git_meta_paths(repo)
     meta_before = git_meta(meta_paths)
-    config = Path(run_config(model))
-    try:
-        # Our copy is the only layer: the global one (XDG), with no repo config
-        # (refused above) and none of the environment that adds or moves a layer.
-        env = dict(os.environ, XDG_CONFIG_HOME=str(config.parents[1]), PWD=str(repo))
-        for name in OPENCODE_ENV:
-            env.pop(name, None)
-        exit_code, out, err = invoke(command(model, brief, repo), str(repo), timeout, max_cost, max_steps, env)
-    finally:
-        shutil.rmtree(config.parents[1], ignore_errors=True)
+    if runner is not None:
+        exit_code, out, err = runner(repo, model, brief, timeout, max_cost, max_steps)
+    else:
+        config = Path(run_config(model))
+        try:
+            # Our copy is the only layer: the global one (XDG), with no repo config
+            # (refused above) and none of the environment that adds or moves a layer.
+            env = dict(os.environ, XDG_CONFIG_HOME=str(config.parents[1]), PWD=str(repo))
+            for name in OPENCODE_ENV:
+                env.pop(name, None)
+            exit_code, out, err = invoke(command(model, brief, repo), str(repo), timeout, max_cost, max_steps, env)
+        finally:
+            shutil.rmtree(config.parents[1], ignore_errors=True)
     # No git of ours runs on a repo whose .git config, attributes or hooks the
     # worker changed: it would run the worker's command (round 18).
     try:

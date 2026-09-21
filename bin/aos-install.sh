@@ -65,6 +65,8 @@ bin/aos-bench.py
 bin/aos-context.py
 bin/aos-delegate.py
 bin/aos-entry.py
+bin/aos-pipeline.py
+bin/aos-open-executor.py
 bin/aos-opencode-install.py
 bin/aos-router.py
 bin/aos-security.sh
@@ -82,6 +84,9 @@ tests/test_bench.py
 tests/test_context.py
 tests/test_delegate.py
 tests/test_entry.py
+tests/test_pipeline.py
+tests/test_open_executor.py
+tests/test_pipeline_runtime.py
 tests/test_doctor.py
 tests/test_install.py
 tests/test_measure.py

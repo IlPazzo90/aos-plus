@@ -29,7 +29,7 @@ function textOf(message) {
   return (message.parts || []).flatMap((part) => {
     if (part.type === 'text') return [part.text];
     // A premium result is a tool output; it is essential context for follow-ups.
-    if (part.type === 'tool' && ['aos_execute', 'aos_handoff'].includes(part.tool) && part.state?.status === 'completed')
+    if (part.type === 'tool' && ['aos_execute', 'aos_handoff', 'aos_pipeline'].includes(part.tool) && part.state?.status === 'completed')
       return [part.state.output];
     if (part.type === 'tool') return [`Tool ${part.tool}: ${part.state?.status}. ${JSON.stringify(part.state?.input || {})}\n${String(part.state?.output || part.state?.error || '').slice(-4000)}`];
     if (part.type === 'file') return [`Attached file: ${part.filename || part.url} (${part.mime || 'unknown type'}). Read it if your runtime can access it; never invent its contents.`];
@@ -102,6 +102,15 @@ export async function createHooks({ client, directory }, tool, bridge = runBridg
         state.result = prior.state.output;
       }
     }
+    const pipelineCalls = after.flatMap(m => m.parts || []).filter(p => p.type === 'tool' && p.tool === 'aos_pipeline');
+    const last = pipelineCalls.at(-1);
+    if (last) {
+      if (last.state?.status !== 'completed') state.pipelineInterrupted = true;
+      else {
+        try { state.pipeline = JSON.parse(last.state.output); }
+        catch { state.pipelineInterrupted = true; }
+      }
+    }
     return state;
   }
 
@@ -140,6 +149,18 @@ The following runtime route is authoritative:
 ${JSON.stringify(state.classification)}
 ${JSON.stringify(state.decision)}
 Begin your visible response with: AOS · ${state.classification.tier}/${state.classification.risk} · ${state.decision.executor === 'open' ? state.decision.model : [state.decision.backend, state.decision.premium_model].filter(Boolean).join('/')}
+If decision.pipeline is true, use aos_pipeline exclusively for task changes:
+plan (premium read-only), execute (guarded open worker), check (host-authorized argv
+for each plan.tests identifier, plus diff and security), verify, review (opposite
+premium read-only), check and arbitrate every finding, execute for open fixes,
+then check/verify/review again. Tool responses contain authoritative stage and plan.
+For arbitration supply verdicts [{id,confirmed,evidence,check_ids}]; reproduce every
+claim mechanically through check and explain confirmation or counterevidence.
+Never use native write/bash/task to implement, retry or fix pipeline work. Never
+invent checks or skip blocked stages. If stage is escalate, explain the exhausted
+open attempts and use escalate; premium execution is never the default. A blocked
+or interrupted pipeline is incomplete. T3 executes each bounded subtask in order.
+Send only relevant check output and delta context, never the repository by default.
 If executor is premium or verify is needs_approval, call aos_execute. That tool
 supplies the complete user conversation and handles any required approval. Do not
 execute the task through native tools. If unavailable, explain the missing host
@@ -151,6 +172,8 @@ An AOS route is not authorization for unrelated actions or external messages.`);
     },
     'tool.execute.before': async (input) => {
       const state = await stateFor(input.sessionID);
+      if (state.decision.pipeline && !['aos_pipeline', 'question', 'read', 'glob', 'grep', 'skill'].includes(input.tool))
+        throw new Error('AOS: role pipeline requires aos_pipeline; native implementation is disabled');
       if (state.decision.executor === 'unavailable') throw new Error('AOS: required host capability unavailable');
       if ((state.decision.executor === 'premium' || state.decision.verify === 'needs_approval')
           && !['aos_execute', 'question'].includes(input.tool))
@@ -162,6 +185,8 @@ An AOS route is not authorization for unrelated actions or external messages.`);
         output.text = 'AOS: capacità richiesta non disponibile in OpenCode. Apri il runtime richiesto; nessuna esecuzione dichiarata.';
         return;
       }
+      if (state.decision.pipeline && state.pipeline?.stage !== 'pass')
+        output.text = `AOS: pipeline incompleta (${state.pipeline?.stage || 'plan'}). Nessun PASS verificato.\n\n${output.text}`;
       if ((state.decision.executor === 'premium' || state.decision.verify === 'needs_approval') && !state.completed)
         output.text = `AOS: esecuzione premium non completata. Il testo del coordinatore seguente non è un risultato verificato.\n\n${output.text}`;
       const executor = state.decision.executor === 'open' ? state.decision.model :
@@ -173,6 +198,47 @@ An AOS route is not authorization for unrelated actions or external messages.`);
       output.context.push('Preserve the latest user task, constraints, approvals, executor, checks and unresolved work. AOS reclassifies after restart; do not treat a summary as a new authorization.');
     },
     tool: {
+      aos_pipeline: tool({
+        description: 'Advance the role pipeline one stage. plan/execute/check/verify/review/arbitrate/escalate. data is JSON; check uses {id,argv}; arbitrate uses {verdicts:[{id,confirmed,evidence,check_ids}]}. State and model are owned by AOS. Never bypass a denial.',
+        args: { action: tool.schema.string().describe('Pipeline action'), data: tool.schema.string().describe('JSON object; {} when no arguments') },
+        async execute({ action, data }, context) {
+          const state = await stateFor(context.sessionID);
+          if (!state.decision.pipeline) throw new Error('AOS: no role pipeline on this route');
+          if (locks.has(context.sessionID) || classifying.has(context.sessionID)) throw new Error('AOS: pipeline busy');
+          if (state.pipelineInterrupted) throw new Error('AOS: interrupted stage; inspect work before an explicit new request');
+          if (state.agent === 'plan' && !['plan'].includes(action)) throw new Error('AOS: Plan mode cannot execute pipeline work');
+          const payload = JSON.parse(data);
+          if (!payload || Array.isArray(payload) || typeof payload !== 'object') throw new Error('AOS: object required');
+          locks.set(context.sessionID, true);
+          try {
+            if (!state.pipeline) state.pipeline = await bridge('pipeline', { action: 'start',
+              data: { classification: state.classification, text: state.context } }, context.directory);
+            let permission = 'aos_' + action;
+            let patterns = [action];
+            if (action === 'check') {
+              permission = 'bash';
+              if (payload.id === 'diff') payload.argv = ['git', 'diff', '--check'];
+              if (payload.id === 'security') payload.argv = ['bash', root + 'bin/aos-security.sh'];
+              if (!Array.isArray(payload.argv) || !payload.argv.length || payload.argv.some(a => typeof a !== 'string' || !a))
+                throw new Error('AOS: check requires argv');
+              // Preserve ordinary command prefixes for host deny patterns; quote shell metacharacters.
+              patterns = [payload.argv.map(a => /^[A-Za-z0-9_./:=+-]+$/.test(a) ? a : "'" + a.replaceAll("'", "'\\''") + "'").join(' ')];
+            }
+            if (['plan','execute','review','check','escalate'].includes(action)) {
+              await context.ask({ permission, patterns, always: [], metadata: {
+                directory: context.directory, role: state.pipeline.role, stage: state.pipeline.stage,
+                model: action === 'plan' ? state.pipeline.planner : action === 'review' ? state.pipeline.reviewer : state.pipeline.model,
+                argv: payload.argv, reason: 'Execute only this pipeline stage under existing host and worker permissions.' } });
+            }
+            state.pipelineInterrupted = true;
+            const result = await bridge('pipeline', { state: state.pipeline, action, data: payload },
+              context.directory, undefined, context.abort);
+            state.pipeline = result;
+            state.pipelineInterrupted = false;
+            return JSON.stringify(result);
+          } finally { locks.delete(context.sessionID); }
+        },
+      }),
       aos_handoff: tool({
         description: 'Report a missing host capability discovered during an open task. AOS reclassifies the original task and may hand off to a premium CLI. Describe completed work to prevent repetition; this is not a new user authorization.',
         args: { reason: tool.schema.string().describe('Missing runtime capability and work already performed (max 4000 characters).') },

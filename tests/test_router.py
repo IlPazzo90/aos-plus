@@ -21,6 +21,12 @@ CONFIG = Path(__file__).resolve().parents[1] / "config" / "open-models.json"
 
 
 class RouterTests(unittest.TestCase):
+    def test_role_wrapper_preserves_case_insensitive_critical_approval(self):
+        for tier, risk in [('T2', 'critical'), ('t2', 'critical'), ('t3', 'CrItIcAl')]:
+            decision = router.decide(tier, risk, config=router.load_config(CONFIG))
+            self.assertEqual(decision.verify, 'needs_approval')
+            self.assertFalse(decision.pipeline)
+
     def test_malformed_optional_policy_falls_back_without_crashing(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'
@@ -113,11 +119,13 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(d.executor, "premium")
 
     # 8. T3 -> premium planning/final review; open is reserved for bounded subtasks.
-    def test_t3_routes_to_premium_with_premium_review(self):
+    def test_t3_routes_to_open_with_premium_plan_and_review(self):
         d = router.decide("T3", "MEDIUM", config=self.config)
-        self.assertEqual(d.executor, "premium")
+        self.assertEqual(d.executor, "open")
         self.assertEqual(d.verify, "premium_review")
-        self.assertEqual(d.escalation_target, self.config.premium_reviewer)
+        self.assertEqual(d.planner, self.config.escalation_executor)
+        self.assertEqual(d.reviewer, 'claude')
+
 
     # 9. CRITICAL -> no regression: stays on main with approval, nothing routed open.
     def test_critical_stays_on_main_requiring_approval(self):

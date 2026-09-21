@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -423,6 +424,170 @@ class BenchTests(unittest.TestCase):
             self.assertFalse(Path(wt).exists())
             listed = subprocess.run(["git", "-C", str(repo), "worktree", "list"], capture_output=True, text=True).stdout
             self.assertNotIn(wt, listed)
+
+
+# --------------------------------------------------------------------- --executors
+# The runtime/provider/model dimension. No provider is ever called here: the shared
+# executor's run is mocked and the legacy runners are checked by shape only.
+EXEC_OPEN_RESULT = {"model": "vercel/deepseek/deepseek-v4-pro-0813", "repo": "/wt", "exit_code": 0,
+                    "seconds": 1.0, "diff_stat": "a.py | 1 +-", "head_before": "h", "head_after": "h",
+                    "git_meta_changed": False,
+                    "usage": {"input_tokens": 10, "output_tokens": 2, "cost_usd": 0.01,
+                              "cost_known_usd": 0.01, "steps": 1},
+                    "reply": "", "error": None, "stderr_tail": "",
+                    "runtime": "codex-cli", "provider": "vercel", "executor_model": "deepseek/deepseek-v4-pro-0813",
+                    "runtime_model_pair": "codex-cli|vercel|deepseek/deepseek-v4-pro-0813"}
+
+
+def exec_runner_from(result):
+    def run(wt, model, brief):
+        return dict(result)
+    return run
+
+
+def exec_run_task(record, model="codex-cli|vercel|deepseek/deepseek-v4-pro-0813", no_review=False):
+    return bench.run_task(TASK, model, exec_runner_from(record),
+                          tester=lambda wt: (0, "ok"), reviewer=lambda wt: NO_FINDINGS,
+                          worktree=lambda t: "/wt", cleanup=lambda wt: None,
+                          differ=lambda wt: 4, no_review=no_review)
+
+
+class ExecutorBenchTests(unittest.TestCase):
+    def test_passing_tests_do_not_hide_a_timed_out_executor(self):
+        result = exec_run_task(dict(EXEC_OPEN_RESULT, exit_code=124, error='timeout'), no_review=True)
+        self.assertFalse(result['first_pass'])
+        self.assertFalse(result['retry_pass'])
+        self.assertTrue(result['escalated'])
+
+    def test_executor_runner_returns_delegate_shape_plus_runtime_dimension(self):
+        with mock.patch.object(bench.open_executor, "run", return_value=dict(EXEC_OPEN_RESULT)) as run:
+            runner = bench.open_executor_runner("codex-cli", "vercel", "deepseek/deepseek-v4-pro-0813")
+            rec = runner("/wt", "ignored", "brief")
+        # The model_ref reattaches the provider to the vendor/model id.
+        self.assertEqual(run.call_args.args[0], "/wt")
+        self.assertEqual(run.call_args.args[1], "vercel/deepseek/deepseek-v4-pro-0813")
+        self.assertEqual(run.call_args.kwargs["runtime"], "codex-cli")
+        self.assertIsNone(run.call_args.kwargs["max_cost"])
+        self.assertEqual(run.call_args.kwargs["max_steps"], 60)
+        self.assertEqual(rec["runtime"], "codex-cli")
+        self.assertEqual(rec["provider"], "vercel")
+        self.assertEqual(rec["executor_model"], "deepseek/deepseek-v4-pro-0813")
+        self.assertEqual(rec["runtime_model_pair"], "codex-cli|vercel|deepseek/deepseek-v4-pro-0813")
+        # The old delegate fields still move through the pipeline unchanged.
+        self.assertEqual(rec["exit_code"], 0)
+        self.assertFalse(rec["git_meta_changed"])
+        self.assertEqual(rec["usage"]["cost_usd"], 0.01)
+
+    def test_same_model_across_runtimes_differs_only_in_pair(self):
+        with mock.patch.object(bench.open_executor, "run") as run:
+            run.side_effect = lambda repo, ref, brief, t, ad, **kw: dict(
+                EXEC_OPEN_RESULT, runtime=kw["runtime"],
+                runtime_model_pair=f"{kw['runtime']}|vercel|deepseek/deepseek-v4-pro-0813")
+            for runtime in ("opencode", "codex-cli", "claude-code"):
+                rec = bench.open_executor_runner(runtime, "vercel", "deepseek/deepseek-v4-pro-0813")("/wt", "m", "b")
+                self.assertEqual(rec["runtime"], runtime)
+                self.assertEqual(rec["runtime_model_pair"], f"{runtime}|vercel|deepseek/deepseek-v4-pro-0813")
+                self.assertEqual(rec["provider"], "vercel")
+                self.assertEqual(rec["executor_model"], "deepseek/deepseek-v4-pro-0813")
+
+    def test_provider_is_propagated_not_swallowed(self):
+        with mock.patch.object(bench.open_executor, "run") as run:
+            run.return_value = dict(EXEC_OPEN_RESULT, provider="openrouter",
+                                    runtime_model_pair="opencode|openrouter|vendor/model")
+            rec = bench.open_executor_runner("opencode", "openrouter", "vendor/model")("/wt", "m", "b")
+        self.assertEqual(rec["provider"], "openrouter")
+        self.assertEqual(rec["runtime_model_pair"], "opencode|openrouter|vendor/model")
+
+    def test_executor_refusal_becomes_a_refusal_record(self):
+        # A SystemExit from the executor (project config, exit 5) is a refusal, not a
+        # run: it reaches attempt_state with no git_meta_changed and a refusal code.
+        with mock.patch.object(bench.open_executor, "run", side_effect=SystemExit(5)):
+            rec = bench.open_executor_runner("opencode", "vercel", "vendor/model")("/wt", "m", "b")
+        self.assertEqual(rec["exit_code"], 5)
+        self.assertNotIn("git_meta_changed", rec)
+        self.assertEqual(bench.attempt_state(rec), "refused")
+        self.assertEqual(rec["runtime_model_pair"], "opencode|vercel|vendor/model")
+
+    def test_unknown_cost_stays_null_through_the_pipeline(self):
+        record = dict(EXEC_OPEN_RESULT, usage={"input_tokens": 10, "output_tokens": 2,
+                                               "cost_usd": None, "cost_known_usd": None, "steps": 1})
+        r = exec_run_task(record)
+        self.assertIsNone(r["cost_usd"])
+        self.assertEqual(r["known_costs"], [None])
+        self.assertEqual(r["attempt_costs"], [None])
+        self.assertEqual(r["runtime"], "codex-cli")
+        self.assertEqual(r["runtime_model_pair"], "codex-cli|vercel|deepseek/deepseek-v4-pro-0813")
+
+    def test_legacy_runners_carry_no_runtime_dimension(self):
+        # Backward compatibility: a legacy runner's record has none of the new fields,
+        # so the record is the old shape and the model label is untouched.
+        record = {"exit_code": 0, "seconds": 1.0, "usage": {"cost_usd": 0.01, "cost_known_usd": 0.01},
+                  "diff_stat": "", "git_meta_changed": False, "reply": "", "stderr_tail": ""}
+        r = bench.run_task(TASK, "legacy/model", exec_runner_from(record),
+                           tester=lambda wt: (0, "ok"), reviewer=lambda wt: NO_FINDINGS,
+                           worktree=lambda t: "/wt", cleanup=lambda wt: None, differ=lambda wt: 1)
+        self.assertNotIn("runtime", r)
+        self.assertNotIn("runtime_model_pair", r)
+        self.assertEqual(r["model"], "legacy/model")
+
+    def test_build_specs_keeps_legacy_and_adds_paired_labels(self):
+        with mock.patch.object(bench, "opencode_runner") as oc, \
+                mock.patch.object(bench, "codex_runner") as cx, \
+                mock.patch.object(bench, "open_executor_runner") as oe:
+            specs = bench.build_specs("codex,vercel/test/winner",
+                                      [{"runtime": "opencode", "provider": "vercel", "model": "a/b"},
+                                       {"runtime": "codex-cli", "provider": "vercel", "model": "a/b"}])
+        self.assertEqual(specs[0][0], "codex")
+        self.assertIs(specs[0][1], cx)
+        self.assertEqual(specs[1][0], "vercel/test/winner")
+        self.assertIs(specs[1][1], oc)
+        self.assertEqual(specs[2][0], "opencode|vercel|a/b")
+        self.assertEqual(specs[3][0], "codex-cli|vercel|a/b")
+        self.assertEqual(oe.call_args_list[0].args, ("opencode", "vercel", "a/b"))
+        self.assertEqual(oe.call_args_list[1].args, ("codex-cli", "vercel", "a/b"))
+
+    def test_no_review_labels_not_run_and_is_not_a_pass(self):
+        r = exec_run_task(dict(EXEC_OPEN_RESULT), no_review=True)
+        self.assertEqual(r["findings"], "not_run")
+        # The summary says not_run, never a clean 0/0/0, so it cannot read as acceptance.
+        md = bench.summary([r, exec_run_task(dict(EXEC_OPEN_RESULT), no_review=True)])
+        self.assertIn("not_run", md)
+        self.assertNotIn("0/0/0", md)
+        # A reviewed task still counts its findings as before.
+        self.assertIn("0/0/0", bench.summary([exec_run_task(dict(EXEC_OPEN_RESULT))]))
+
+    def test_review_absent_is_nd_not_a_pass(self):
+        # An escalated task is reviewed as None: labelled n/d, never a clean pass.
+        r = bench.run_task(TASK, "opencode|vercel|a/b", exec_runner_from(dict(EXEC_OPEN_RESULT)),
+                           tester=lambda wt: (1, "fail"), reviewer=lambda wt: NO_FINDINGS,
+                           worktree=lambda t: "/wt", cleanup=lambda wt: None, differ=lambda wt: 1)
+        self.assertTrue(r["escalated"])
+        self.assertIsNone(r["findings"])
+        self.assertIn("n/d", bench.summary([r]))
+
+    def test_cap_usd_rejected_before_execution_for_uncosted_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "tasks.json"
+            tasks.write_text(json.dumps({"tasks": []}))
+            executors = Path(tmp) / "executors.json"
+            executors.write_text(json.dumps([{"runtime": "codex-cli", "provider": "vercel", "model": "a/b"}]))
+            argv = ["aos-bench.py", "--tasks", str(tasks), "--executors", str(executors),
+                    "--out", str(Path(tmp) / "out"), "--cap-usd", "1.0"]
+            with mock.patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit) as caught:
+                    bench.main()
+            self.assertEqual(caught.exception.code, 2)
+
+    def test_cap_usd_allowed_for_cost_reporting_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "tasks.json"
+            tasks.write_text(json.dumps({"tasks": []}))
+            executors = Path(tmp) / "executors.json"
+            executors.write_text(json.dumps([{"runtime": "opencode", "provider": "vercel", "model": "a/b"}]))
+            argv = ["aos-bench.py", "--tasks", str(tasks), "--executors", str(executors),
+                    "--out", str(Path(tmp) / "out"), "--cap-usd", "1.0"]
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(bench.main(), 0)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,26 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(self.record.read_text())
 
+    def test_pipeline_roles_are_imported_separately_and_unknowns_stay_null(self):
+        self.start()
+        packet = Path(self.temp.name) / 'pipeline.json'
+        packet.write_text(json.dumps(dict(tier='T2', role_events=[
+            dict(role='planner',model='p',provider='codex',tokens=10),
+            dict(role='executor',model='o',provider='vercel',tokens=80),
+            dict(role='reviewer',model='r',provider='claude',tokens=10)],
+            planner='codex', reviewer='claude', premium_execution_used=False,
+            premium_execution_reason=None, findings_total=1, findings_confirmed=0,
+            findings_refuted=1, open_retry_count=0)))
+        result = self.run_cli('finish','--outcome','delivered','--pipeline',str(packet))
+        self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads(self.record.read_text())
+        self.assertEqual((data['planner_tokens'],data['executor_tokens'],data['reviewer_tokens']), (10,80,10))
+        self.assertEqual(data['premium_dependency_ratio'], .2)
+        self.assertEqual(data['workload_open_ratio'],1)
+        self.assertTrue(data['cross_model_review'])
+        self.assertIsNone(data['estimated_premium_tokens_saved'])
+
+
     def test_start_records_explicit_identity_and_null_metrics(self):
         data = self.start()
         self.assertEqual(data["schema"], 1)

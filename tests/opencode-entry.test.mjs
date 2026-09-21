@@ -216,3 +216,46 @@ test('premium clarification remains visible with an explicit incomplete status',
   assert.match(out.text,/Quale file devo modificare/);
   assert.match(out.text,/non completata/);
 });
+
+{
+  const { createHooks } = await import(bridge);
+  const tool = Object.assign(v => v, {schema: {string: () => ({describe(){return this;}})}});
+  const route = {classification:{tier:'T2',risk:'MEDIUM'},decision:{executor:'open',model:'open/primary',pipeline:true,planner:'codex',reviewer:'claude'}};
+  test('role pipeline blocks native implementation and asks before premium planning', async () => {
+    const calls=[];
+    const hooks=await createHooks({directory:'/tmp',client:{session:{messages:async()=>({data:[]})}}},tool,
+      async(action,payload)=>{calls.push([action,payload]);if(action==='classify')return route;
+        return {stage:payload.action==='start'?'plan':'execute',planner:'codex',reviewer:'claude',checks:[]};});
+    await hooks['chat.message']({sessionID:'s'}, {message:{id:'1'},parts:[{type:'text',text:'task'}]});
+    await assert.rejects(hooks['tool.execute.before']({sessionID:'s',tool:'bash'}),/pipeline/);
+    assert.ok(hooks.tool.aos_pipeline);
+    const ask=[];
+    await hooks.tool.aos_pipeline.execute({action:'plan',data:'{}'}, {sessionID:'s',directory:'/tmp',ask:async p=>ask.push(p),metadata(){}});
+    assert.equal(ask[0].permission,'aos_plan');
+    assert.ok(calls.some(([a,p])=>a==='pipeline'&&p.action==='plan'));
+  });
+  test('denied pipeline permission makes no role call', async () => {
+    const calls=[];
+    const hooks=await createHooks({directory:'/tmp',client:{session:{messages:async()=>({data:[]})}}},tool,
+      async(action,payload)=>{calls.push([action,payload]);return action==='classify'?route:{stage:'plan'};});
+    await hooks['chat.message']({sessionID:'s'}, {message:{id:'1'},parts:[]});
+    assert.ok(hooks.tool.aos_pipeline);
+    await assert.rejects(hooks.tool.aos_pipeline.execute({action:'plan',data:'{}'}, {sessionID:'s',directory:'/tmp',ask:async()=>{throw Error('denied');}}),/denied/);
+    assert.equal(calls.filter(([a,p])=>a==='pipeline'&&p.action==='plan').length,0);
+  });
+  test('check permission preserves command prefixes and a denial stops execution', async () => {
+    const calls=[];
+    const hooks=await createHooks({directory:'/tmp',client:{session:{messages:async()=>({data:[]})}}},tool,
+      async(action,payload)=>{calls.push([action,payload]);return action==='classify'?route:{stage:'verify'};});
+    await hooks['chat.message']({sessionID:'s'}, {message:{id:'1'},parts:[]});
+    await assert.rejects(hooks.tool.aos_pipeline.execute({action:'check',data:JSON.stringify({
+      id:'unit',argv:['python3','-c',"print('literal; value')"]
+    })}, {sessionID:'s',directory:'/tmp',ask:async request=>{
+      assert.equal(request.permission,'bash');
+      assert.ok(request.patterns[0].startsWith('python3 -c '));
+      assert.ok(request.patterns[0].includes("'print("));
+      throw Error('policy denied python3 *');
+    }}),/policy denied/);
+    assert.equal(calls.filter(([a,p])=>a==='pipeline'&&p.action==='check').length,0);
+  });
+}

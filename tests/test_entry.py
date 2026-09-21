@@ -83,6 +83,23 @@ class EntryTests(unittest.TestCase):
         result = self.entry.route(parsed)
         self.assertEqual((result['executor'], result['backend']), ('premium', 'codex'))
 
+    def test_readonly_roles_reuse_verify_agent_tool_restrictions(self):
+        self.assertTrue(hasattr(self.entry, 'readonly_command'))
+        for backend in ('claude', 'codex'):
+            cmd = self.entry.readonly_command(backend, Path('/tmp/report'))
+            if backend == 'codex':
+                self.assertIn('read-only', cmd)
+                self.assertIn('mcp_servers={}', cmd)
+            else:
+                self.assertIn('Read,Glob,Grep', cmd)
+                self.assertIn('--safe-mode', cmd)
+            self.assertFalse(any('bypass' in x for x in cmd))
+
+    def test_pipeline_review_requires_current_deterministic_evidence(self):
+        self.assertTrue(hasattr(self.entry, 'pipeline_step'))
+        with self.assertRaises(ValueError):
+            self.entry.pipeline_step({'stage':'execute'}, 'review', {}, ROOT)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -22,11 +22,13 @@ no cross-model review (quality-gates fallback applies).
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 
 @dataclass(frozen=True)
 class RoutingConfig:
+    role_pipeline: bool = False
+    premium_execution_default: bool = False
     open_primary: str = None
     open_fallback: str = None
     premium_reviewer: str = None
@@ -78,6 +80,8 @@ def load_config(path=None):
     if type(retries) is not int or retries < 1:
         return empty
     return RoutingConfig(
+        role_pipeline=(policy or {}).get("role_pipeline") is True,
+        premium_execution_default=False,
         open_primary=primary.strip(),
         open_fallback=fallback.strip() if isinstance(fallback, str) and fallback.strip() else None,
         premium_reviewer=(premium or {}).get("reviewer"),
@@ -97,6 +101,13 @@ def load_config(path=None):
 @dataclass(frozen=True)
 class Decision:
     executor: str                 # "open" | "main" | "premium"
+    planner: str = field(default=None)
+    reviewer: str = field(default=None)
+    fixer: str = field(default=None)
+    cross_model_review: bool = field(default=False)
+    premium_execution_used: bool = field(default=False)
+    premium_execution_reason: str = field(default=None)
+    pipeline: bool = field(default=False)
     model: str = None             # model string as routed (may be None for premium)
     provider: str = None          # provider part of the model id, when present
     manual_model_override: bool = False
@@ -113,7 +124,7 @@ def _model_provider(model):
     return model.split("/", 1)[0]
 
 
-def decide(tier, risk, *, config=None, manual_override=False,
+def _decide(tier, risk, *, config=None, manual_override=False,
            open_primary_available=True, open_fallback_available=True,
            premium_reviewer_available=True, observable_check=False,
            failed_open_attempts=0, complexity=None, uncertainty=None,
@@ -150,7 +161,7 @@ def decide(tier, risk, *, config=None, manual_override=False,
     # 3. e.g. T3: premium planning/final review, open only on bounded subtasks
     #    (which the orchestrator routes separately). Executor for the plan itself
     #    is premium/main.
-    if tier == "T3":
+    if tier == "T3" and not config.role_pipeline:
         return Decision(executor="premium",
                         verify="premium_review" if config.premium_reviewer and premium_reviewer_available else "deterministic",
                         escalation_target=config.premium_reviewer,
@@ -174,7 +185,7 @@ def decide(tier, risk, *, config=None, manual_override=False,
     if (config.open_primary and config.open_max_tier in tiers and config.open_max_risk in risks
             and tiers.index(tier) <= tiers.index(config.open_max_tier)
             and risks.index(risk) <= risks.index(config.open_max_risk)):
-        if tier == "T2":
+        if tier in ("T2", "T3"):
             verify = "deterministic" if config.t2_medium_deterministic_verify else "targeted"
             if config.t2_medium_open_review and config.premium_reviewer:
                 verify = "open_mixed"  # deterministic + open review
@@ -190,6 +201,35 @@ def decide(tier, risk, *, config=None, manual_override=False,
     #    session when no open executor is configured.
     return Decision(executor="main", verify="deterministic",
                     rationale=("not eligible for open", tier, risk))
+
+
+def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kwargs):
+    """Assign roles separately from the existing permission/risk decision."""
+    tier, risk = (tier or '').upper(), (risk or '').upper()
+    config = config or RoutingConfig()
+    decision = _decide(tier, risk, config=config, **kwargs)
+    premium_used = decision.executor == 'premium'
+    decision = replace(decision, premium_execution_used=premium_used,
+                       premium_execution_reason='; '.join(decision.rationale) if premium_used else None)
+    if not config.role_pipeline or kwargs.get('manual_override') or risk == 'CRITICAL':
+        return decision
+    families = ('codex', 'claude') if premium_families is None else tuple(premium_families)
+    if kwargs.get('premium_reviewer_available') is False:
+        families = ()
+    chosen = planner or config.escalation_executor
+    if chosen not in families:
+        chosen = next((f for f in families if f in ('codex', 'claude')), None)
+    needs_plan = tier in ('T2', 'T3')
+    reviewer = ('claude' if chosen == 'codex' else 'codex') if chosen else None
+    if reviewer not in families:
+        reviewer = None  # Never relabel same-family review as cross-model.
+    needs_review = needs_plan or risk == 'HIGH'
+    return replace(decision, planner=chosen if needs_plan else None,
+                   reviewer=reviewer if needs_review else None,
+                   fixer='open' if decision.executor == 'open' else decision.executor,
+                   cross_model_review=needs_review and reviewer is not None,
+                   verify='premium_review' if needs_review else 'deterministic',
+                   pipeline=decision.executor == 'open' and needs_plan)
 
 
 def _high_review(config, premium_reviewer_available):
@@ -255,13 +295,7 @@ def main(argv=None):
         failed_open_attempts=args.failed_open_attempts,
     )
     if args.json:
-        print(json.dumps({"executor": decision.executor, "model": decision.model,
-                          "provider": decision.provider,
-                          "manual_model_override": decision.manual_model_override,
-                          "routed_by_aos": decision.routed_by_aos,
-                          "verify": decision.verify, "retries": decision.retries,
-                          "escalation_target": decision.escalation_target,
-                          "rationale": list(decision.rationale)}, indent=2))
+        print(json.dumps(asdict(decision), indent=2))
     else:
         print(f"executor={decision.executor} model={decision.model} verify={decision.verify} "
               f"escalation={decision.escalation_target}")

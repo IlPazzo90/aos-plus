@@ -327,7 +327,8 @@ class Doctor:
                 valid = False
             if not valid:
                 self.fail("ROUTER", str(router), "ripristinare il link alla root AOS/catalog/skill-library con l'installer")
-        runtime = ", ".join(f"{name}={'presente' if shutil.which(name) else 'assente'}" for name in ("rtk", "claude", "codex"))
+        runtime = ", ".join(f"{name}={'presente' if shutil.which(name) else 'assente'}" for name in ("rtk", "claude", "codex", "opencode"))
+        print("Open Executor: runtime separato dal modello; OpenCode opzionale. Claude open usa file tools, senza Bash.")
         print("Frontmatter: presenza campi; sintassi YAML completa non verificata (usare quick_validate).")
         print(f"CLI opzionali (solo PATH): {runtime}. Autenticazione e backend non verificati.")
         print(f"{'ERRORE' if self.errors else 'OK'}: {len(maintained)} file mantenuti in {claude_root}, "

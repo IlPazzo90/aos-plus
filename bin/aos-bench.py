@@ -22,10 +22,19 @@ DELEGATE = HERE / "aos-delegate.py"
 _spec = importlib.util.spec_from_file_location("aos_delegate", DELEGATE)
 delegate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(delegate)
+OPEN_EXECUTOR = HERE / "aos-open-executor.py"
+_spec_oe = importlib.util.spec_from_file_location("aos_open_executor", OPEN_EXECUTOR)
+open_executor = importlib.util.module_from_spec(_spec_oe)
+_spec_oe.loader.exec_module(open_executor)
 # Per attempt. A worker past these is looping, not working: the first run of this
 # benchmark spent 3.30 $ and 140 steps on a diff of zero lines.
 MAX_COST_USD = 1.0
 MAX_STEPS = 60
+# The open executor's run window, matching the delegate's own default (900s).
+TIMEOUT = 900
+# Only opencode reports a gateway cost the spend cap can count; Codex/Claude keep
+# gateway cost null (not a subscription), so dollar caps are refused up front.
+COST_RUNTIMES = {"opencode"}
 
 REVIEW_PROMPT = """You are reviewing a diff produced by another agent for this task:
 
@@ -184,6 +193,63 @@ def codex_runner(wt, model, brief):
             "reply": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
 
 
+def open_executor_runner(runtime, provider, model):
+    """One open runtime through the shared executor; no premium substitution (round: the
+    paired runner must never fall back to a metered premium model). model is the full
+    model id excluding the provider (e.g. vendor/model), so the model_ref reattaches the
+    provider prefix for the executor. The returned record is the old delegate shape plus
+    runtime/provider/executor_model/runtime_model_pair. A refusal (project config, missing
+    runtime, bad endpoint, unknown permissions) comes back as a refusal record, not a run."""
+    model_ref = f"{provider}/{model}"
+    pair = f"{runtime}|{provider}|{model}"
+    retry_dir = tempfile.TemporaryDirectory(prefix="aos-bench-retry-")
+    states = {}
+
+    def runner(wt, _model, brief):
+        try:
+            result = open_executor.run(str(wt), model_ref, brief, TIMEOUT, True,
+                                       max_cost=MAX_COST_USD if runtime == "opencode" else None, max_steps=MAX_STEPS,
+                                       state_file=states.setdefault(str(wt), Path(retry_dir.name) / (str(len(states)) + ".json")),
+                                       runtime=runtime)
+        except SystemExit as refused:
+            return {"exit_code": refused.code, "seconds": 0, "usage": {}, "diff_stat": "",
+                    "reply": "", "stderr_tail": "", "error": str(refused),
+                    "runtime": runtime, "provider": provider, "executor_model": model,
+                    "runtime_model_pair": pair}
+        except (ValueError, OSError) as error:
+            # No runtime installed, no endpoint/credential, custom permissions, a project
+            # runtime config: the executor refuses before a worker ran (exit 4 = no run).
+            return {"exit_code": delegate.EXIT_NO_OPENCODE, "seconds": 0, "usage": {}, "diff_stat": "",
+                    "reply": "", "stderr_tail": "", "error": str(error),
+                    "runtime": runtime, "provider": provider, "executor_model": model,
+                    "runtime_model_pair": pair}
+        result.setdefault("runtime", runtime)
+        result.setdefault("provider", provider)
+        result.setdefault("executor_model", model)
+        result.setdefault("runtime_model_pair", pair)
+        return result
+    runner.retry_dir = retry_dir
+    return runner
+
+
+def safe_name(model):
+    return model.replace("/", "_").replace(":", "_").replace("|", "_")
+
+
+def build_specs(models, executors):
+    """The (label, runner) pairs to run, in order: legacy --models first, then each
+    --executors entry labelled runtime|provider|model so the summary groups per runtime."""
+    specs = []
+    if models:
+        for model in models.split(","):
+            runner = codex_runner if model.split(":")[0] == "codex" else opencode_runner
+            specs.append((model, runner))
+    for entry in executors:
+        runtime, provider, model = entry["runtime"], entry["provider"], entry["model"]
+        specs.append((f"{runtime}|{provider}|{model}", open_executor_runner(runtime, provider, model)))
+    return specs
+
+
 def make_tester(task):
     test_cmd = task["test"]
 
@@ -285,7 +351,13 @@ def add_cost(a, b):
     return None if a is None or b is None else a + b
 
 
-def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=None, spend=None):
+def identity_fields(record):
+    """The runtime dimension a paired executor adds to the delegate's record; empty for
+    the legacy runners, so their records are byte-for-byte the old shape."""
+    return {k: record[k] for k in ("runtime", "provider", "executor_model", "runtime_model_pair") if k in record}
+
+
+def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=None, spend=None, no_review=False):
     if differ is None:
         differ = lambda wt: diff_lines(wt, task.get("test_files") or ())  # noqa: E731
     spend = spend if spend is not None else Spend(None)
@@ -317,7 +389,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
                 "input_tokens": None, "output_tokens": None, "exit_code": last["exit_code"],
                 "diff_stat": None, "attempt_costs": [a["usage"].get("cost_usd") for a in attempts],
                 "known_costs": [a["usage"].get("cost_known_usd") for a in attempts], "findings": None,
-                "diff_lines": 0, "diff": None, "test_tail": last.get("error")}
+                "diff_lines": 0, "diff": None, "test_tail": last.get("error"), **identity_fields(last)}
     def refused_record(first):
         # No worker ran (dirty worktree, project config, no opencode): escalated,
         # nothing to test or review, the worktree cleaned as usual.
@@ -325,7 +397,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
                 "escalated": True, "capped": False, "refused": True, "seconds": first["seconds"],
                 "cost_usd": None, "input_tokens": None, "output_tokens": None, "exit_code": first["exit_code"],
                 "diff_stat": None, "attempt_costs": [None], "known_costs": [None], "findings": None,
-                "diff_lines": 0, "diff": None, "test_tail": str(first.get("error"))}
+                "diff_lines": 0, "diff": None, "test_tail": str(first.get("error")), **identity_fields(first)}
     try:
         first = runner(wt, model, brief_for(task))
         state = attempt_state(first)
@@ -346,7 +418,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
                   "attempt_costs": [first["usage"].get("cost_usd")],
                   # The reported part of each attempt, for the cap; the total above is
                   # null when any step went unreported (reviewer round 2).
-                  "known_costs": [first["usage"].get("cost_known_usd")]}
+                  "known_costs": [first["usage"].get("cost_known_usd")], **identity_fields(first)}
         # The cap is checked between attempts, not after both (reviewer round 3): a
         # retry that starts past the cap is money the cap was meant to stop.
         spend.add(result["known_costs"][0])
@@ -384,7 +456,12 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
             result["diff_stat"] = second["diff_stat"]
             result["escalated"] = code != 0
         stage_new_files(wt)
-        result["findings"] = reviewer(wt) if not result["escalated"] else None
+        if no_review and not result["escalated"]:
+            result["findings"] = "not_run"
+        else:
+            # A skipped review is labelled, never left to read as "no findings" (a null
+            # review is not a PASS); an escalated task was never up for review anyway.
+            result["findings"] = reviewer(wt) if not result["escalated"] else None
         result["diff_lines"] = differ(wt)
         result["diff"] = diff_text(wt, task.get("test_files") or ())
         result["test_tail"] = out
@@ -416,8 +493,16 @@ def summary(rows):
         secs = sum(r["seconds"] for r in rs) / n
         known = [r["cost_usd"] for r in rs if r["cost_usd"] is not None]
         unknown = n - len(known)
-        f = [r["findings"] for r in rs if r["findings"]]
-        hml = "/".join(str(sum(x[k] for x in f)) for k in ("high", "medium", "low")) if f else "n/d"
+        f = [r["findings"] for r in rs if isinstance(r.get("findings"), dict)]
+        not_run = sum(1 for r in rs if r.get("findings") == "not_run")
+        if f:
+            hml = "/".join(str(sum(x[k] for x in f)) for k in ("high", "medium", "low"))
+        elif not_run:
+            # A skipped review is a fact about the run, not "no findings": it must never
+            # read as a clean pass (0/0/0) nor as an acceptance.
+            hml = "not_run"
+        else:
+            hml = "n/d"
         cost = f"{sum(known):.2f} $" + (f" (costo n/d: {unknown})" if unknown else "")
         diff = sum(r.get("diff_lines", 0) for r in rs) / n
         esc_cell = f"{esc}/{n}" + (f" (+{capped} fermati dal tetto)" if capped else "")
@@ -443,10 +528,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", default=str(HERE.parent / "evals/bench/tasks.json"))
     parser.add_argument("--models", help="comma-separated provider/model; 'codex' or 'codex:<model>' = reference run")
+    parser.add_argument("--executors", help="JSON file: a list of {runtime, provider, model} to run the open runtimes")
     parser.add_argument("--out", help="docs/misure/bench/<date>")
     parser.add_argument("--cap-usd", type=float, default=None)
     parser.add_argument("--only", help="comma-separated task ids")
     parser.add_argument("--check", action="store_true", help="validate the corpus, run nothing external")
+    parser.add_argument("--no-review", action="store_true",
+                        help="skip the reviewer (deterministic-only runs); the record labels review not_run")
     args = parser.parse_args()
     tasks = json.load(open(args.tasks))["tasks"]
     if args.only:
@@ -460,17 +548,32 @@ def main():
             print(f"{'ok ' if ok else 'KO '} {task['id']}: {detail}", flush=True)
         print(f"{len(tasks) - bad}/{len(tasks)} task validi")
         return 1 if bad else 0
-    if not args.models or not args.out:
-        parser.error("--models e --out sono obbligatori senza --check")
+    if not args.out or (not args.models and not args.executors):
+        parser.error("--out e (--models o --executors) sono obbligatori senza --check")
+    executors = []
+    if args.executors:
+        loaded = json.load(open(args.executors))
+        if not isinstance(loaded, list):
+            parser.error("--executors deve essere una lista JSON di {runtime, provider, model}")
+        for entry in loaded:
+            if not isinstance(entry, dict) or not {"runtime", "provider", "model"} <= set(entry):
+                parser.error("ogni esecutore deve avere runtime, provider e model")
+            if entry["runtime"] not in open_executor.RUNTIMES:
+                parser.error(f"runtime sconosciuto: {entry['runtime']} (opencode/codex-cli/claude-code)")
+        executors = loaded
+    if args.cap_usd is not None:
+        uncosted = sorted({e["runtime"] for e in executors if e["runtime"] not in COST_RUNTIMES})
+        if uncosted:
+            parser.error("--cap-usd richiesto ma un runtime non riporta il costo "
+                         f"({', '.join(uncosted)}): la spesa resterebbe nulla; usa soli opencode o togli il tetto")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     spend = Spend(args.cap_usd)
     rows = []
     stopped = False
-    for model in args.models.split(","):
-        runner = codex_runner if model.split(":")[0] == "codex" else opencode_runner
+    for model, runner in build_specs(args.models, executors):
         for task in tasks:
-            record = out / f"{task['id']}-{model.replace('/', '_').replace(':', '_')}.json"
+            record = out / f"{task['id']}-{safe_name(model)}.json"
             if record.exists():
                 rows.append(json.loads(record.read_text()))
                 if rows[-1].get("git_tampered"):   # a resume does not skip the stop (round 22)
@@ -479,7 +582,7 @@ def main():
                     return 3
                 continue
             r = run_task(task, model, runner, make_tester(task), make_reviewer(task),
-                         make_worktree, remove_worktree, spend=spend)
+                         make_worktree, remove_worktree, spend=spend, no_review=args.no_review)
             r["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             record.write_text(json.dumps(r, ensure_ascii=False, indent=2))
             rows.append(r)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create explicit task measurements without reading history or contacting providers."""
 import argparse
+import importlib.util
 from datetime import datetime, timezone
 import json
 import os
@@ -93,6 +94,14 @@ def start(args):
         "escalation_reason": None,
         "workload_open_ratio": None,
         "premium_dependency_ratio": None,
+        **{role + '_' + field: None for role in ('planner','executor','reviewer','fixer')
+           for field in ('runtime','model','provider','tokens')},
+        'main_host': args.runtime, 'runtime_model_pair': None, 'benchmark_pair': None,
+        'open_executor_success': None, 'open_executor_retry': None, 'open_fallback_used': None,
+        "premium_execution_used": None, "premium_execution_reason": None,
+        "cross_model_review": None, "findings_total": None, "findings_confirmed": None,
+        "findings_refuted": None, "open_retry_count": None,
+        "estimated_premium_tokens_saved": None,
     }
     # The record is mandatory at T2/T3, so a missing parent directory must not be the
     # reason a task closes without one. Only the explicit --record path is created.
@@ -293,9 +302,17 @@ def finish(args):
         open_tokens = data.get("open_executor_tokens")
         premium_tokens = data.get("premium_executor_tokens")
         total = (open_tokens or 0) + (premium_tokens or 0)
-        if total:
+        if open_tokens is not None and premium_tokens is not None and total:
             data["workload_open_ratio"] = round((open_tokens or 0) / total, 3)
             data["premium_dependency_ratio"] = round((premium_tokens or 0) / total, 3)
+        if getattr(args, "pipeline", None) is not None:
+            spec = importlib.util.spec_from_file_location('aos_pipeline_metrics', Path(__file__).with_name('aos-pipeline.py'))
+            pipeline = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pipeline)
+            state = json.loads(args.pipeline.read_text())
+            if not isinstance(state, dict) or not isinstance(state.get('role_events'), list):
+                raise ValueError('invalid pipeline telemetry')
+            data.update(pipeline.metrics(state))
         if getattr(args, "context_budget", None) is not None:
             data["context_budget"] = load_context_budget(args.context_budget)
         atomic_write(args.record, data)
@@ -353,6 +370,7 @@ def main():
     for name in ("metric-source", "rtk-source", "main-executor-runtime", "main-executor-model",
                  "main-executor-provider", "escalation-reason"):
         end.add_argument("--" + name, type=text_value)
+    end.add_argument("--pipeline", type=Path, help="Observed role pipeline JSON state")
     end.add_argument("--context-budget", type=Path, default=None,
                      help="JSON file with the context-budget telemetry (bin/aos-context.py)")
     for name in ("routed-by-aos", "manual-model-override"):

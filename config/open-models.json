@@ -15,13 +15,14 @@
   },
   "policy": {
     "open_max_risk": "MEDIUM",
-    "open_max_tier": "T2",
+    "open_max_tier": "T3",
     "open_t2_high_review": "premium",
     "open_t2_high_requires_observable_check": true,
     "retries_before_escalation": 2,
     "t3_premium_planning": true,
     "t2_medium_deterministic_verify": true,
-    "t2_medium_open_review": true
+    "t2_medium_open_review": true,
+    "role_pipeline": true
   },
   "telemetry": {
     "record": true,
@@ -39,7 +40,42 @@
       "escalation_reason",
       "outcome"
     ],
-    "ratios": ["workload_open_ratio", "premium_dependency_ratio"]
+    "ratios": [
+      "workload_open_ratio",
+      "premium_dependency_ratio"
+    ],
+    "role_fields": [
+      "planner_model",
+      "planner_provider",
+      "planner_tokens",
+      "executor_model",
+      "executor_provider",
+      "executor_tokens",
+      "reviewer_model",
+      "reviewer_provider",
+      "reviewer_tokens",
+      "fixer_model",
+      "fixer_provider",
+      "fixer_tokens",
+      "premium_execution_used",
+      "premium_execution_reason",
+      "cross_model_review",
+      "findings_total",
+      "findings_confirmed",
+      "findings_refuted",
+      "open_retry_count",
+      "estimated_premium_tokens_saved",
+      "main_host",
+      "planner_runtime",
+      "executor_runtime",
+      "reviewer_runtime",
+      "fixer_runtime",
+      "benchmark_pair",
+      "runtime_model_pair",
+      "open_executor_success",
+      "open_executor_retry",
+      "open_fallback_used"
+    ]
   },
   "context_policy": {
     "defaults": {
@@ -92,6 +128,35 @@
         "soft_limit": 90000,
         "hard_limit": 130000
       }
+    }
+  },
+  "premium_execution": {
+    "default": false,
+    "exceptions": [
+      "open_attempts_exhausted",
+      "open_unavailable",
+      "required_runtime_capability",
+      "risk_policy",
+      "manual_override"
+    ],
+    "note": "Unavailable capability and permission refusal are blockers, not failed open attempts."
+  },
+  "executors": {
+    "default_runtime": "opencode",
+    "runtime_order": [
+      "opencode",
+      "codex-cli",
+      "claude-code"
+    ],
+    "source": "Existing OpenCode benchmark; alternative runtimes require comparative measurements before promotion.",
+    "permission_profile": "GREEN"
+  },
+  "providers": {
+    "vercel": {
+      "responses_url": "https://ai-gateway.vercel.sh/codex/v1",
+      "anthropic_url": "https://ai-gateway.vercel.sh/claude-code",
+      "api_key_env": "AOS_OPEN_API_KEY",
+      "opencode_credentials": true
     }
   }
 }
