@@ -207,6 +207,101 @@ class Doctor:
         if total > self.TMP_WARN_BYTES:
             self.warn("TMP", f"{tmp} pesa {total // (1024 * 1024)} MB", "è ignorata da Git: archiviare o cancellare ciò che non serve")
 
+    def version_consistency(self, root):
+        # SKILL.md metadata.version and VERSION name the same release. The
+        # frontmatter field was bumped alongside VERSION through 1.22.1 and then
+        # left behind by the 2.x releases: two numbers that both claim to be the
+        # AOS version. Neither file is authoritative over the other — they must agree.
+        try:
+            version = (root / "VERSION").read_text().strip()
+        except OSError:
+            return  # no VERSION: nothing to compare
+        try:
+            skill = (root / "SKILL.md").read_text()
+        except OSError:
+            return
+        frontmatter = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", skill, re.S)
+        if not frontmatter:
+            return
+        match = re.search(r"^\s*version:\s*[\"']([^\"']+)[\"']", frontmatter[1], re.M)
+        if not match:
+            return  # no metadata.version: nothing to compare
+        if match.group(1) != version:
+            self.warn("VERSIONE", f"SKILL.md metadata.version={match.group(1)} != VERSION={version}",
+                      "allineare il frontmatter di SKILL.md a VERSION")
+
+    def _opencode_config(self):
+        # The user's OpenCode config merged from its global files, or {} when
+        # unreadable. Plain JSON only: a JSONC file with comments reads as
+        # unreadable here (the delegate handles JSONC for the run; the doctor only
+        # needs the model flags). Shallow merge is enough: providers are top-level.
+        xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        config_dir = Path(xdg) / "opencode"
+        merged = {}
+        for name in ("config.json", "opencode.json", "opencode.jsonc"):
+            try:
+                loaded = json.loads((config_dir / name).read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(loaded, dict):
+                merged.update(loaded)
+        return merged
+
+    def _zero_retention(self, user, model):
+        # configured | not_configured | unknown for a model's zeroDataRetention flag.
+        # The model id is provider/model; the config keys models by the part after
+        # the provider prefix. No secret value is ever read or printed.
+        if not isinstance(user, dict) or not user:
+            return "unknown"
+        providers = user.get("provider")
+        if not isinstance(providers, dict):
+            return "unknown"
+        provider_id, _, model_key = model.partition("/")
+        block = providers.get(provider_id)
+        if not isinstance(block, dict):
+            return "unknown"
+        models = block.get("models")
+        if not isinstance(models, dict):
+            return "unknown"
+        entry = models.get(model_key)
+        if not isinstance(entry, dict):
+            return "unknown"
+        options = entry.get("options")
+        if not isinstance(options, dict):
+            return "not_configured"
+        return "configured" if options.get("zeroDataRetention") is True else "not_configured"
+
+    def provider_privacy(self, root):
+        # Read the user's OpenCode config and report zeroDataRetention per open
+        # model. AOS can only read configuration, never the provider's server-side
+        # behavior: `configured` means the flag is true in the user's config,
+        # `not_configured` the model exists without it, `unknown` the config is
+        # unreadable or the model is not found. `verified` (provider-side) and
+        # `unsupported` (the schema dropped the key) are out of reach of a
+        # read-only local check and are never fabricated.
+        try:
+            raw = (root / "config/open-models.json").read_text()
+        except OSError:
+            return  # no routing config: nothing to check
+        try:
+            routing = json.loads(raw)
+        except ValueError:
+            self.warn("PRIVACY", "config/open-models.json illeggibile", "correggere il file")
+            return
+        open_ = routing.get("open")
+        if not isinstance(open_, dict):
+            return
+        models = [m for m in (open_.get("primary"), open_.get("fallback")) if isinstance(m, str) and m.strip()]
+        if not models:
+            return
+        user = self._opencode_config()
+        statuses = {m: self._zero_retention(user, m) for m in models}
+        print("Privacy provider: " + "; ".join(f"{m} zero_data_retention={statuses[m]}" for m in models))
+        for model, status in statuses.items():
+            if status in ("not_configured", "unknown"):
+                self.warn("PRIVACY", f"{model}: zero_data_retention={status}",
+                          "impostare zeroDataRetention: true sul modello, o verificare l'account del provider")
+
     def run(self, codex_root, claude_root):
         print(f"Python {sys.version.split()[0]}: {sys.executable}; sola verifica locale")
         if sys.version_info < (3, 9):
@@ -220,6 +315,8 @@ class Doctor:
             if raw is not None:
                 self.check_file(claude_root, relative, raw)
         self.distribution(claude_root)
+        self.version_consistency(claude_root)
+        self.provider_privacy(claude_root)
         self.tmp_weight(claude_root)
         self.backups()
         for root in (codex_root, claude_root):

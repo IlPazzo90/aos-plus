@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.1.2-public — 2026-09-21
+
+**Manutenzione mirata dopo il test end-to-end.** Tre correzioni, nessuna modifica a
+routing, benchmark winner, provider open, verify-agent, escalation, permission model,
+denylist, telemetria o policy di sicurezza.
+
+- **Version drift** — `SKILL.md` `metadata.version` era fermo a `1.22.1` mentre
+  `VERSION` era a `2.1.1`: due numeri che dichiaravano entrambi la versione AOS.
+  Allineati a `2.1.2`. Il doctor ora avvisa (`AVVISO VERSIONE`) quando i due
+  divergono, così il drift non può ripresentarsi in silenzio.
+- **Retry su repo dirty** — `aos-delegate.py` distingue ora il repo sporco *prima*
+  del task (rifiutato, exit 3, modifiche utente preservate) dal repo sporco *a causa*
+  del worker corrente. Con `--state-file` (stesso path su entrambi i tentativi) il
+  delegate registra HEAD iniziale e i path posseduti dal task; il retry è consentito
+  solo se HEAD è invariato e ogni file dirty è attribuibile al worker. Modifiche
+  esterne o commit esterni → conflitto (exit 6), mai overwrite/stash/reset. Nuovi
+  campi telemetria: `initial_repo_clean`, `dirty_owned_by_current_run`,
+  `dirty_conflict_detected`, `retry_dirty_policy`.
+- **zeroDataRetention** — era già configurato a livello di modello
+  (`models.<model>.options.zeroDataRetention: true`) nella config utente OpenCode; il
+  pre-check del test lo cercava al livello sbagliato (provider). Il doctor ora legge
+  il livello corretto e riporta `configured`/`not_configured`/`unknown` per ogni
+  modello open; `verified` (lato provider) e `unsupported` (schema senza la chiave)
+  non vengono mai inventati da un check locale in sola lettura.
+
+Test: 174 passati, 3 skip (erano 166/3); aggiunti 5 test delegate sul retry e 3 test
+doctor su version drift e provider privacy.
+
 ## 2.1.1-public — 2026-09-21
 
 **AOS è il router anche nell'edizione pubblica.** Portata ad AOS Plus la modifica 2.1.0

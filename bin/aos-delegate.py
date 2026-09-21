@@ -22,6 +22,7 @@ from threading import Thread
 EXIT_DIRTY = 3
 EXIT_NO_OPENCODE = 4
 EXIT_PROJECT_CONFIG = 5  # the repo carries its own OpenCode config, which would reopen the guards
+EXIT_CONFLICT = 6   # a retry found dirty changes the current task does not own
 EXIT_CAP = 125      # the run was stopped by --max-cost or --max-steps
 EXIT_TIMEOUT = 124
 XDG_DEFAULT = Path("~/.config").expanduser()
@@ -357,6 +358,99 @@ def ensure_clean(repo, allow_dirty):
         raise SystemExit(EXIT_DIRTY)
 
 
+def dirty_paths(repo):
+    """The set of dirty and untracked paths, as git sees them; None when git cannot report.
+
+    `-z` keeps spaces and renames whole; a rename's old path follows as its own
+    record and is the same change, so only the new path is kept.
+    """
+    status = git(repo, "status", "--porcelain", "-z", "--untracked-files=all")
+    if status.returncode != 0:
+        return None
+    paths = set()
+    entries = status.stdout.split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if code[0] in "RC":
+            index += 1  # the old path follows as its own record
+        paths.add(path)
+    return paths
+
+
+RETRY_STATE_SCHEMA = 1
+
+
+def load_retry_state(path):
+    """The state a previous attempt wrote, or None when absent, unreadable or invalid.
+
+    The state records the baseline HEAD and the paths the task owns, so a retry
+    can tell worker-owned dirt from an external change. A state file the caller
+    never wrote is a first attempt, not an error.
+    """
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != RETRY_STATE_SCHEMA:
+        return None
+    owned = data.get("owned")
+    if not isinstance(owned, list) or not all(isinstance(name, str) for name in owned):
+        return None
+    return {"baseline_head": data.get("baseline_head"),
+            "initial_repo_clean": bool(data.get("initial_repo_clean")),
+            "owned": set(owned)}
+
+
+def save_retry_state(path, state):
+    """Persist the retry state atomically; a missing parent directory is created."""
+    if not path:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"schema": RETRY_STATE_SCHEMA,
+            "baseline_head": state["baseline_head"],
+            "initial_repo_clean": state["initial_repo_clean"],
+            "owned": sorted(state["owned"])}
+    fd, name = tempfile.mkstemp(prefix="." + path.name + ".", dir=str(path.parent))
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def retry_conflict(repo, state):
+    """None when the retry may run on the dirty tree; a refusal message when not.
+
+    A retry may only touch what the current task already changed: the baseline
+    HEAD must still be HEAD (no external commit) and every dirty path must be one
+    a previous attempt produced. Anything else is refused — never overwritten,
+    never stashed, never reset.
+    """
+    if git_head(repo) != state["baseline_head"]:
+        return "HEAD è cambiato dopo il primo tentativo (commit esterno): retry negato"
+    dirty = dirty_paths(repo)
+    if dirty is None:
+        return "git status illeggibile: retry negato"
+    unexpected = dirty - state["owned"]
+    if unexpected:
+        preview = ", ".join(sorted(unexpected)[:5])
+        return f"modifiche non attribuibili al worker corrente ({preview}): retry negato"
+    return None
+
+
 EMPTY_USAGE = {"input_tokens": None, "output_tokens": None, "reasoning_tokens": None,
                "cache_read_tokens": None, "cost_usd": None, "cost_known_usd": None,
                "session_id": None, "steps": 0}
@@ -650,9 +744,30 @@ def kill_group(proc):
         pass
 
 
-def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None):
+def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None, state_file=None):
     repo = Path(repo).resolve()
-    ensure_clean(repo, allow_dirty)
+    state = load_retry_state(state_file)
+    if state is not None:
+        # A retry of the same task: the tree may be dirty from a previous attempt.
+        # Only worker-owned dirt may stay; anything else is refused, never overwritten.
+        conflict = retry_conflict(repo, state)
+        if conflict:
+            print(conflict, file=sys.stderr)
+            raise SystemExit(EXIT_CONFLICT)
+        initial_repo_clean = state["initial_repo_clean"]
+        dirty_owned_by_current_run = True
+        retry_dirty_policy = "owned"
+    else:
+        # First attempt: pre-existing dirt is the user's, so it is refused unless
+        # the caller explicitly overrides with --allow-dirty (the blunt escape hatch).
+        ensure_clean(repo, allow_dirty)
+        pre_dirty = dirty_paths(repo) if allow_dirty else set()
+        state = {"baseline_head": git_head(repo),
+                 "initial_repo_clean": not allow_dirty and not pre_dirty,
+                 "owned": set(pre_dirty)}
+        initial_repo_clean = state["initial_repo_clean"]
+        dirty_owned_by_current_run = False
+        retry_dirty_policy = "allow-dirty" if allow_dirty else "clean"
     found = project_config(repo)
     if found:
         print(f"config OpenCode di progetto in {found}: si fonderebbe dopo le guardie del run; "
@@ -678,6 +793,11 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None)
         tampered = git_meta(meta_paths) != meta_before
     except Exception:   # a snapshot that cannot be taken is not a clean one (round 21)
         tampered = True
+    dirty = None if tampered else dirty_paths(repo)
+    if dirty is not None:
+        state["owned"] |= dirty
+    if state_file:
+        save_retry_state(state_file, state)
     return {
         "model": model,
         "repo": str(repo),
@@ -696,6 +816,10 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=None)
                  or parse_error(out) or ({EXIT_CAP: "tetto di costo o di step raggiunto",
                                           EXIT_TIMEOUT: "timeout"}.get(exit_code)),
         "stderr_tail": err[-4000:],
+        "initial_repo_clean": initial_repo_clean,
+        "dirty_owned_by_current_run": dirty_owned_by_current_run,
+        "dirty_conflict_detected": False,
+        "retry_dirty_policy": retry_dirty_policy,
     }
 
 
@@ -706,6 +830,8 @@ def main():
     parser.add_argument("--brief", required=True, help="file path, or - for stdin")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--state-file", type=Path, default=None,
+                        help="persist baseline HEAD and owned dirty paths across retries of the same task")
     parser.add_argument("--max-cost", type=float, default=1.0, help="USD, as the provider reports it; 0 = no cap")
     parser.add_argument("--max-steps", type=int, default=60, help="0 = no cap")
     parser.add_argument("--json", action="store_true")
@@ -717,10 +843,13 @@ def main():
         return EXIT_NO_OPENCODE
     try:
         result = run(args.repo, args.model, brief, args.timeout, args.allow_dirty,
-                     max_cost=args.max_cost or None, max_steps=args.max_steps or None)
-    except SystemExit as refused:   # dirty repo, project config: a JSON reader gets a payload too (round 17)
+                     max_cost=args.max_cost or None, max_steps=args.max_steps or None,
+                     state_file=args.state_file)
+    except SystemExit as refused:   # dirty repo, project config, retry conflict: a JSON reader gets a payload too (round 17)
         if args.json:
-            print(json.dumps({"error": {EXIT_DIRTY: "repo sporco", EXIT_PROJECT_CONFIG: "config OpenCode di progetto"}
+            print(json.dumps({"error": {EXIT_DIRTY: "repo sporco",
+                                        EXIT_PROJECT_CONFIG: "config OpenCode di progetto",
+                                        EXIT_CONFLICT: "modifiche non attribuibili al worker (conflitto dirty)"}
                               .get(refused.code, "rifiutato"), "exit_code": refused.code, "model": args.model}))
         return refused.code
     if args.json:

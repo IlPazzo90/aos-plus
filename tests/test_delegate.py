@@ -780,6 +780,93 @@ class DelegateTests(unittest.TestCase):
         self.assertEqual(result.returncode, delegate.EXIT_NO_OPENCODE, result.stderr)
         self.assertEqual(json.loads(result.stdout)["error"], "opencode non trovato")
 
+    def test_retry_on_worker_owned_dirty_tree_is_allowed(self):
+        # A retry of the same task may run on the dirt the previous attempt left:
+        # the baseline HEAD is unchanged and every dirty path is worker-owned.
+        state_file = Path(self.temp.name) / "state.json"
+
+        def worker(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            (self.repo / "a.txt").write_text("worker\n")
+            return 0, "", ""
+
+        with mock.patch.object(delegate, "invoke", worker):
+            first = delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False,
+                                 state_file=state_file)
+        self.assertTrue(first["initial_repo_clean"])
+        self.assertFalse(first["dirty_owned_by_current_run"])
+        self.assertFalse(first["dirty_conflict_detected"])
+        self.assertEqual(first["retry_dirty_policy"], "clean")
+        self.assertTrue(state_file.exists())
+        with mock.patch.object(delegate, "invoke", worker):
+            second = delegate.run(self.repo, "vercel/x/y", "brief2", timeout=5, allow_dirty=False,
+                                  state_file=state_file)
+        self.assertTrue(second["dirty_owned_by_current_run"])
+        self.assertEqual(second["retry_dirty_policy"], "owned")
+        self.assertTrue(second["initial_repo_clean"])
+
+    def test_dirty_repo_before_first_attempt_is_refused_not_owned(self):
+        # Pre-existing dirt is the user's: the first attempt refuses it and writes
+        # no state, so a retry can never claim ownership of it.
+        (self.repo / "a.txt").write_text("user change\n")
+        state_file = Path(self.temp.name) / "state.json"
+        with self.assertRaises(SystemExit) as ctx:
+            delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False,
+                         state_file=state_file)
+        self.assertEqual(ctx.exception.code, delegate.EXIT_DIRTY)
+        self.assertFalse(state_file.exists())
+
+    def test_retry_refuses_unexpected_external_change(self):
+        # A file the worker never owned appeared between attempts: refuse, preserve it.
+        state_file = Path(self.temp.name) / "state.json"
+
+        def worker(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            (self.repo / "a.txt").write_text("worker\n")
+            return 0, "", ""
+
+        with mock.patch.object(delegate, "invoke", worker):
+            delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False,
+                         state_file=state_file)
+        (self.repo / "b.txt").write_text("user\n")
+        with mock.patch.object(delegate, "invoke") as invoke, self.assertRaises(SystemExit) as ctx:
+            delegate.run(self.repo, "vercel/x/y", "brief2", timeout=5, allow_dirty=False,
+                         state_file=state_file)
+        self.assertEqual(ctx.exception.code, delegate.EXIT_CONFLICT)
+        invoke.assert_not_called()
+        self.assertEqual((self.repo / "b.txt").read_text(), "user\n")
+
+    def test_retry_refuses_when_head_moved(self):
+        # An external commit between attempts changes the baseline: refuse, never
+        # diff against a HEAD the task did not start from.
+        state_file = Path(self.temp.name) / "state.json"
+
+        def worker(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            (self.repo / "a.txt").write_text("worker\n")
+            return 0, "", ""
+
+        with mock.patch.object(delegate, "invoke", worker):
+            delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False,
+                         state_file=state_file)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qam", "external"], check=True)
+        with mock.patch.object(delegate, "invoke") as invoke, self.assertRaises(SystemExit) as ctx:
+            delegate.run(self.repo, "vercel/x/y", "brief2", timeout=5, allow_dirty=False,
+                         state_file=state_file)
+        self.assertEqual(ctx.exception.code, delegate.EXIT_CONFLICT)
+        invoke.assert_not_called()
+
+    def test_retry_state_survives_a_missing_parent(self):
+        # The state file lives wherever the caller points; a missing parent is created.
+        state_file = Path(self.temp.name) / "nested" / "dir" / "state.json"
+
+        def worker(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):
+            return 0, "", ""
+
+        with mock.patch.object(delegate, "invoke", worker):
+            delegate.run(self.repo, "vercel/x/y", "brief", timeout=5, allow_dirty=False,
+                         state_file=state_file)
+        self.assertTrue(state_file.exists())
+        self.assertEqual(json.loads(state_file.read_text())["schema"], delegate.RETRY_STATE_SCHEMA)
+
 
 if __name__ == "__main__":
     unittest.main()

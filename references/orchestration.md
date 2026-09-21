@@ -143,8 +143,18 @@ to a worker. Providers live in `~/.config/opencode/opencode.json`; any
 OpenAI-compatible endpoint is one block
 `{"provider":{"<id>":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"…/v1","apiKey":"{file:~/.secrets/<name>}"},"models":{"<model>":{}}}}}`
 with `zeroDataRetention: true` on models that receive client source. No `model` key
-in that file: every run names its model. The main session runs the check. One failed
-check → one retry with the failure output appended to the brief. A second failure →
+in that file: every run names its model. `zeroDataRetention` is a per-model option
+(`models.<model>.options.zeroDataRetention`), not a provider-level key; the doctor
+reports its status (`configured`/`not_configured`/`unknown`) per open model, and AOS
+never claims `verified` (provider-side) or `unsupported` (schema dropped the key)
+from a read-only local check. The main session runs the check. One failed
+check → one retry with the failure output appended to the brief. The retry runs on
+the dirty tree the previous attempt left: pass the same `--state-file` to
+`aos-delegate.py` on both attempts, and the delegate records the baseline HEAD and
+the paths the task owns, allowing a retry only when HEAD is unchanged and every
+dirty path is worker-owned. A dirty repo before the first attempt is still refused
+(exit 3); a retry that finds an external change refuses too (exit 6), never
+overwriting, stashing or resetting user work. A second failure →
 the fallback open model gets its retries; exhaustion escalates to premium — always
 recorded in the task record (`escalation_count`, `escalation_reason`). AOS never
 carries a ranking, benchmark result or price in code: the winner lives in

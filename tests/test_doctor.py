@@ -258,6 +258,58 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("PREREQUISITO", result.stdout)
 
+    def test_version_drift_is_a_warning_not_a_failure(self):
+        # metadata.version was bumped alongside VERSION through 1.22.1 and then
+        # left behind by the 2.x releases: the two must agree, as a warning.
+        codex, claude = self.roots
+        (claude / "VERSION").write_text("2.1.2\n")
+        (claude / "SKILL.md").write_text(
+            "---\nname: aos\nmetadata:\n  version: \"1.22.1\"\ndescription: test\n---\n")
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AVVISO VERSIONE", result.stdout)
+        self.assertIn("1.22.1", result.stdout)
+        self.assertIn("2.1.2", result.stdout)
+        (claude / "SKILL.md").write_text(
+            "---\nname: aos\nmetadata:\n  version: \"2.1.2\"\ndescription: test\n---\n")
+        self.assertNotIn("VERSIONE", self.run_doctor().stdout)
+
+    def test_provider_privacy_reports_configured(self):
+        # zeroDataRetention lives at the model level of the user's OpenCode config;
+        # the doctor reads it and reports configured, never a secret value.
+        codex, claude = self.roots
+        (claude / "config").mkdir()
+        (claude / "config/open-models.json").write_text(json.dumps({
+            "schema": 1,
+            "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813",
+                     "fallback": "vercel/alibaba/qwen3-coder-next"}}))
+        xdg = self.base / "xdg"
+        (xdg / "opencode").mkdir(parents=True)
+        (xdg / "opencode/opencode.json").write_text(json.dumps({
+            "provider": {"vercel": {"models": {
+                "deepseek/deepseek-v4-pro-0813": {"options": {"zeroDataRetention": True}},
+                "alibaba/qwen3-coder-next": {"options": {"zeroDataRetention": True}}}}}}))
+        result = self.run_doctor(dict(os.environ, XDG_CONFIG_HOME=str(xdg)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Privacy provider:", result.stdout)
+        self.assertIn("zero_data_retention=configured", result.stdout)
+
+    def test_provider_privacy_warns_when_not_configured(self):
+        # A model present without the flag is not_configured: a warning, not a lie.
+        codex, claude = self.roots
+        (claude / "config").mkdir()
+        (claude / "config/open-models.json").write_text(json.dumps({
+            "schema": 1,
+            "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813"}}))
+        xdg = self.base / "xdg"
+        (xdg / "opencode").mkdir(parents=True)
+        (xdg / "opencode/opencode.json").write_text(json.dumps({
+            "provider": {"vercel": {"models": {"deepseek/deepseek-v4-pro-0813": {}}}}}))
+        result = self.run_doctor(dict(os.environ, XDG_CONFIG_HOME=str(xdg)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("zero_data_retention=not_configured", result.stdout)
+        self.assertIn("AVVISO PRIVACY", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
