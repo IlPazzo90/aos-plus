@@ -171,3 +171,8 @@ Codex configuration when explicitly applied; inspect its preview first.
 This package excludes private project history, workstation catalogs and internal
 review transcripts. Maintain local customizations separately; inspect every public
 release payload and its history. See [CHANGELOG.md](CHANGELOG.md).
+
+## OpenCode entry
+
+AOS can run automatically in OpenCode on the current project directory, selecting
+each native open turn or the premium CLI. See [setup and compatibility](references/opencode-entry.md).

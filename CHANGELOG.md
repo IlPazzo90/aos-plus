@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.3.0-public — 2026-09-21
+
+Ingresso OpenCode AOS con routing per turno, bridge premium Claude/Codex, skill e
+MCP dalle fonti esistenti, installer reversibile e profilo VS Code. Verificati
+231 test Python, 19 Node ed E2E interattivi. Rilievi della review Claude corretti;
+revisione indipendente finale incompleta per quota esaurita. Il proprietario ha
+autorizzato esplicitamente il rilascio con questo limite.
+
+
 ## 2.2.1-public — 2026-09-21
 
 **Context budget per ogni famiglia di modello.** Aggiunte a `context_policy.model_classes`

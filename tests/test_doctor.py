@@ -197,7 +197,8 @@ class DoctorTests(unittest.TestCase):
         # tests/ was outside the manifest, so the comparison could not see the drift.
         installer = (DOCTOR.parent / "aos-install.sh").read_text()
         manifest = installer.split('REQUIRED_FILES="', 1)[1].split('"', 1)[0].split()
-        present = sorted(str(p.relative_to(DOCTOR.parent.parent)) for p in (DOCTOR.parent.parent / "tests").glob("test_*.py"))
+        present = sorted(str(p.relative_to(DOCTOR.parent.parent)) for pattern in ("test_*.py", "*.test.mjs")
+                         for p in (DOCTOR.parent.parent / "tests").glob(pattern))
         self.assertEqual(sorted(name for name in manifest if name.startswith("tests/")), present)
 
     def test_does_not_execute_installer_scripts_or_bash_env(self):

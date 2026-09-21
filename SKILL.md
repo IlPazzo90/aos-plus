@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "2.2.1"
+  version: "2.3.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -127,8 +127,13 @@ it is the only one whose savings are permanent.
   open, premium reviewer/escalation). The manual main model executes only on an
   explicit user override, on CRITICAL/HIGH without an observable check, or where the
   policy reserves premium (T3 planning, arbitration, final report). LOW/MEDIUM work
-  within policy runs on the open benchmark winner as a dedicated `opencode run`
-  (OpenCode's `-m/--model` switches a run, never the interactive session — verified);
+  within policy runs on the open benchmark winner. In the OpenCode entry, the
+  global plugin selects the native model for each turn before generation and keeps
+  the shared skills and MCP. From Claude/Codex, bounded workers use a dedicated
+  `opencode run`. Premium entry tasks use the configured Claude/Codex CLI in the
+  same directory. A native task can decompose work under AOS; a premium worker must
+  not route the same task back to the entry. Host-only plugins are not portable
+  merely because a model can read their skill;
   mechanics in `references/orchestration.md` §Model routing. Model names live in
   `config/open-models.json`, never in code. If the main session is on a
   weaker model and the task is T2+ or HIGH+, say so and ask for the switch before the

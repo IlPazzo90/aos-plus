@@ -21,6 +21,15 @@ CONFIG = Path(__file__).resolve().parents[1] / "config" / "open-models.json"
 
 
 class RouterTests(unittest.TestCase):
+    def test_malformed_optional_policy_falls_back_without_crashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            for patch in ({'premium': []}, {'premium': 'bad'}, {'policy': 'bad'},
+                          {'policy': {'retries_before_escalation': 'bad'}},
+                          {'policy': {'retries_before_escalation': -1}}):
+                path.write_text(json.dumps({'schema': 1, 'open': {'primary': 'x/y'}} | patch))
+                self.assertIsNone(router.load_config(path).open_primary)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -146,6 +155,24 @@ class RouterTests(unittest.TestCase):
         bad = Path(self.temp.name) / "bad.json"
         bad.write_text(json.dumps({"schema": 99}))
         self.assertEqual(router.load_config(bad), router.RoutingConfig())
+
+    def test_invalid_classification_is_rejected_even_with_override(self):
+        for tier, risk in [('T9', 'LOW'), ('T0', 'UNKNOWN'), (None, 'LOW')]:
+            with self.assertRaises(ValueError):
+                router.decide(tier, risk, config=self.config, manual_override=True)
+
+    def test_policy_ceiling_applies_to_t1_too(self):
+        strict = router.RoutingConfig(open_primary='x/y', open_max_risk='LOW')
+        self.assertNotEqual(router.decide('T1', 'MEDIUM', config=strict).executor, 'open')
+
+    def test_required_premium_runtime_routes_low_risk_task(self):
+        d = router.decide('T1', 'LOW', config=self.config,
+                          capabilities=['codex_app'])
+        self.assertEqual(d.executor, 'premium')
+
+    def test_critical_cannot_be_overridden_into_execution(self):
+        d = router.decide('T1', 'CRITICAL', config=self.config, manual_override=True)
+        self.assertEqual(d.verify, 'needs_approval')
 
 
 if __name__ == "__main__":

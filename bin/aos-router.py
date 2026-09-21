@@ -9,11 +9,9 @@ Model availability and the main model come from the caller (the host session),
 so this module stays hermetic and testable.
 
 Distinctions, documented in references/orchestration.md:
-- main session model: the model the OpenCode interface opened the session with.
-  It cannot switch at runtime (verified: opencode run has -m/--model, the
-  interactive session has no model switch). It remains the orchestrator, the
-  verifier and the arbiter, and it executes only on explicit override or in the
-  cases below.
+- main session model: the model the host opened with. The OpenCode entry plugin
+  can select each native turn's model; Claude/Codex use separate open runs.
+  Premium execution uses the configured CLI, not a premium metered API.
 - task executor model: chosen by AOS from tier/risk/uncertainty/security impact,
   capability needs, the benchmark winner config and retry/failure history.
 - delegated model: a bounded sub-task the main session spins off.
@@ -72,7 +70,13 @@ def load_config(path=None):
         return empty
     premium = data.get("premium")
     policy = data.get("policy")
-    telemetry = data.get("telemetry")
+    if premium is not None and not isinstance(premium, dict):
+        return empty
+    if policy is not None and not isinstance(policy, dict):
+        return empty
+    retries = (policy or {}).get('retries_before_escalation', 2)
+    if type(retries) is not int or retries < 1:
+        return empty
     return RoutingConfig(
         open_primary=primary.strip(),
         open_fallback=fallback.strip() if isinstance(fallback, str) and fallback.strip() else None,
@@ -83,7 +87,7 @@ def load_config(path=None):
         open_t2_high_review=(policy or {}).get("open_t2_high_review", "premium"),
         open_t2_high_requires_observable_check=bool((policy or {}).get(
             "open_t2_high_requires_observable_check", True)),
-        retries_before_escalation=int((policy or {}).get("retries_before_escalation", 2)),
+        retries_before_escalation=retries,
         t3_premium_planning=bool((policy or {}).get("t3_premium_planning", True)),
         t2_medium_deterministic_verify=bool((policy or {}).get("t2_medium_deterministic_verify", True)),
         t2_medium_open_review=bool((policy or {}).get("t2_medium_open_review", True)),
@@ -117,24 +121,31 @@ def decide(tier, risk, *, config=None, manual_override=False,
     """Pure decision. `tier` in T0/T1/T2/T3, `risk` in LOW/MEDIUM/HIGH/CRITICAL.
 
     Args mirror what the orchestrating session observes. Extra classification
-    fields (complexity, uncertainty, security_impact, capabilities) are accepted
-    for callers that carry them and feed the rationale, not the executor choice:
-    the executor axes are tier and risk, as policy declares.
+    fields carry the caller's assessment. Runtime-specific capabilities require
+    a premium executor; tier and risk remain the policy's complexity axes.
     """
     if config is None:
         config = RoutingConfig()
     tier = (tier or "").upper()
     risk = (risk or "").upper()
 
+    tiers = ('T0', 'T1', 'T2', 'T3')
+    risks = ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')
+    if tier not in tiers or risk not in risks:
+        raise ValueError('invalid tier or risk')
+    if risk == 'CRITICAL':
+        return Decision(executor='main', verify='needs_approval',
+                        rationale=('CRITICAL risk requires human approval',))
+
     # 1. Explicit override wins over everything.
     if manual_override:
         return Decision(executor="main", manual_model_override=True,
                         verify="reported", rationale=("manual override",))
 
-    # 2. CRITICAL never routes away from the main session without approval.
-    if risk == "CRITICAL":
-        return Decision(executor="main", verify="needs_approval",
-                        rationale=("CRITICAL risk stays on main",))
+    if set(capabilities or ()) & {'codex_app', 'codex_runtime', 'claude_runtime'}:
+        return Decision(executor='premium', verify=_high_review(config, premium_reviewer_available),
+                        escalation_target=config.escalation_executor,
+                        rationale=('required premium runtime capability',))
 
     # 3. e.g. T3: premium planning/final review, open only on bounded subtasks
     #    (which the orchestrator routes separately). Executor for the plan itself
@@ -160,7 +171,9 @@ def decide(tier, risk, *, config=None, manual_override=False,
 
     # 5. General open eligibility: tier and risk within policy, and an open model
     #    must actually exist. No config.models means legacy behavior below.
-    if config.open_primary and (tier in RESERVED_OPEN or (tier == config.open_max_tier and risk <= config.open_max_risk)):
+    if (config.open_primary and config.open_max_tier in tiers and config.open_max_risk in risks
+            and tiers.index(tier) <= tiers.index(config.open_max_tier)
+            and risks.index(risk) <= risks.index(config.open_max_risk)):
         if tier == "T2":
             verify = "deterministic" if config.t2_medium_deterministic_verify else "targeted"
             if config.t2_medium_open_review and config.premium_reviewer:

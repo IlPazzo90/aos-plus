@@ -7,6 +7,8 @@
     "source": "benchmark 2026-09-20 first-pass 20/20, findings high 12, cost 1.12$"
   },
   "premium": {
+    "claude_model": "fable",
+    "codex_model": "gpt-6-astra",
     "reviewer": "claude",
     "escalation_executor": "codex",
     "billing": "subscriptions (Claude Code, Codex CLI); the open executor is the only metered path"

@@ -93,20 +93,24 @@ result or price into AOS: names and winners are configuration, the rule is the c
 
 Three models must not be confused:
 
-- **Main session model** is the model the OpenCode interface opened the session
-  with. It cannot switch at runtime — verified: `opencode run` accepts
-  `-m/--model` for a dedicated run, the interactive session has no model switch.
-  AOS keeps it as the orchestrator: it classifies, invokes the router, verifies/arbitrates
-  the returned evidence, owns the final report and anything the policy does not
-  route away (HIGH/CRITICAL, plus explicit overrides).
-- **Task executor model** is chosen by AOS via `bin/aos-router.py` for the work
-  itself: LOW/MEDIUM work within policy goes to the open benchmark winner
-  (`open.primary` — DeepSeek today), a bounded sub-part may go to a second open or
-  a delegated model, and the policy-knowledge work (T3 planning, HIGH review) goes
-  to premium. The open executor runs as a dedicated `opencode run` in the repo
-  (below), never by impossible mid-session switching.
-- **Delegated model** is a specific bounded sub-task the orchestrator spins off
-  independently of the routed executor.
+- **Main session model** is the model selected in the host interface. In the
+  OpenCode entry, `chat.message` sets the native turn model before generation;
+  the interface's selection label may remain unchanged. The AOS line on the
+  response identifies the selected executor. The classifier uses a separate
+  tool-free invocation. For premium tasks the native model only calls the bridge;
+  Claude or Codex executes in the same working directory using its subscription.
+- **Task executor model** comes from `bin/aos-router.py` and
+  `config/open-models.json`. OpenCode native open turns preserve skills, tools and
+  MCP. From Claude/Codex, bounded open work uses `aos-delegate.py` below.
+- **Delegated model** handles a bounded independent subtask selected under AOS.
+  Native OpenCode tasks may use subagents; premium executors may decompose work
+  but must not route the same parent request back to OpenCode.
+
+Install/check/rollback: `python3 bin/aos-opencode-install.py --help`.
+The global loader imports the canonical bridge; shared skills remain in their
+original roots. `--pure` deliberately disables plugins and is reserved for isolated
+workers/classification, not the everyday entry. A broken classifier stops the turn.
+Read `references/opencode-entry.md` for compatibility and recovery.
 
 Routing defaults (`bin/aos-router.py` decides; config changes policy, not the code):
 
