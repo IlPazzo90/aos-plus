@@ -41,11 +41,12 @@ class DelegateTests(unittest.TestCase):
         self.assertIn("--auto", cmd)
         self.assertIn("--pure", cmd)
         self.assertEqual(cmd[cmd.index("--format") + 1], "json")
-        self.assertEqual(cmd[-1], "do the thing")
+        self.assertEqual(cmd[-2:], ["--", "do the thing"])
         self.assertNotIn("--dir", cmd)
         cmd = delegate.command("vercel/x/y", "do the thing", repo="/r")
         self.assertEqual(cmd[cmd.index("--dir") + 1], "/r")
-        self.assertEqual(cmd[-1], "do the thing")
+        # A brief that starts with "-" is still the message, not an option.
+        self.assertEqual(delegate.command("vercel/x/y", "-x")[-2:], ["--", "-x"])
 
     def test_refuses_dirty_repo(self):
         (self.repo / "a.txt").write_text("changed\n")
@@ -53,6 +54,16 @@ class DelegateTests(unittest.TestCase):
             delegate.ensure_clean(self.repo, allow_dirty=False)
         self.assertEqual(ctx.exception.code, delegate.EXIT_DIRTY)
         delegate.ensure_clean(self.repo, allow_dirty=True)  # no raise
+
+    def test_diff_stat_lists_new_files(self):
+        self.assertEqual(delegate.diff_stat(self.repo), "")
+        (self.repo / "new.py").write_text("x = 1\n")
+        (self.repo / "caf\u00e9.txt").write_text("y\n")
+        self.assertEqual(delegate.diff_stat(self.repo), "?? caf\u00e9.txt\n?? new.py")
+        (self.repo / "a.txt").write_text("changed\n")
+        stat = delegate.diff_stat(self.repo)
+        self.assertIn("a.txt", stat.splitlines()[0])
+        self.assertTrue(stat.endswith("?? caf\u00e9.txt\n?? new.py"))
 
     def test_usage_null_when_absent(self):
         usage = delegate.parse_usage("plain text, no events\n{not json\n")
@@ -221,12 +232,57 @@ class DelegateTests(unittest.TestCase):
         self.addCleanup(lambda: Path(path).exists() and Path(path).unlink())
         cfg = json.loads(Path(path).read_text())
         self.assertEqual(cfg["permission"]["skill"], {"*": "deny"})
-        self.assertEqual(cfg["permission"]["bash"], "allow")
         self.assertEqual(cfg["provider"]["vercel"]["models"], {"x": {}})
+        # A string bash rule becomes the map's "*" entry, then our denies.
+        self.assertEqual(list(cfg["permission"]["bash"].items())[0], ("*", "allow"))
+        self.assertEqual(cfg["permission"]["bash"]["curl"], "deny")
+        self.assertEqual(cfg["permission"]["bash"]["git push *"], "deny")
+        # A user who denied every command keeps that denial (reviewer round 1).
+        user.write_text(json.dumps({"permission": {"bash": "deny"}}))
+        path3 = delegate.run_config(user)
+        self.addCleanup(lambda: Path(path3).unlink())
+        self.assertEqual(json.loads(Path(path3).read_text())["permission"]["bash"]["*"], "deny")
         # No user config at all still yields a valid run config.
         path2 = delegate.run_config(Path(self.temp.name) / "missing.json")
         self.addCleanup(lambda: Path(path2).unlink())
-        self.assertEqual(json.loads(Path(path2).read_text()), {"permission": {"skill": {"*": "deny"}}})
+        cfg2 = json.loads(Path(path2).read_text())
+        self.assertEqual(cfg2["permission"]["skill"], {"*": "deny"})
+        for key in ("external_directory", "webfetch", "websearch", "task"):
+            self.assertEqual(cfg2["permission"][key], "deny")
+
+    def test_run_config_guards_win_over_the_user_map_and_come_last(self):
+        # The later matching rule wins in OpenCode and a trailing "*": "allow" cancels
+        # every deny before it (probed 2026-09-21): the user's entries stay, ours close.
+        user = Path(self.temp.name) / "opencode.json"
+        user.write_text(json.dumps({"permission": {"bash": {"curl *": "allow", "*": "allow", "make *": "ask"}}}))
+        path = delegate.run_config(user)
+        self.addCleanup(lambda: Path(path).unlink())
+        bash = json.loads(Path(path).read_text())["permission"]["bash"]
+        self.assertEqual(bash["curl *"], "deny")
+        self.assertEqual(bash["make *"], "ask")
+        keys = list(bash)
+        self.assertEqual(keys[:2], ["*", "make *"])
+        self.assertTrue(all(bash[k] == "deny" for k in keys[2:]))
+        self.assertEqual(len(keys), 2 + 2 * len(delegate.DENIED_BASH))
+
+    def test_run_config_guards_close_the_permission_map_too(self):
+        # A wildcard at the permission level after our keys would reopen them
+        # (reviewer round 4); a string permission is the user's rule for everything.
+        user = Path(self.temp.name) / "opencode.json"
+        user.write_text(json.dumps({"permission": {"bash": "allow", "webfetch": "allow", "*": "allow"}}))
+        path = delegate.run_config(user)
+        self.addCleanup(lambda: Path(path).unlink())
+        perm = json.loads(Path(path).read_text())["permission"]
+        self.assertEqual(list(perm)[0], "*")
+        self.assertEqual(list(perm)[-1], "bash")
+        self.assertEqual(perm["webfetch"], "deny")
+        self.assertEqual(perm["bash"]["*"], "allow")
+        user.write_text(json.dumps({"permission": "allow"}))
+        path2 = delegate.run_config(user)
+        self.addCleanup(lambda: Path(path2).unlink())
+        perm = json.loads(Path(path2).read_text())["permission"]
+        self.assertEqual(list(perm)[0], "*")
+        self.assertEqual(perm["task"], "deny")
 
     def test_run_passes_the_run_config_in_env_and_removes_it(self):
         seen = {}

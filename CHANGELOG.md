@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.1-public — 2026-09-21
+
+Audit of the open runtime before adoption, done by running it: four OpenCode runs on a
+throwaway repo. With `--auto` and a per-run config that denied only skills, the worker
+ran `curl`, `git commit` and read a secrets file with `cat`. `run_config` now denies
+`external_directory`, `webfetch`, `websearch`, `task` and `DENIED_BASH` (network
+clients, remote shells, publishing, deploy CLIs, `sudo`). Three measured facts shape
+the rule: a denied pattern refuses the call even inside `a && curl …`; on the same
+entry the later rule wins; a trailing `"*": "allow"` cancels every deny before it — so
+our entries close both the `permission` map and the `bash` map, and a user's string
+rule becomes the map's first `"*"` entry. A guard, not a sandbox: an interpreter reads
+what `cat` may not, and the routing rule says so.
+
+`diff_stat` now lists untracked files (a worker that only created a module reported
+no change) and the brief follows `--` (a brief starting with `-` was an option).
+
+Cross-model review (Codex, 5 rounds): 4 MAJOR and 1 MINOR accepted — the string
+`bash: "deny"` lost, `sftp`/`ftp` then other clients missing, the permission-level
+wildcard — PASS at round 5. Suite 143 OK.
+
 ## 2.0.0-public — 2026-09-21
 
 **Open runtime.** OpenCode as a third host (it already reads the skills and the

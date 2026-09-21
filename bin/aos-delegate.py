@@ -33,16 +33,42 @@ def command(model, brief, repo=None):
     cmd = ["opencode", "run", "--pure", "--auto", "--format", "json", "-m", model]
     if repo:
         cmd += ["--dir", str(repo)]
-    return cmd + [brief]
+    # "--": a brief that starts with "-" is a message, not an option.
+    return cmd + ["--", brief]
+
+
+# Commands a delegated worker never needs and that would carry data or changes off
+# the repo: network, remote shells, publishing, privilege. `--auto` approves every
+# permission that is not explicitly denied, so the denies are the whole guard.
+# Probed on 2026-09-21 (OpenCode 1.18.30, scratch repo): a denied pattern refuses the
+# call even inside `a && curl …`, the later rule wins on the same command, and a
+# trailing `"*": "allow"` cancels every deny before it. Not a sandbox: the shell is
+# the user's, and `python3 -c "open(…)"` reads what `cat` may not. A denylist has no
+# closure; these are the common clients of each class, not all of them.
+DENIED_BASH = (
+    # network clients
+    "curl", "wget", "nc", "ncat", "socat", "lftp", "ftp", "sftp",
+    # remote shells and transfers
+    "ssh", "scp", "rsync", "mosh",
+    # publishing and version control that leaves the repo
+    "git push", "git commit", "gh", "npm publish", "pnpm publish", "yarn publish", "twine",
+    "docker push",
+    # deploy and cloud CLIs
+    "vercel", "npx vercel", "netlify", "npx netlify", "fly", "aws", "gcloud", "kubectl", "wp-deploy",
+    # privilege
+    "sudo",
+)
 
 
 def run_config(user_config=USER_CONFIG):
-    """A copy of the user's OpenCode config with every skill denied, for this run only.
+    """A copy of the user's OpenCode config with the run's guards, for this run only.
 
     Measured on 2026-09-20: with the ~280 skills under ~/.claude/skills listed in the
     system prompt a one-word reply costs 42,621 input tokens per step; with
     `permission.skill = deny` it costs 7,260. A delegated worker gets its task from
     the brief and its rules from CLAUDE.md; the skill catalog is the main session's.
+    The other denies keep an unattended worker inside the repo: no edits outside it,
+    no web tools, no subagents, none of DENIED_BASH.
     """
     config = {}
     if user_config.is_file():
@@ -51,7 +77,24 @@ def run_config(user_config=USER_CONFIG):
         except json.JSONDecodeError:
             config = {}
     permission = config.setdefault("permission", {})
-    permission["skill"] = {"*": "deny"}
+    if not isinstance(permission, dict):
+        permission = config["permission"] = {"*": permission}
+    bash = permission.pop("bash", None)
+    # Our keys leave and come back so they close the map after any user wildcard
+    # (reviewer round 4): the later rule wins here too.
+    for key in ("skill", "external_directory", "webfetch", "websearch", "task"):
+        permission.pop(key, None)
+    permission.update({"skill": {"*": "deny"}, "external_directory": "deny", "webfetch": "deny",
+                       "websearch": "deny", "task": "deny"})
+    # A plain string rule ("deny", "ask", "allow") is the user's rule for every
+    # command: it becomes the map's first entry, so nothing they denied is reopened.
+    bash = dict(bash) if isinstance(bash, dict) else ({"*": bash} if isinstance(bash, str) else {})
+    for name in DENIED_BASH:
+        bash.pop(name, None)
+        bash.pop(name + " *", None)
+    # Ours last: the later matching rule wins.
+    bash.update({p: "deny" for name in DENIED_BASH for p in (name, name + " *")})
+    permission["bash"] = bash
     handle = tempfile.NamedTemporaryFile("w", suffix=".json", prefix="aos-delegate-", delete=False)
     with handle:
         json.dump(config, handle)
@@ -155,8 +198,15 @@ def parse_error(text):
 
 
 def diff_stat(repo):
-    return subprocess.run(["git", "-C", str(repo), "diff", "--stat"],
+    """Tracked changes as `git diff --stat`, then the untracked files: a worker that only
+    created a module would otherwise report "(nessuna modifica)" (benchmark, two tasks)."""
+    stat = subprocess.run(["git", "-C", str(repo), "diff", "--stat"],
                           capture_output=True, text=True).stdout.strip()
+    untracked = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--others", "--exclude-standard"],
+                               capture_output=True, text=True).stdout.split("\0")
+    lines = [stat] if stat else []
+    lines += [f"?? {f}" for f in untracked if f]
+    return "\n".join(lines)
 
 
 def invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None):

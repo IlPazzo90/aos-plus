@@ -109,8 +109,10 @@ and the `CLAUDE.md`/`AGENTS.md` files — and the runtime for bounded T0/T1 work
 in a repo and reports exit code, diff, seconds and usage read from the JSON events
 (null when not reported, never estimated), with cost and step caps enforced on the
 stream. Providers live in `~/.config/opencode/opencode.json`; any OpenAI-compatible
-endpoint is one block, and the delegate denies every skill for the run (the catalog
-cost 42k input tokens per step; 7k without it). No model name lives in AOS: the open
+endpoint is one block, and the delegate writes a per-run config that denies every
+skill (the catalog cost 42k input tokens per step; 7k without it) and what an
+unattended worker never needs — edits outside the repo, web tools, subagents, network
+and publishing commands. A guard, not a sandbox (2.0.1). No model name lives in AOS: the open
 working model is chosen with `bin/aos-bench.py`, which replays real commits from the
 user's own repositories against each model — the commit's test is the spec the worker
 reads and the judge it cannot rewrite — and writes first-pass, retry, escalation,

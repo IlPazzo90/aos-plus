@@ -116,8 +116,15 @@ The ranking, the names and the reason live in the user's global instructions
   change whose only check is "looks right". Invocation, from a clean repo:
   `python3 "$AOS_DIR/bin/aos-delegate.py" --repo <path> --model <provider/model> --brief <file> --json`.
   The script runs `opencode run --pure --auto --format json` and prints exit
-  code, diff stat, seconds, the reply and usage summed from the JSON events
-  (null when not reported, never estimated); it never runs tests or commits.
+  code, diff stat (new files included), seconds, the reply and usage summed from
+  the JSON events (null when not reported, never estimated); it never runs tests
+  or commits. `--auto` approves whatever is not denied, so the per-run config
+  denies what a worker never needs: edits outside the repo, web tools, subagents,
+  and the shell commands that carry data or changes off the machine (`curl`,
+  `ssh`, `git push`, `git commit`, deploy CLIs — `DENIED_BASH` in the script).
+  That is a guard against accidents and prompt injection, not a sandbox: the
+  worker runs as the user, and an interpreter reads what `cat` may not. Nothing
+  secret or production-bound belongs in a repo handed to it.
   The main session runs the check. One failed check → one retry with the
   failure output appended to the brief. A second failure → the main session
   does the work itself and writes `escalated` in the task record. The model
