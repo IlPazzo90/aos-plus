@@ -79,6 +79,19 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result["model_context_policy_source"], "model_class")
         self.assertEqual(result["target_context"], 100000)
 
+    # 7c. The premium families have their own class policy, not the defaults.
+    def test_claude_codex_and_gpt_have_class_policies(self):
+        claude = ctx.evaluate("claude/claude-fable-5-1", tokens=1, config_path=CONFIG)
+        self.assertEqual(claude["model_context_policy_source"], "model_class")
+        self.assertEqual(claude["target_context"], 120000)
+        self.assertEqual(claude["technical_context_limit"], 1000000)
+        codex = ctx.evaluate("codex/gpt-5.6-sol", tokens=1, config_path=CONFIG)
+        self.assertEqual(codex["model_context_policy_source"], "model_class")
+        self.assertEqual(codex["target_context"], 100000)
+        gpt = ctx.evaluate("openai/gpt-5", tokens=1, config_path=CONFIG)
+        self.assertEqual(gpt["model_context_policy_source"], "model_class")
+        self.assertEqual(gpt["hard_limit"], 250000)
+
     # 8. Compaction keeps acceptance criteria and unresolved findings.
     def test_compaction_keeps_acceptance_and_findings(self):
         items = [

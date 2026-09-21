@@ -1,5 +1,5 @@
 {
-  "$comment": "AOS model routing and context-budget configuration (2.2.0). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill. Never put secrets here; this file is versioned.",
+  "$comment": "AOS model routing and context-budget configuration (2.2.1). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill; technical_context_limit values are asserted and should be validated against the provider. Never put secrets here; this file is versioned.",
   "schema": 1,
   "open": {
     "primary": "vercel/deepseek/deepseek-v4-pro-0813",
@@ -57,6 +57,24 @@
         "target_context": 60000,
         "soft_limit": 90000,
         "hard_limit": 130000
+      },
+      "claude": {
+        "technical_context_limit": 1000000,
+        "target_context": 120000,
+        "soft_limit": 200000,
+        "hard_limit": 320000
+      },
+      "codex": {
+        "technical_context_limit": 400000,
+        "target_context": 100000,
+        "soft_limit": 160000,
+        "hard_limit": 250000
+      },
+      "gpt": {
+        "technical_context_limit": 400000,
+        "target_context": 100000,
+        "soft_limit": 160000,
+        "hard_limit": 250000
       }
     },
     "models": {

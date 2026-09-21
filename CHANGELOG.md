@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.1-public — 2026-09-21
+
+**Context budget per ogni famiglia di modello.** Aggiunte a `context_policy.model_classes`
+le policy per i modelli premium che prima cadevano sui default: `claude` (technical
+1M, target 120k/soft 200k/hard 320k), `codex` e `gpt` (technical 400k, target
+100k/soft 160k/hard 250k). `codex` e `gpt` sono la stessa famiglia (Codex gira su
+GPT): due chiavi per coprire entrambi i nomi. Ogni modello che AOS instrada —
+DeepSeek, Qwen, Claude e Codex — ha ora un budget dedicato, non il fallback.
+
 ## 2.2.0-public — 2026-09-21
 
 **Context budget per modello.** AOS non riempie più la finestra di contesto fino al
