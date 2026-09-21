@@ -101,11 +101,32 @@ null and are never estimated. Nothing is collected automatically, no history is 
 no provider is contacted. The record is committed with the work — a measurement left in an
 ignored directory is a measurement nobody will ever compare anything against.
 
-## Open runtime (2.0.0)
+Since 2.1.1 the record also carries who really executed the task: `main_executor_runtime`,
+`main_executor_model`, `main_executor_provider`, `routed_by_aos`, `manual_model_override`,
+`delegated_open_tasks`, the open and premium token counts, `escalation_count`,
+`escalation_reason` and the `workload_open_ratio` / `premium_dependency_ratio`, so the
+share of work actually done by open models is measured rather than asserted. The executor
+identity is set at `start` when the router chose; the token counts and ratios at `finish`.
 
-[OpenCode](https://opencode.ai) is a third host — it already loads `~/.claude/skills`
-and the `CLAUDE.md`/`AGENTS.md` files — and the runtime for bounded T0/T1 work at risk
-≤ MEDIUM that has an observable check. `bin/aos-delegate.py` runs one `opencode run`
+## Model routing and the open runtime (2.1.1)
+
+**AOS is the router.** It chooses the task executor from tier, risk, complexity,
+uncertainty, security impact, required capabilities, the configured benchmark winner
+and the retry/failure history; the manual main model of the OpenCode interface is a
+fallback runtime model, not the default. `bin/aos-router.py` `decide()` is the pure,
+tested decision function and `config/open-models.json` is the executable policy:
+T0/T1 and T2 at risk ≤ MEDIUM go to the open benchmark winner; T2/HIGH only with an
+observable check, and then a premium review is mandatory; T3 keeps premium planning
+and final review with open bounded subtasks; CRITICAL stays on the main session with
+approval; an explicit user override sends the work to the main model. Missing or
+invalid config falls back to the legacy behaviour, where the main session executes.
+Premium escalation and review run on the subscriptions already paid for Claude Code
+and Codex CLI, never a separate metered API key: the open executor is the only metered
+path, and the one the router prefers for eligible work.
+
+[OpenCode](https://opencode.ai) is the runtime that executes the work AOS routes to
+open — it already loads `~/.claude/skills` and the `CLAUDE.md`/`AGENTS.md` files — and
+`bin/aos-delegate.py` runs one `opencode run`
 in a repo and reports exit code, diff, seconds and usage read from the JSON events
 (null when not reported, never estimated), with cost and step caps enforced on the
 stream. Providers live in `~/.config/opencode/opencode.json`; any OpenAI-compatible
@@ -114,11 +135,12 @@ skill (the catalog cost 42k input tokens per step; 7k without it) and what an
 unattended worker never needs — edits outside the repo, web tools, subagents, network
 and publishing commands — keeping only the providers and a reworked permission map as
 the run's only config layer, and never running its own `git` on a repo whose `.git`
-config, hooks or includes the worker changed. A guard, not a sandbox (2.0.1). No model name lives in AOS: the open
-working model is chosen with `bin/aos-bench.py`, which replays real commits from the
+config, hooks or includes the worker changed. A guard, not a sandbox (2.0.1). No model name lives in the code: the benchmark winner is chosen with `bin/aos-bench.py`, which replays real commits from the
 user's own repositories against each model — the commit's test is the spec the worker
 reads and the judge it cannot rewrite — and writes first-pass, retry, escalation,
-seconds, tokens, cost and reviewer findings side by side. The corpus and the records
+seconds, tokens, cost and reviewer findings side by side, and its winner is written
+into `config/open-models.json` as `open.primary` with a `fallback`; the rule is in the
+code, the names are configuration. The corpus and the records
 are the user's and stay out of this distribution.
 
 ## Optional integrations

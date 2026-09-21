@@ -75,6 +75,7 @@ tests/test_doctor.py
 tests/test_install.py
 tests/test_measure.py
 tests/test_profile.py
+tests/test_router.py
 tests/test_security.py
 tests/test_skill_library.py"
 

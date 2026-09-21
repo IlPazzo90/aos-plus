@@ -118,18 +118,22 @@ it is the only one whose savings are permanent.
   original SKILL.md and resolve resources at its real source.
 - **Delegation:** no automatic fan-out. Only authorized, independent, bounded work
   whose benefit justifies context/startup cost. Send goal, files, constraints and
-  expected evidence, not full chat. **Model routing:** the main session runs on the
-  strongest model the user configured and keeps classification, T2/T3 work,
-  verification, arbitration, the final report and anything HIGH/CRITICAL; bounded
-  T0/T1 work at risk ≤ MEDIUM may go to a subagent on the host's working model
-  (Claude `Agent` `model`; Codex `spawn_agent`, default in `[agents]`), or to the
-  open runtime (`bin/aos-delegate.py`, OpenCode on the user's open working model)
-  when the result has a check the main session can run — rule in
-  `references/orchestration.md` §Model routing. Model names live in the user's
-  global instructions, never in AOS. If the main session is on a
+  expected evidence, not full chat. **Model routing: AOS is the router.** It decides
+  the task executor from tier, risk, complexity, uncertainty, security impact,
+  required capabilities, the configured benchmark winner and retry/failure history
+  — the manual main model of the OpenCode interface is a fallback runtime model, not
+  the default executor. `bin/aos-router.py` `decide()` is the pure, tested decision
+  function; `config/open-models.json` is the executable policy (primary/fallback
+  open, premium reviewer/escalation). The manual main model executes only on an
+  explicit user override, on CRITICAL/HIGH without an observable check, or where the
+  policy reserves premium (T3 planning, arbitration, final report). LOW/MEDIUM work
+  within policy runs on the open benchmark winner as a dedicated `opencode run`
+  (OpenCode's `-m/--model` switches a run, never the interactive session — verified);
+  mechanics in `references/orchestration.md` §Model routing. Model names live in
+  `config/open-models.json`, never in code. If the main session is on a
   weaker model and the task is T2+ or HIGH+, say so and ask for the switch before the
   first change. An advisor answers a decision; a worker owns a deliverable; neither
-  replaces verification. Mechanics: `references/orchestration.md` §Model routing.
+  replaces verification.
 - **Continuity:** before compaction, interruption or handoff, update the existing
   task record with decisions, file/state identifiers, checks and next action.
   Separate verified facts from hypotheses. On resume check changed state, then
@@ -213,6 +217,13 @@ without one, so ask for that line then. Unavailable provider counters stay null;
 never estimate them. No secrets or client identities in `--task`. **This step is not
 conditional on the work feeling worth measuring** — that judgement is the one the record
 exists to replace, and a step phrased as conditional is a step that never runs.
+Routing telemetry: each record exposes who really executed the task
+(`main_executor_runtime/model/provider`, `routed_by_aos`, `manual_model_override`,
+`delegated_open_tasks`, `open_executor_tokens`, `premium_executor_tokens`,
+`premium_review_tokens`, `escalation_count/reason`, `workload_open_ratio`,
+`premium_dependency_ratio`) — set them at start when the router chose (executor
+identity) and at finish with the token counts, so the open/premium split is
+measurable, not asserted.
 
 Report outcome, evidence and material limits in Italian; code/comments/commits in
 English. T0: two lines. T1: short, closing with one learning line — the wrong

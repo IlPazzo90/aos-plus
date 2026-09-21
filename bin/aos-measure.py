@@ -26,6 +26,15 @@ def nonnegative(value):
     return number
 
 
+def parse_bool(value):
+    normalized = value.strip().lower()
+    if normalized in ("true", "1", "yes"):
+        return True
+    if normalized in ("false", "0", "no"):
+        return False
+    raise argparse.ArgumentTypeError("richiesto true|false")
+
+
 def utc_now():
     return datetime.now(timezone.utc)
 
@@ -68,6 +77,22 @@ def start(args):
         "provider_metrics": {"input_tokens": None, "output_tokens": None,
                              "cached_input_tokens": None, "source": None},
         "rtk_estimate": {"saved": None, "source": None},
+        # Routing identity (AOS router): which model actually executed the task,
+        # whether AOS routed it, and open vs premium contribution. All explicit;
+        # executor identity is known at start, token counts and ratios at finish.
+        "main_executor_runtime": args.main_executor_runtime or args.runtime,
+        "main_executor_model": args.main_executor_model or args.model,
+        "main_executor_provider": args.main_executor_provider,
+        "routed_by_aos": args.routed_by_aos,
+        "manual_model_override": args.manual_model_override,
+        "delegated_open_tasks": None,
+        "open_executor_tokens": None,
+        "premium_executor_tokens": None,
+        "premium_review_tokens": None,
+        "escalation_count": None,
+        "escalation_reason": None,
+        "workload_open_ratio": None,
+        "premium_dependency_ratio": None,
     }
     # The record is mandatory at T2/T3, so a missing parent directory must not be the
     # reason a task closes without one. Only the explicit --record path is created.
@@ -232,6 +257,28 @@ def finish(args):
                     provider_metrics={"input_tokens": args.input_tokens, "output_tokens": args.output_tokens,
                                       "cached_input_tokens": args.cached_input_tokens, "source": args.metric_source},
                     rtk_estimate={"saved": args.rtk_saved_estimate, "source": args.rtk_source})
+        routing = data.get("routing", {})
+        for field in ("main_executor_runtime", "main_executor_model", "main_executor_provider"):
+            value = getattr(args, field, None)
+            if value is not None:
+                data[field] = value
+        for field in ("routed_by_aos", "manual_model_override"):
+            value = getattr(args, field, None)
+            if value is not None:
+                data[field] = value
+        for field in ("delegated_open_tasks", "open_executor_tokens", "premium_executor_tokens",
+                      "premium_review_tokens", "escalation_count"):
+            value = getattr(args, field, None)
+            if value is not None:
+                data[field] = value
+        if getattr(args, "escalation_reason", None) is not None:
+            data["escalation_reason"] = args.escalation_reason
+        open_tokens = data.get("open_executor_tokens")
+        premium_tokens = data.get("premium_executor_tokens")
+        total = (open_tokens or 0) + (premium_tokens or 0)
+        if total:
+            data["workload_open_ratio"] = round((open_tokens or 0) / total, 3)
+            data["premium_dependency_ratio"] = round((premium_tokens or 0) / total, 3)
         atomic_write(args.record, data)
     finally:
         lock.unlink()
@@ -269,16 +316,27 @@ def main():
         command.add_argument("--record", required=True, type=Path)
     for name in ("task", "runtime", "model", "version"):
         begin.add_argument("--" + name, required=True, type=text_value)
+    for name in ("main-executor-runtime", "main-executor-model", "main-executor-provider"):
+        begin.add_argument("--" + name, type=text_value, default=None)
+    for name in ("routed-by-aos", "manual-model-override"):
+        begin.add_argument("--" + name, type=parse_bool, default=None,
+                           metavar="true|false")
     # "blocked" is not a shade of "partial": a task stopped by a missing capability,
     # an exhausted quota or a declared gate produced no deliverable to accept in part.
     # "accepted" and "rejected" are not choices here: they are the user's words, and
     # the author writing them at finish is the author grading their own work.
     end.add_argument("--outcome", required=True, choices=("delivered", "partial", "blocked"))
     verdict.add_argument("--verdict", required=True, choices=("accepted", "rejected"))
-    for name in ("corrections", "input-tokens", "output-tokens", "cached-input-tokens", "rtk-saved-estimate"):
+    for name in ("corrections", "input-tokens", "output-tokens", "cached-input-tokens", "rtk-saved-estimate",
+                 "delegated-open-tasks", "open-executor-tokens", "premium-executor-tokens",
+                 "premium-review-tokens", "escalation-count"):
         end.add_argument("--" + name, type=nonnegative)
-    for name in ("metric-source", "rtk-source"):
+    for name in ("metric-source", "rtk-source", "main-executor-runtime", "main-executor-model",
+                 "main-executor-provider", "escalation-reason"):
         end.add_argument("--" + name, type=text_value)
+    for name in ("routed-by-aos", "manual-model-override"):
+        end.add_argument("--" + name, type=parse_bool, default=None,
+                         metavar="true|false")
     args = parser.parse_args()
     try:
         {"start": start, "finish": finish, "judge": judge}[args.command](args)

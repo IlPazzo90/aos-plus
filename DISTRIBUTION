@@ -9,9 +9,11 @@ bin/aos-delegate.py
 bin/aos-doctor.py
 bin/aos-install.sh
 bin/aos-measure.py
+bin/aos-router.py
 bin/profile-python.py
 bin/skill-library.py
 catalog/skill-library/SKILL.md
+config/open-models.json
 evals/scenarios.json
 references/design.md
 references/output-contract.md
@@ -21,4 +23,5 @@ tests/test_doctor.py
 tests/test_install.py
 tests/test_measure.py
 tests/test_profile.py
+tests/test_router.py
 tests/test_security.py

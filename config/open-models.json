@@ -1,0 +1,42 @@
+{
+  "$comment": "AOS model routing configuration (2.1.1). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Never put secrets here; this file is versioned.",
+  "schema": 1,
+  "open": {
+    "primary": "vercel/deepseek/deepseek-v4-pro-0813",
+    "fallback": "vercel/alibaba/qwen3-coder-next",
+    "source": "benchmark 2026-09-20 first-pass 20/20, findings high 12, cost 1.12$"
+  },
+  "premium": {
+    "reviewer": "claude",
+    "escalation_executor": "codex",
+    "billing": "subscriptions (Claude Code, Codex CLI); the open executor is the only metered path"
+  },
+  "policy": {
+    "open_max_risk": "MEDIUM",
+    "open_max_tier": "T2",
+    "open_t2_high_review": "premium",
+    "open_t2_high_requires_observable_check": true,
+    "retries_before_escalation": 2,
+    "t3_premium_planning": true,
+    "t2_medium_deterministic_verify": true,
+    "t2_medium_open_review": true
+  },
+  "telemetry": {
+    "record": true,
+    "executor_fields": [
+      "main_executor_runtime",
+      "main_executor_model",
+      "main_executor_provider",
+      "routed_by_aos",
+      "manual_model_override",
+      "delegated_open_tasks",
+      "open_executor_tokens",
+      "premium_executor_tokens",
+      "premium_review_tokens",
+      "escalation_count",
+      "escalation_reason",
+      "outcome"
+    ],
+    "ratios": ["workload_open_ratio", "premium_dependency_ratio"]
+  }
+}

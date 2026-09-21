@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.1.1-public — 2026-09-21
+
+**AOS è il router anche nell'edizione pubblica.** Portata ad AOS Plus la modifica 2.1.0
+del repository privato: il modello manuale della sessione OpenCode non decide più
+l'esecutore — è un fallback runtime che esegue solo su override esplicito o dove la
+policy riserva premium (pianificazione T3, arbitrato, report finale, HIGH/CRITICAL). Il
+router sceglie l'esecutore da tier, rischio, complessità, incertezza, impatto di
+sicurezza, capability richieste, vincitore benchmark configurato e storico di retry.
+
+- **`bin/aos-router.py` (nuovo)** — decisione pura `decide()`: T0/T1 e T2 LOW/MEDIUM →
+  esecutore open (vincitore benchmark); T2/HIGH → open solo con observable check e
+  review premium obbligatoria; T3 → premium per pianificazione/review, open sui
+  sottotask; CRITICAL intatto (main + approvazione); retry → fallback open → escalation
+  premium; override esplicito → main. Config assente/invalida → comportamento legacy.
+- **`config/open-models.json` (nuovo)** — policy esecutiva: `open.primary` DeepSeek v4
+  pro (vincitore benchmark), `open.fallback` Qwen, `premium.reviewer=claude`,
+  `premium.escalation_executor=codex`. Nomi in config, mai nel codice.
+- **`bin/aos-measure.py` (esteso)** — telemetria di routing: executor reale
+  (`main_executor_runtime/model/provider`, `routed_by_aos`, `manual_model_override`),
+  token open/premium, escalation e ratio (`workload_open_ratio`,
+  `premium_dependency_ratio`).
+- **Premium sugli abbonamenti già pagati** — l'esecutore e il reviewer premium sono le
+  sessioni Claude Code e Codex CLI coperte dagli abbonamenti attivi, mai una chiave API
+  a consumo separata; l'open è l'unico percorso a consumo e il default per il lavoro
+  eleggibile. Dichiarato in `premium.billing` e in `references/orchestration.md`.
+- **Test** — `tests/test_router.py` (16 casi) porta la suite dell'edizione pubblica a
+  166 passati (3 skip), come il repository privato.
+- **Non toccato** — permission manager, denylist, guardie anti-injection, verify-agent,
+  cross-model review, policy HIGH/CRITICAL: routing, non privilegi.
+
 ## 2.0.1-public (second review cycle) — 2026-09-21
 
 The user asked for a new check by both reviewers, Codex and Claude, in parallel:

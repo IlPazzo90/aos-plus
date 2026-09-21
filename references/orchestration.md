@@ -81,80 +81,116 @@ Do not launch reviewer chains. Respect the existing 3/5/6 limits.
 
 ## Model routing
 
-The user ranks the models; AOS only decides which work may leave the main session.
-The ranking, the names and the reason live in the user's global instructions
-(`CLAUDE.md`, `~/.codex/AGENTS.md`), never in AOS: names change, the rule does not.
+**AOS is the router.** It decides which task executor runs a task and with which
+review, from tier, risk, complexity, uncertainty, security impact, the capabilities
+the task needs, the configured benchmark winner and the retry/failure history. The
+manual main model of the OpenCode interface does **not** decide the executor: it is a
+fallback runtime model, and it executes only on an explicit user override or in the
+cases the routing policy reserves for it. The decision function is
+`bin/aos-router.py` (`decide` — pure and tested, 16 cases); the executable policy
+lives in `config/open-models.json`. Never hardcode a provider ranking, benchmark
+result or price into AOS: names and winners are configuration, the rule is the code.
 
-- **Main session = strongest configured model.** It keeps classification, T2/T3
-  implementation, verification, arbitration of findings, the final report and
-  anything at risk HIGH/CRITICAL. AOS cannot change the main model: on Claude Code it
-  is the user's `/model`, on Codex `model` in `config.toml` or `-m`. When the main
-  session runs on a weaker model and the task is T2+ or HIGH+, announce it with the
-  tier line and ask for the switch before the first change; do not quietly proceed.
-- **Subagent = working model**, for bounded T0/T1 work at risk ≤ MEDIUM that is
-  independent of the rest: a file with a known change, a search, a test run, a port.
-  Claude Code: the `Agent` tool takes `model`, an alias the host lists; `fork` always
-  inherits the parent model, so use it only when the whole context is
-  the point. Codex: `spawn_agent` accepts a model, otherwise
-  `[agents].default_subagent_model`, otherwise the host default; `codex exec -m` for
-  scripted calls; `codex features list` must show `multi_agent` enabled. Read-only
-  search may go one step cheaper than the working model.
-- **Reviewer = strongest model of the other family.** Verification is the most
-  complex step, and a reviewer weaker than the author counts little. verify-agent
-  pins the Claude reviewer to the strongest alias of its family; the Codex reviewer
-  uses the configured model,
-  with the reserve only on an exhausted quota, and its PASS counts less.
-- Effort follows the same line: lower effort for bounded work only after
-  representative checks show adequacy; higher effort for ambiguity is not a
-  guarantee. Do not hardcode a provider ranking, benchmark result or price into AOS.
+Three models must not be confused:
 
-- **Open runtime = OpenCode on the user's open working model** (2.0.0), for the
-  same bounded T0/T1 work at risk ≤ MEDIUM that may leave the main session, and
-  only when the main session can check the result by observation: a test, a
-  rendered page, a diff against a known expectation. Not eligible: T2+,
-  HIGH/CRITICAL, auth, payments, personal data, migrations, deploys, and any
-  change whose only check is "looks right". Invocation, from a clean repo:
-  `python3 "$AOS_DIR/bin/aos-delegate.py" --repo <path> --model <provider/model> --brief <file> --json`.
-  The script runs `opencode run --pure --auto --format json` and prints exit
-  code, diff stat (new files included), seconds, the reply and usage summed from
-  the JSON events (null when not reported, never estimated); it never runs tests
-  or commits. `--auto` approves whatever is not denied, so the per-run config
-  denies what a worker never needs: edits outside the repo, web tools, subagents,
-  and the shell commands that carry data or changes off the machine (`curl`,
-  `ssh`, `git push`, `git commit`, deploy CLIs — `DENIED_BASH` in the script).
-  The copy keeps only the providers and the reworked permission map of the user's
-  config (`config.json`, `opencode.json`, `opencode.jsonc`, the inherited
-  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION`), with sharing
-  disabled and the run's model as `small_model` too — OpenCode titles the session
-  with a "small" model it otherwise picks by itself, and the brief goes there — and is the
-  run's only layer: the global config of a temporary XDG root that links the rest
-  of the user's `~/.config` in, with every `OPENCODE_*` config variable dropped.
-  Agents, tools, MCP servers, plugins, skills, instructions and the other keys of
-  the user's setup are not there (formatter and lsp are): each is a layer that
-  merges after the permission map, or a definition the worker does not need. A repo with its
-  own `opencode.json`, `opencode.jsonc` or `.opencode` anywhere up to its git
-  toplevel is refused (exit 5), because a pattern it adds would land after the
-  denies. That is a guard against accidents and prompt injection, not a sandbox: the
-  worker runs as the user, an interpreter reads what `cat` may not, and the
-  patterns match the first word (`/usr/bin/curl`, `env curl`, `git -C . commit`
-  pass). The record's own `git` reads no global or system config and never runs
-  on a repo whose `.git` config, attributes, hooks, includes or pointers the
-  worker changed (a `core.fsmonitor` it wrote would run there): the record then
-  says so and carries no diff, and the bench stops. Nothing secret or
-  production-bound belongs in a repo handed to it.
-  The main session runs the check. One failed check → one retry with the
-  failure output appended to the brief. A second failure → the main session
-  does the work itself and writes `escalated` in the task record. The model
-  comes from the user's global instructions (role name: *open working model*);
-  AOS never names it and never carries a ranking, benchmark result or price.
-  OpenCode reads `~/.claude/CLAUDE.md` and the project `CLAUDE.md`/`AGENTS.md`,
-  so the brief carries the task, not the rules; the skill catalog is denied for
-  the run (it cost 42k input tokens per step), so a worker never loads a skill.
-  Providers live in `~/.config/opencode/opencode.json`;
-  any OpenAI-compatible endpoint is one block —
-  `{"provider":{"<id>":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"…/v1","apiKey":"{file:~/.secrets/<name>}"},"models":{"<model>":{}}}}}`
-  — with `zeroDataRetention: true` on models that receive client source. No
-  `model` key in that file: every run names its model.
+- **Main session model** is the model the OpenCode interface opened the session
+  with. It cannot switch at runtime — verified: `opencode run` accepts
+  `-m/--model` for a dedicated run, the interactive session has no model switch.
+  AOS keeps it as the orchestrator: it classifies, invokes the router, verifies/arbitrates
+  the returned evidence, owns the final report and anything the policy does not
+  route away (HIGH/CRITICAL, plus explicit overrides).
+- **Task executor model** is chosen by AOS via `bin/aos-router.py` for the work
+  itself: LOW/MEDIUM work within policy goes to the open benchmark winner
+  (`open.primary` — DeepSeek today), a bounded sub-part may go to a second open or
+  a delegated model, and the policy-knowledge work (T3 planning, HIGH review) goes
+  to premium. The open executor runs as a dedicated `opencode run` in the repo
+  (below), never by impossible mid-session switching.
+- **Delegated model** is a specific bounded sub-task the orchestrator spins off
+  independently of the routed executor.
+
+Routing defaults (`bin/aos-router.py` decides; config changes policy, not the code):
+
+- **T0/LOW, T1/LOW-MEDIUM** → open executor (benchmark winner), targeted/regression check by the main session.
+- **T2/LOW-MEDIUM** → open executor, deterministic verification and open review;
+  premium escalation only after retry exhaustion.
+- **T2/HIGH** → open **only** when policy allows it and a result the main session
+  can check by observation exists; even then premium review is mandatory. Without
+  an observable check, premium executes directly.
+- **T3** → premium planning/architecture and premium final review; open runs the
+  bounded sub-tasks.
+- **CRITICAL** → unchanged: main session plus explicit approval, never routed.
+- **Explicit override** ("fallo tu", the user names the main orchestration model
+  for this task) → main executes; the record marks `manual_model_override: true`.
+  Without it, the routing above has precedence over whatever model the interface
+  opened with.
+
+Open execution mechanics (unchanged, `aos-delegate.py`, 2.0.1): from a clean repo,
+`python3 "$AOS_DIR/bin/aos-delegate.py" --repo <path> --model <provider/model> --brief <file> --json`.
+The script runs `opencode run --pure --auto --format json` and prints exit code,
+diff stat, seconds and usage read from the JSON events (never estimated); it never
+runs tests or commits. `--auto` approves whatever is not denied, so the per-run
+config denies what a worker never needs: edits outside the repo, web tools,
+subagents, and the shell commands that carry data or changes off the machine
+(`curl`, `ssh`, `git push`, `git commit`, deploy CLIs — `DENIED_BASH`). The copy
+keeps only the providers and the reworked permission map of the user's config, with
+sharing disabled and the run's model as `small_model` too; the run's layer only, in
+a temporary XDG root. Agents, tools, MCP servers, plugins, skills, instructions are
+not there. A repo with its own `opencode.json`/`opencode.jsonc`/`.opencode` up to its
+git toplevel is refused (exit 5): that is a guard against accidents and prompt
+injection, not a sandbox — patterns match the first word (`/usr/bin/curl`, `env curl`,
+`git -C . commit` pass). Nothing secret or production-bound belongs in a repo handed
+to a worker. Providers live in `~/.config/opencode/opencode.json`; any
+OpenAI-compatible endpoint is one block
+`{"provider":{"<id>":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"…/v1","apiKey":"{file:~/.secrets/<name>}"},"models":{"<model>":{}}}}}`
+with `zeroDataRetention: true` on models that receive client source. No `model` key
+in that file: every run names its model. The main session runs the check. One failed
+check → one retry with the failure output appended to the brief. A second failure →
+the fallback open model gets its retries; exhaustion escalates to premium — always
+recorded in the task record (`escalation_count`, `escalation_reason`). AOS never
+carries a ranking, benchmark result or price in code: the winner lives in
+`config/open-models.json`, the reason in the benchmark record
+(`docs/misure/bench/`), and missing/invalid config means the legacy behavior below.
+
+Fallback chain when open is unavailable:
+
+- `open.primary` missing/failing → `open.fallback` (Qwen today).
+- both open missing/unreachable → premium escalation executor
+  (`premium.escalation_executor`), never a fake open run.
+- `config/open-models.json` absent or invalid → legacy: the main session executes
+  the task and can still delegate bounded T0/T1 to a subagent (host working model).
+- reviewer (`premium.reviewer`) absent → no cross-model premium review is claimed;
+  quality-gates fallback applies. Same-family or self-review is never cross-model.
+
+**Premium stays on the subscriptions already paid for.** The premium executor and the
+premium reviewer are the user's own Claude Code and Codex CLI sessions, covered by the
+subscriptions already paid for them: escalation and cross-model review never open a
+separate metered API key of their own. The open executor is the one metered path, and
+it is the default the router prefers for eligible work — premium is spent where it
+adds value, not by default. A missing subscription is an unavailable reviewer, which
+follows the fallback below like any other unavailability.
+
+Model availability must be observed, not assumed: a provider key in `opencode.json`
+is a claim about a configuration, not proof the endpoint answers. When the router's
+open branch is chosen, the main session confirms the model responds to the call
+before trusting its result; a failing open run is a failed attempt, counted.
+
+Where the main session still handles things itself (premium planning, arbitration,
+HIGH/CRITICAL, final report, override), the manual main model is used — that is the
+fallback role, and it is never a routing failure. The recorded executor identity
+(`main_executor_model`, `routed_by_aos`) shows who really ran each task; the
+telemetry section of `aos-measure.py` carries the open/premium split.
+
+**Host subagents (legacy and complementary):** when a bounded T0/T1 at risk ≤ MEDIUM
+is delegated away from the main session on Claude Code or Codex, the working model
+is the host's: Claude `Agent` takes `model` (an alias the host lists; `fork` always
+inherits the parent model, use it only when the whole context is the point); Codex
+`spawn_agent` accepts a model, otherwise `[agents].default_subagent_model`, otherwise
+the host default; `codex exec -m` for scripted calls; `codex features list` must show
+`multi_agent` enabled. Read-only search may go one step cheaper than the working
+model. Reviewers stay the strongest model of the other family: verify-agent pins the
+Claude reviewer to the strongest alias of its family; the Codex reviewer uses the
+configured model, with the reserve only on an exhausted quota, and its PASS counts
+less.
 
 ## Independence and persistence
 
