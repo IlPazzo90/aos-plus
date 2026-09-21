@@ -1,5 +1,13 @@
 # Changelog
 
+## Hotfix permessi Codex — 2026-09-21
+
+Il bridge premium eredita sandbox e approvazioni dalla configurazione Codex invece
+di forzare `workspace-write`, che in alcuni ambienti disabilitava la rete. Nessun
+bypass aggiunto e nessuna modifica alla configurazione utente o al comando Claude.
+Verificati test di regressione passati, controllo di sicurezza senza rilievi.
+Ripristino: revert del commit.
+
 ## 2.3.0-public — 2026-09-21
 
 Ingresso OpenCode AOS con routing per turno, bridge premium Claude/Codex, skill e

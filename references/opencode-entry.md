@@ -96,6 +96,9 @@ OpenCode riuscita finché `opencode mcp list` non la conferma.
 il passaggio al CLI è automatico, come richiesto dal routing. Per richiedere una
 conferma a ogni passaggio, impostare `permission.aos_execute` a `ask`. Il CLI
 mantiene i propri permessi; i compiti CRITICAL richiedono anche `aos_critical`.
+Codex eredita sandbox e approvazioni dalla propria configurazione: AOS non forza
+`workspace-write` né abilita la rete. Se la configurazione Codex vieta la rete,
+anche il lavoro delegato resta senza rete.
 
 Il routing riparte dall’ultimo riepilogo di compattazione disponibile e conserva
 tutti i messaggi utente successivi. Senza riepilogo conserva tutti i messaggi utente.

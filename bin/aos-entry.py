@@ -144,8 +144,8 @@ def premium_command(backend):
     if not isinstance(model, str) or not model.strip():
         raise ValueError('premium model missing from AOS policy')
     if backend == 'codex':
-        # Preserve the user's models, skills, hooks and MCP. No dangerous flags.
-        return ['codex', 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-m', model, '-']
+        # Inherit the user's sandbox and approvals as well as skills, hooks and MCP.
+        return ['codex', 'exec', '--json', '--skip-git-repo-check', '-m', model, '-']
     if backend == 'claude':
         return ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--model', model,
                 '--permission-mode', 'dontAsk']

@@ -41,6 +41,14 @@ class EntryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.entry.premium_command('bash')
 
+    def test_codex_inherits_configured_permissions(self):
+        command = self.entry.premium_command('codex')
+        for override in ('--sandbox', '-s', '--config', '-c', '--approve-for-me',
+                         '--ignore-user-config', '--ignore-rules'):
+            self.assertNotIn(override, command)
+        self.assertEqual(self.entry.premium_command('claude')[-2:],
+                         ['--permission-mode', 'dontAsk'])
+
     def test_usage_and_error_are_not_confused_with_successful_text(self):
         with self.assertRaises(ValueError):
             self.entry.premium_reply('codex', '{"type":"turn.failed","error":{"message":"quota"}}')
