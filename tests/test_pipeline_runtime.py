@@ -97,23 +97,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.paid, [('codex', True), ('claude', True)])
         stats = entry.pipeline.metrics(self.state)
         self.assertEqual((stats['planner_tokens'], stats['executor_tokens'], stats['reviewer_tokens']), (5, 5, 5))
+        self.assertEqual((stats['planner_cost_class'], stats['executor_cost_class'], stats['reviewer_cost_class']),
+                         ('PREMIUM', 'CHEAP', 'PREMIUM'))
         self.assertEqual(stats['premium_executor_tokens'], 0)
 
-    def test_both_main_hosts_use_codex_open_and_opposite_premium_review(self):
+    def test_both_main_hosts_use_claude_open_and_opposite_premium_review(self):
         for host, planner, reviewer in [('claude-code', 'claude', 'codex'),
                                         ('codex-cli', 'codex', 'claude')]:
             with self.subTest(host=host):
                 self.paid.clear()
                 self.state = entry.pipeline_step(None, 'start', dict(
                     classification=dict(tier='T2', risk='MEDIUM', capabilities=[]),
-                    text='write app', main_host=host, executor_runtime='codex-cli'), self.repo)
+                    text='write app', main_host=host, executor_runtime='claude-code'), self.repo)
                 self.addCleanup(shutil.rmtree, self.state['run_dir'])
                 self.step('plan')
                 def worker(*args, **kwargs):
-                    self.assertEqual(kwargs['runtime'], 'codex-cli')
+                    self.assertEqual(kwargs['runtime'], 'claude-code')
                     result = self._worker(*args, **kwargs)
-                    result.update(runtime='codex-cli', provider='vercel',
-                                  runtime_model_pair='codex-cli|vercel|configured-open')
+                    result.update(runtime='claude-code', provider='vercel',
+                                  runtime_model_pair='claude-code|vercel|configured-open')
                     return result
                 with patch.object(entry.open_executor, 'run', side_effect=worker):
                     self.step('execute')
@@ -123,7 +125,7 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(self.paid, [(planner, True), (reviewer, True)])
                 stats = entry.pipeline.metrics(self.state)
                 self.assertEqual(stats['main_host'], host)
-                self.assertEqual(stats['executor_runtime'], 'codex-cli')
+                self.assertEqual(stats['executor_runtime'], 'claude-code')
                 self.assertEqual(stats['executor_provider'], 'vercel')
                 self.assertFalse(stats['premium_execution_used'])
 

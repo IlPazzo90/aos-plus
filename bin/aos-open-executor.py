@@ -20,6 +20,11 @@ spec = importlib.util.spec_from_file_location('aos_open_delegate', ROOT / 'bin/a
 delegate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(delegate)
 RUNTIMES = {'opencode': 'opencode', 'codex-cli': 'codex', 'claude-code': 'claude'}
+OPEN_EXECUTION_RUNTIMES = ('opencode', 'claude-code')
+# 2026-09-22: the installed Codex CLI did not enforce the generated private
+# deny-rule layer. Keep the host usable, but refuse it as an open worker until a
+# real negative native-policy probe proves the restrictive contract.
+CODEX_RUNTIME_BLOCK = 'Codex CLI open execution is disabled: restrictive rule loading is unverified'
 CAPABILITIES = {name: dict(read_repo=True, write_repo=True, shell=name != 'claude-code',
                          structured_output=True, provider_override=True, model_override=True,
                          sandbox=name != 'opencode', network=False, subagent=False,
@@ -41,10 +46,17 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
     provider = provider or prefix
     if runtime is None:
         ordered = [settings.get('default_runtime', 'opencode')] + settings.get('runtime_order', list(RUNTIMES))
-        runtime = next((r for r in ordered if r in RUNTIMES and shutil.which(RUNTIMES[r])
+        runtime = next((r for r in ordered if r in OPEN_EXECUTION_RUNTIMES and shutil.which(RUNTIMES[r])
                         and all(CAPABILITIES[r].get(c) for c in required_capabilities)), None)
+        if runtime is None and 'codex-cli' in ordered and shutil.which(RUNTIMES['codex-cli']):
+            raise ValueError(CODEX_RUNTIME_BLOCK)
+    if runtime == 'codex-cli':
+        raise ValueError(CODEX_RUNTIME_BLOCK)
     if runtime not in RUNTIMES:
         raise ValueError('no compatible open runtime installed or invalid runtime')
+    entry = config.get('model_catalog', {}).get(identity) if isinstance(config.get('model_catalog', {}), dict) else None
+    if isinstance(entry, dict) and runtime not in entry.get('compatible_runtimes', ()):
+        raise ValueError('selected model is not compatible with the requested runtime')
     if any(not CAPABILITIES[runtime].get(c) for c in required_capabilities):
         raise ValueError('open runtime lacks a required capability')
     return dict(role='executor', runtime=runtime, provider=provider, model=model_id,
@@ -57,6 +69,8 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
 def check_runtime(runtime):
     if runtime == 'opencode':
         return
+    if runtime == 'codex-cli':
+        raise ValueError(CODEX_RUNTIME_BLOCK)
     completed = subprocess.run([RUNTIMES[runtime], '--version'], text=True, capture_output=True, timeout=10)
     match = re.search(r'(\d+)\.(\d+)\.(\d+)', completed.stdout)
     minimum = {'codex-cli': (0, 155, 1), 'claude-code': (2, 1, 278)}[runtime]

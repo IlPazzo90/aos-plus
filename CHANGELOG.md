@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.0 WIP — runtime indipendente — 2026-09-22
+
+Il catalogo modelli registra provider, runtime compatibili, classe di costo,
+capacità, contesto, prezzi e disponibilità delle evidenze. Il router sceglie il
+modello meno costoso sufficiente al ruolo e al budget. La scala esecutiva usa
+primary economico, fallback economico, MID configurato e premium.
+
+`codex-cli` è escluso dall'esecuzione open perché la prova negativa del layer di
+regole restrittivo non ha bloccato un comando vietato. Codex resta host e reviewer
+premium. Il benchmark richiede un worker concluso con successo oltre ai test verdi.
+
 ## Snapshot WIP sospeso — 2026-09-22
 
 Salvato il recupero sul branch di sviluppo, senza rilascio o merge in main.

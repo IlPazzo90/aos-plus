@@ -6,9 +6,63 @@
     "fallback": "vercel/alibaba/qwen3-coder-next",
     "source": "benchmark 2026-09-20 first-pass 20/20, findings high 12, cost 1.12$"
   },
+  "model_catalog": {
+    "vercel/deepseek/deepseek-v4-pro-0813": {
+      "provider": "vercel",
+      "compatible_runtimes": ["opencode", "claude-code"],
+      "cost_class": "CHEAP",
+      "capability_scores": {"coding": 5, "reasoning": 5, "planning": 4, "review": 3, "security": 3},
+      "context": 1000000,
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "roles": ["executor", "fixer"],
+      "benchmark": {"available": true, "status": "winner", "source": "2026-09-20 comparable OpenCode benchmark"},
+      "historical": {"available": true, "source": "existing AOS benchmark record"}
+    },
+    "vercel/alibaba/qwen3-coder-next": {
+      "provider": "vercel",
+      "compatible_runtimes": ["opencode", "claude-code"],
+      "cost_class": "CHEAP",
+      "capability_scores": {"coding": 4, "reasoning": 3, "planning": 3, "review": 3, "security": 3},
+      "context": 262144,
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "roles": ["executor", "fixer"],
+      "benchmark": {"available": true, "status": "fallback", "source": "2026-09-20 comparable OpenCode benchmark"},
+      "historical": {"available": true, "source": "existing AOS benchmark record"}
+    },
+    "anthropic/fable": {
+      "provider": "anthropic",
+      "compatible_runtimes": ["claude-code"],
+      "cost_class": "PREMIUM",
+      "capability_scores": {"coding": 5, "reasoning": 5, "planning": 5, "review": 5, "security": 5},
+      "context": 1000000,
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "roles": ["planner", "executor", "reviewer", "fixer"],
+      "benchmark": {"available": false, "status": "not_compared", "source": "no comparable metered benchmark"},
+      "historical": {"available": true, "source": "configured premium host runtime"}
+    },
+    "openai/gpt-6-astra": {
+      "provider": "openai",
+      "compatible_runtimes": ["codex-cli"],
+      "cost_class": "PREMIUM",
+      "capability_scores": {"coding": 5, "reasoning": 5, "planning": 5, "review": 5, "security": 5},
+      "context": 400000,
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "roles": ["planner", "executor", "reviewer", "fixer"],
+      "benchmark": {"available": false, "status": "not_compared", "source": "no comparable metered benchmark"},
+      "historical": {"available": true, "source": "configured premium host runtime"}
+    }
+  },
   "premium": {
     "claude_model": "fable",
     "codex_model": "gpt-6-astra",
+    "model_refs": {
+      "claude": "anthropic/fable",
+      "codex": "openai/gpt-6-astra"
+    },
     "reviewer": "claude",
     "escalation_executor": "codex",
     "billing": "subscriptions (Claude Code, Codex CLI); the open executor is the only metered path"
@@ -74,7 +128,11 @@
       "runtime_model_pair",
       "open_executor_success",
       "open_executor_retry",
-      "open_fallback_used"
+      "open_fallback_used",
+      "planner_cost_class",
+      "executor_cost_class",
+      "reviewer_cost_class",
+      "fixer_cost_class"
     ]
   },
   "context_policy": {
@@ -148,6 +206,12 @@
       "codex-cli",
       "claude-code"
     ],
+    "runtime_status": {
+      "codex-cli": {
+        "open_execution": false,
+        "reason": "Native restrictive rule loading is unverified; do not route an open worker here."
+      }
+    },
     "source": "Existing OpenCode benchmark; alternative runtimes require comparative measurements before promotion.",
     "permission_profile": "GREEN"
   },

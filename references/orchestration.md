@@ -490,6 +490,13 @@ tests must fail on the parent and pass on the reference commit.
 Native CLI usage is recorded where reported. Codex does not report gateway dollars;
 Claude's custom-model pricing basis can be unknown. Both costs remain null and a
 requested dollar cap is rejected instead of pretended. Timeout and step caps remain.
+The model catalog in `config/open-models.json` supplies provider, compatible runtimes,
+cost class, capability scores, context, input/output prices and the availability of
+benchmark or historical evidence. The router selects the cheapest sufficient candidate
+within that data and the stated budget. The execution ladder is cheap primary, cheap
+fallback, an explicitly configured MID model, then premium. Codex CLI is excluded from
+open execution until a restrictive-policy probe passes; it remains a premium host and
+reviewer.
 Do not promote a runtime from connectivity tests, two-task samples, missing review
 or unknown cost. The existing benchmark winner remains authoritative until a complete,
 comparable benchmark and its review support changing the configuration.

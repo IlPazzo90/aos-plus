@@ -18,14 +18,13 @@ class OpenExecutorTests(unittest.TestCase):
                 'executors': {'default_runtime': 'opencode',
                               'runtime_order': ['opencode', 'codex-cli', 'claude-code']}}
 
-    def test_no_opencode_selects_codex_without_changing_model(self):
+    def test_unverified_codex_runtime_is_refused_when_opencode_is_missing(self):
         with patch.object(executor.shutil, 'which', side_effect=lambda s: '/bin/codex' if s == 'codex' else None):
-            selected = executor.resolve(config=self.config())
-        self.assertEqual((selected['runtime'], selected['provider'], selected['model']),
-                         ('codex-cli', 'vercel', 'test/winner'))
+            with self.assertRaisesRegex(ValueError, 'Codex CLI open execution is disabled'):
+                executor.resolve(config=self.config())
 
     def test_fallback_model_can_use_each_runtime(self):
-        for runtime in executor.RUNTIMES:
+        for runtime in executor.OPEN_EXECUTION_RUNTIMES:
             selected = executor.resolve(config=self.config(), slot='fallback', runtime=runtime)
             self.assertEqual(selected['model'], 'test/second')
             self.assertEqual(selected['runtime'], runtime)
@@ -34,6 +33,12 @@ class OpenExecutorTests(unittest.TestCase):
         selected = executor.resolve(config=self.config(), runtime='opencode', provider='custom')
         self.assertEqual(selected['provider'], 'custom')
         self.assertEqual(selected['model_ref'], 'custom/test/winner')
+
+    def test_catalog_rejects_a_runtime_not_compatible_with_the_selected_model(self):
+        config = self.config() | {'model_catalog': {'vercel/test/winner': {
+            'compatible_runtimes': ['opencode']}}}
+        with self.assertRaisesRegex(ValueError, 'model is not compatible'):
+            executor.resolve(config=config, runtime='claude-code')
 
     def test_global_allow_rules_are_shadowed_without_modifying_user_rules(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -51,6 +56,8 @@ class OpenExecutorTests(unittest.TestCase):
     def test_invalid_runtime_and_red_profile_fail_closed(self):
         with self.assertRaises(ValueError):
             executor.resolve(config=self.config(), runtime='fake')
+        with self.assertRaisesRegex(ValueError, 'Codex CLI open execution is disabled'):
+            executor.resolve(config=self.config(), runtime='codex-cli')
         with self.assertRaises(ValueError):
             executor.run('.', 'vercel/test/winner', 'task', 30, False, permission_profile='RED')
         for role in ('planner', 'reviewer'):
@@ -67,7 +74,7 @@ class OpenExecutorTests(unittest.TestCase):
             state = Path(state_dir) / 'retry.json'
             executor.delegate.save_retry_state(state, dict(baseline_head=executor.delegate.git_head(repo),
                                                            initial_repo_clean=True, owned=set()))
-            for runtime in executor.RUNTIMES:
+            for runtime in executor.OPEN_EXECUTION_RUNTIMES:
                 with self.subTest(runtime=runtime), \
                         patch.object(executor.shutil, 'which', return_value='/fixture/runtime'), \
                         patch.object(executor, 'check_runtime'), \
@@ -82,21 +89,6 @@ class OpenExecutorTests(unittest.TestCase):
                                      runtime=runtime, state_file=state)
                     self.assertEqual(caught.exception.code, executor.delegate.EXIT_CONFLICT)
                     invoke.assert_not_called()
-
-    def test_codex_uses_open_provider_and_native_restrictions(self):
-        with tempfile.TemporaryDirectory() as directory:
-            command = executor.codex_command(Path(directory), 'test/winner', 'task', 'https://gateway.example/v1')
-        text = ' '.join(command)
-        self.assertIn('model_provider="aos_open"', text)
-        self.assertIn('default_permissions="aos-open"', text)
-        self.assertIn('approval_policy="never"', text)
-        self.assertIn('shell_environment_policy.inherit="none"', text)
-        self.assertNotIn('--sandbox', command)
-        self.assertNotIn('--ignore-rules', command)
-        self.assertNotIn('gpt-', text)
-        # Dotted CLI keys containing a quoted path did not activate project rules
-        # on the installed CLI. Supply the complete trust map as a TOML table.
-        self.assertTrue(any(arg.startswith('projects={') for arg in command))
 
     def test_claude_never_uses_subscription_or_unsandboxed_tools(self):
         command = executor.claude_command(Path('/tmp/repo'), 'test/winner', 'task')
@@ -125,14 +117,6 @@ class OpenExecutorTests(unittest.TestCase):
                            'modelUsage': {'custom': {'costBasis': 'unknown'}}}))
         self.assertIsNone(stream.usage['cost_usd'])
         self.assertEqual(stream.usage['input_tokens'], 10)
-
-    def test_codex_usage_is_open_usage_and_tool_events_are_capped(self):
-        stream = executor.Stream('codex-cli')
-        line = stream(json.dumps({'type': 'item.completed', 'item': {'type': 'command_execution'}}))
-        self.assertEqual(json.loads(line)['type'], 'step_finish')
-        stream(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 12, 'output_tokens': 4}}))
-        self.assertEqual(stream.usage['input_tokens'], 12)
-        self.assertIsNone(stream.usage['cost_usd'])
 
 
 if __name__ == '__main__':

@@ -357,6 +357,11 @@ def identity_fields(record):
     return {k: record[k] for k in ("runtime", "provider", "executor_model", "runtime_model_pair") if k in record}
 
 
+def executor_succeeded(record):
+    """A green project test cannot turn an interrupted worker into a benchmark pass."""
+    return record.get("exit_code") == 0 and not record.get("error")
+
+
 def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=None, spend=None, no_review=False):
     if differ is None:
         differ = lambda wt: diff_lines(wt, task.get("test_files") or ())  # noqa: E731
@@ -407,10 +412,13 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
         if state == "refused":
             return refused_record(first)
         code, out = tester(wt)
+        if not executor_succeeded(first):
+            code = code or first.get("exit_code") or 1
+            out = (out + "\nexecutor failed: " + str(first.get("error") or first.get("exit_code"))).strip()
         if meta_changed():
             tampered = True
             return tampered_record([first])
-        result = {"task": task["id"], "model": model, "first_pass": code == 0, "retry_pass": None,
+        result = {"task": task["id"], "model": model, "first_pass": executor_succeeded(first) and code == 0, "retry_pass": None,
                   "escalated": False, "capped": False, "seconds": first["seconds"],
                   "cost_usd": first["usage"].get("cost_usd"),
                   "input_tokens": first["usage"].get("input_tokens"), "output_tokens": first["usage"].get("output_tokens"),
@@ -439,10 +447,13 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
                 tampered = True
                 return tampered_record([first, second])
             code, out = tester(wt)
+            if not executor_succeeded(second):
+                code = code or second.get("exit_code") or 1
+                out = (out + "\nexecutor failed: " + str(second.get("error") or second.get("exit_code"))).strip()
             if meta_changed():
                 tampered = True
                 return tampered_record([first, second])
-            result["retry_pass"] = code == 0
+            result["retry_pass"] = executor_succeeded(second) and code == 0
             result["seconds"] += second["seconds"]
             # The per-task total is null when one attempt is unknown; the known part is
             # kept apart, because the spend cap must count every dollar it can see.
@@ -558,8 +569,8 @@ def main():
         for entry in loaded:
             if not isinstance(entry, dict) or not {"runtime", "provider", "model"} <= set(entry):
                 parser.error("ogni esecutore deve avere runtime, provider e model")
-            if entry["runtime"] not in open_executor.RUNTIMES:
-                parser.error(f"runtime sconosciuto: {entry['runtime']} (opencode/codex-cli/claude-code)")
+            if entry["runtime"] not in open_executor.OPEN_EXECUTION_RUNTIMES:
+                parser.error(f"runtime non disponibile per open execution: {entry['runtime']}")
         executors = loaded
     if args.cap_usd is not None:
         uncosted = sorted({e["runtime"] for e in executors if e["runtime"] not in COST_RUNTIMES})

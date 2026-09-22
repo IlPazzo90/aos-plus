@@ -105,6 +105,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(s['open_retry_count'], 3)
         self.assertTrue(s['premium_execution_used'] is False)
 
+    def test_mid_model_runs_once_after_the_two_cheap_models(self):
+        s = self.p.start('T2', 'MEDIUM', 'codex', 'claude', 'open/primary', 'open/fallback', 2,
+                         mid='open/mid')
+        s = self.p.advance(s, 'plan', self.plan)
+        models = []
+        for _ in range(4):
+            models.append(s['model'])
+            s = self.p.advance(s, 'executed', {'ok': False, 'evidence': 'test failed'})
+        self.assertEqual((models, s['stage'], s['model']),
+                         (['open/primary'] * 2 + ['open/fallback'] * 2, 'execute', 'open/mid'))
+        s = self.p.advance(s, 'executed', {'ok': False, 'evidence': 'test failed'})
+        self.assertEqual(s['stage'], 'escalate')
+
     def test_failed_last_resort_blocks_instead_of_looping_premium(self):
         s = self.start()
         for _ in range(4): s = self.p.advance(s, 'executed', {'ok':False,'evidence':'failure'})

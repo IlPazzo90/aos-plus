@@ -123,8 +123,14 @@ it is the only one whose savings are permanent.
   required capabilities, the configured benchmark winner and retry/failure history
   — the manual main model of the OpenCode interface is a fallback runtime model, not
   the default executor. `bin/aos-router.py` `decide()` is the pure, tested decision
-  function; `config/open-models.json` is the executable policy (primary/fallback
-  open, premium reviewer/escalation). The manual main model executes only on an
+  function; `config/open-models.json` is the executable policy and catalog: provider,
+  runtime compatibility, cost class, capability score, context, price fields and
+  benchmark/history availability live there. Route every role to the cheapest model
+  that meets its declared capability and budget. Execution tries the benchmarked cheap
+  primary, its cheap fallback, an explicitly benchmarked MID candidate, then premium.
+  A missing MID candidate is skipped; no name is promoted in code. `codex-cli` remains
+  a premium host/reviewer but is incompatible as an open worker until its restrictive
+  rule layer has a passing native negative probe. The manual main model executes only on an
   explicit user override, on CRITICAL/HIGH without an observable check, or where the
   policy reserves premium (planning, arbitration, final report). For T2/T3 within the open policy,
   premium produces the plan and cross-family review; open implements and fixes.

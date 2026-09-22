@@ -293,9 +293,13 @@ def role_usage(state, role, backend, result):
     provider = result.get('provider') or (model.split('/')[0] if model and '/' in model else
                                        {'codex': 'openai', 'claude': 'anthropic'}.get(backend, backend))
     runtime = result.get('runtime') or {'codex': 'codex-cli', 'claude': 'claude-code'}.get(backend)
+    model_ref = model if model in configured.get('model_catalog', {}) else configured.get('premium', {}).get(
+        'model_refs', {}).get(backend)
+    cost_class = configured.get('model_catalog', {}).get(model_ref, {}).get('cost_class')
     state.setdefault('role_events', []).append(dict(role=role, model=model, provider=provider, runtime=runtime,
                                                     runtime_model_pair=result.get('runtime_model_pair'),
-                                                    tokens=tokens, usage=usage, exit_code=result.get('exit_code')))
+                                                    cost_class=cost_class, tokens=tokens, usage=usage,
+                                                    exit_code=result.get('exit_code')))
 
 
 def pipeline_step(state, action, data, directory):
@@ -315,11 +319,13 @@ def pipeline_step(state, action, data, directory):
         if not decision.get('pipeline'):
             raise ValueError('classification is not eligible for the role pipeline')
         state = pipeline.start(info['tier'], info['risk'], decision['planner'], decision['reviewer'],
-                               config.open_primary, config.open_fallback, config.retries_before_escalation)
+                               config.open_primary, config.open_fallback, config.retries_before_escalation,
+                               mid=config.open_mid)
         selected = open_executor.resolve(runtime=data.get('executor_runtime'))
         state.update(task=data['text'], directory=str(directory), main_host=main_host,
                      executor_runtime=selected['runtime'],
-                     run_dir=tempfile.mkdtemp(prefix='aos-pipeline-'), checks=[], role_events=[])
+                     run_dir=tempfile.mkdtemp(prefix='aos-pipeline-'), checks=[], role_events=[],
+                     role_models={role: decision.get(role + '_model') for role in ('planner', 'reviewer', 'fixer')})
         return state
     if not isinstance(state, dict) or state.get('directory') != str(directory):
         raise ValueError('missing pipeline state or wrong working directory')

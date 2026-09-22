@@ -31,8 +31,11 @@ class RoutingConfig:
     premium_execution_default: bool = False
     open_primary: str = None
     open_fallback: str = None
+    open_mid: str = None
+    catalog: dict = field(default_factory=dict)
     premium_reviewer: str = None
     escalation_executor: str = None
+    premium_models: dict = field(default_factory=dict)
     open_max_tier: str = "T2"
     open_max_risk: str = "MEDIUM"
     open_t2_high_review: str = "premium"
@@ -79,13 +82,24 @@ def load_config(path=None):
     retries = (policy or {}).get('retries_before_escalation', 2)
     if type(retries) is not int or retries < 1:
         return empty
+    catalog = data.get('model_catalog', {})
+    if not isinstance(catalog, dict) or any(not isinstance(identity, str) or not isinstance(entry, dict)
+                                            for identity, entry in catalog.items()):
+        return empty
+    model_refs = (premium or {}).get('model_refs', {})
+    if not isinstance(model_refs, dict) or any(not isinstance(key, str) or not isinstance(value, str)
+                                               for key, value in model_refs.items()):
+        return empty
     return RoutingConfig(
         role_pipeline=(policy or {}).get("role_pipeline") is True,
         premium_execution_default=False,
         open_primary=primary.strip(),
         open_fallback=fallback.strip() if isinstance(fallback, str) and fallback.strip() else None,
+        open_mid=open_.get('mid').strip() if isinstance(open_.get('mid'), str) and open_.get('mid').strip() else None,
+        catalog=catalog,
         premium_reviewer=(premium or {}).get("reviewer"),
         escalation_executor=(premium or {}).get("escalation_executor"),
+        premium_models=model_refs,
         open_max_tier=(policy or {}).get("open_max_tier", "T2"),
         open_max_risk=(policy or {}).get("open_max_risk", "MEDIUM"),
         open_t2_high_review=(policy or {}).get("open_t2_high_review", "premium"),
@@ -104,6 +118,10 @@ class Decision:
     planner: str = field(default=None)
     reviewer: str = field(default=None)
     fixer: str = field(default=None)
+    planner_model: str = field(default=None)
+    reviewer_model: str = field(default=None)
+    fixer_model: str = field(default=None)
+    executor_cost_class: str = field(default=None)
     cross_model_review: bool = field(default=False)
     premium_execution_used: bool = field(default=False)
     premium_execution_reason: str = field(default=None)
@@ -124,11 +142,89 @@ def _model_provider(model):
     return model.split("/", 1)[0]
 
 
+_COST_CLASSES = ('CHEAP', 'MID', 'PREMIUM')
+
+
+def choose_model(config, role, *, capability_requirements=None, runtime=None, budget=None,
+                 candidates=None):
+    """Return the cheapest catalog model sufficient for a role, or None.
+
+    Catalog entries are data, deliberately: availability, price and capability
+    facts change independently of the host runtime. Missing catalog entries do
+    not invent a replacement model.
+    """
+    if role not in ('planner', 'executor', 'reviewer', 'fixer'):
+        raise ValueError('unknown routing role')
+    requirements = capability_requirements or {}
+    if not isinstance(requirements, dict) or any(not isinstance(k, str) or type(v) not in (int, float) or v < 0
+                                                for k, v in requirements.items()):
+        raise ValueError('capability requirements must be nonnegative scores')
+    budget = budget or {}
+    if not isinstance(budget, dict):
+        raise ValueError('budget must be an object')
+    ceiling = budget.get('max_cost_class', 'PREMIUM')
+    if ceiling not in _COST_CLASSES:
+        raise ValueError('invalid budget cost class')
+    allowed = set(candidates) if candidates is not None else None
+    eligible = []
+    for identity, entry in config.catalog.items():
+        if allowed is not None and identity not in allowed:
+            continue
+        if role not in entry.get('roles', ()) or entry.get('cost_class') not in _COST_CLASSES:
+            continue
+        if runtime is not None and runtime not in entry.get('compatible_runtimes', ()):
+            continue
+        if _COST_CLASSES.index(entry['cost_class']) > _COST_CLASSES.index(ceiling):
+            continue
+        scores = entry.get('capability_scores', {})
+        if any(scores.get(name, 0) < score for name, score in requirements.items()):
+            continue
+        for cost_key in ('input_cost_per_million', 'output_cost_per_million'):
+            limit = budget.get('max_' + cost_key)
+            value = entry.get(cost_key)
+            if limit is not None and (type(limit) not in (int, float) or limit < 0 or value is None or value > limit):
+                break
+        else:
+            # The catalog's availability flags are facts, not a model promotion.
+            availability = entry.get('benchmark', {}).get('available') or entry.get('historical', {}).get('available')
+            if availability:
+                eligible.append((
+                    _COST_CLASSES.index(entry['cost_class']),
+                    entry.get('input_cost_per_million') is None,
+                    entry.get('input_cost_per_million') or float('inf'),
+                    entry.get('output_cost_per_million') is None,
+                    entry.get('output_cost_per_million') or float('inf'), identity))
+    return min(eligible)[-1] if eligible else None
+
+
+def _eligible_open_model(config, model, *, capability_requirements=None, runtime=None, budget=None):
+    if not model:
+        return False
+    if not config.catalog:
+        return True
+    return choose_model(config, 'executor', capability_requirements=capability_requirements,
+                        runtime=runtime, budget=budget, candidates=(model,)) == model
+
+
+def _model_cost_class(config, model):
+    return config.catalog.get(model, {}).get('cost_class') if model else None
+
+
+def _requirements(capability_requirements, uncertainty, security_impact):
+    result = dict(capability_requirements or {})
+    if uncertainty and str(uncertainty).upper() in ('HIGH', 'UNSETTLED'):
+        result['reasoning'] = max(result.get('reasoning', 0), 4)
+    if security_impact and str(security_impact).upper() in ('HIGH', 'CRITICAL'):
+        result['security'] = max(result.get('security', 0), 4)
+    return result
+
+
 def _decide(tier, risk, *, config=None, manual_override=False,
            open_primary_available=True, open_fallback_available=True,
            premium_reviewer_available=True, observable_check=False,
            failed_open_attempts=0, complexity=None, uncertainty=None,
-           security_impact=None, capabilities=None):
+           security_impact=None, capabilities=None, capability_requirements=None,
+           budget=None, executor_runtime=None, mid_available=True):
     """Pure decision. `tier` in T0/T1/T2/T3, `risk` in LOW/MEDIUM/HIGH/CRITICAL.
 
     Args mirror what the orchestrating session observes. Extra classification
@@ -144,6 +240,7 @@ def _decide(tier, risk, *, config=None, manual_override=False,
     risks = ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')
     if tier not in tiers or risk not in risks:
         raise ValueError('invalid tier or risk')
+    capability_requirements = _requirements(capability_requirements, uncertainty, security_impact)
     if risk == 'CRITICAL':
         return Decision(executor='main', verify='needs_approval',
                         rationale=('CRITICAL risk requires human approval',))
@@ -177,6 +274,8 @@ def _decide(tier, risk, *, config=None, manual_override=False,
                             rationale=("risk above open ceiling", "mandatory premium review"))
         return _open_decision(config, open_primary_available, open_fallback_available,
                               failed_open_attempts, verify="premium_review",
+                              capability_requirements=capability_requirements, budget=budget,
+                              runtime=executor_runtime, mid_available=mid_available,
                               rationale=("open allowed by policy", "observable check present",
                                          "premium review mandatory"))
 
@@ -191,10 +290,14 @@ def _decide(tier, risk, *, config=None, manual_override=False,
                 verify = "open_mixed"  # deterministic + open review
             return _open_decision(config, open_primary_available, open_fallback_available,
                                   failed_open_attempts, verify=verify,
+                                  capability_requirements=capability_requirements, budget=budget,
+                                  runtime=executor_runtime, mid_available=mid_available,
                                   rationale=(tier, risk, "open executor"))
         # T0/T1
         return _open_decision(config, open_primary_available, open_fallback_available,
                               failed_open_attempts, verify="targeted",
+                              capability_requirements=capability_requirements, budget=budget,
+                              runtime=executor_runtime, mid_available=mid_available,
                               rationale=(tier, risk, "open executor"))
 
     # 6. Legacy fallback (backward compatibility): the task stays on the main
@@ -210,7 +313,8 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kw
     decision = _decide(tier, risk, config=config, **kwargs)
     premium_used = decision.executor == 'premium'
     decision = replace(decision, premium_execution_used=premium_used,
-                       premium_execution_reason='; '.join(decision.rationale) if premium_used else None)
+                       premium_execution_reason='; '.join(decision.rationale) if premium_used else None,
+                       executor_cost_class=_model_cost_class(config, decision.model))
     if not config.role_pipeline or kwargs.get('manual_override') or risk == 'CRITICAL':
         return decision
     families = ('codex', 'claude') if premium_families is None else tuple(premium_families)
@@ -224,9 +328,14 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kw
     if reviewer not in families:
         reviewer = None  # Never relabel same-family review as cross-model.
     needs_review = needs_plan or risk == 'HIGH'
+    planner_model = config.premium_models.get(chosen) if needs_plan and chosen else None
+    reviewer_model = config.premium_models.get(reviewer) if needs_review and reviewer else None
     return replace(decision, planner=chosen if needs_plan else None,
                    reviewer=reviewer if needs_review else None,
                    fixer='open' if decision.executor == 'open' else decision.executor,
+                   planner_model=planner_model,
+                   reviewer_model=reviewer_model,
+                   fixer_model=decision.model if decision.executor == 'open' else None,
                    cross_model_review=needs_review and reviewer is not None,
                    verify='premium_review' if needs_review else 'deterministic',
                    pipeline=decision.executor == 'open' and needs_plan)
@@ -245,19 +354,28 @@ def _high_review(config, premium_reviewer_available):
 
 
 def _open_decision(config, primary_available, fallback_available, failed_attempts, *,
-                   verify, rationale):
+                   verify, rationale, capability_requirements=None, budget=None, runtime=None,
+                   mid_available=True):
     # Semantics: the primary gets `retries` attempts; beyond that the fallback
     # gets `retries` more; when both are used up (or unavailable) it escalates
     # to premium — never a bogus open run with no model.
     retries = config.retries_before_escalation
     primary = config.open_primary
     fallback = config.open_fallback if config.open_fallback else None
-    usable_fallback = fallback if fallback_available else None
-    if failed_attempts >= retries * 2 or (not primary_available and not usable_fallback):
+    primary = config.open_primary if primary_available and _eligible_open_model(
+        config, config.open_primary, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
+    usable_fallback = fallback if fallback_available and _eligible_open_model(
+        config, fallback, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
+    mid = config.open_mid if mid_available and _eligible_open_model(
+        config, config.open_mid, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
+    if failed_attempts >= retries * 2 and mid:
+        return Decision(executor='open', model=mid, provider=_model_provider(mid), routed_by_aos=True,
+                        verify=verify, retries=retries, rationale=(*rationale, 'mid open'))
+    if failed_attempts >= retries * 2 or (not primary and not usable_fallback and not mid):
         return Decision(executor="premium", verify=verify,
                         escalation_target=config.escalation_executor,
                         rationale=(*rationale, "open unavailable or exhausted"))
-    if failed_attempts >= retries or not primary_available:
+    if failed_attempts >= retries or not primary:
         if usable_fallback:
             return Decision(executor="open", model=fallback,
                             provider=_model_provider(fallback),

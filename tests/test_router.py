@@ -97,6 +97,46 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(d.executor, "premium")
         self.assertIn("exhausted", d.rationale[-1])
 
+    def test_catalog_selects_the_cheapest_model_that_meets_role_capabilities(self):
+        catalog = {
+            'vendor/cheap': {'provider': 'vendor', 'compatible_runtimes': ['opencode'],
+                             'cost_class': 'CHEAP', 'capability_scores': {'coding': 2},
+                             'context': 32000, 'input_cost_per_million': 0.1,
+                             'output_cost_per_million': 0.2, 'roles': ['executor'],
+                             'benchmark': {'available': True}, 'historical': {'available': True}},
+            'vendor/mid': {'provider': 'vendor', 'compatible_runtimes': ['opencode'],
+                           'cost_class': 'MID', 'capability_scores': {'coding': 4},
+                           'context': 128000, 'input_cost_per_million': 1.0,
+                           'output_cost_per_million': 2.0, 'roles': ['executor'],
+                           'benchmark': {'available': True}, 'historical': {'available': True}},
+            'vendor/premium': {'provider': 'vendor', 'compatible_runtimes': ['opencode'],
+                               'cost_class': 'PREMIUM', 'capability_scores': {'coding': 5},
+                               'context': 128000, 'input_cost_per_million': 10.0,
+                               'output_cost_per_million': 20.0, 'roles': ['executor'],
+                               'benchmark': {'available': True}, 'historical': {'available': True}},
+        }
+        config = router.RoutingConfig(catalog=catalog)
+        self.assertEqual(router.choose_model(config, 'executor',
+                                              capability_requirements={'coding': 4}, runtime='opencode'),
+                         'vendor/mid')
+
+    def test_catalog_budget_can_forbid_a_model_without_silently_using_premium(self):
+        catalog = {'vendor/mid': {'provider': 'vendor', 'compatible_runtimes': ['opencode'],
+                                  'cost_class': 'MID', 'capability_scores': {'coding': 4},
+                                  'context': 128000, 'input_cost_per_million': 1.0,
+                                  'output_cost_per_million': 2.0, 'roles': ['executor'],
+                                  'benchmark': {'available': True}, 'historical': {'available': True}}}
+        self.assertIsNone(router.choose_model(router.RoutingConfig(catalog=catalog), 'executor',
+                                               capability_requirements={'coding': 4}, runtime='opencode',
+                                               budget={'max_cost_class': 'CHEAP'}))
+
+    def test_open_ladder_uses_configured_mid_only_after_primary_and_cheap_fallback(self):
+        config = router.RoutingConfig(open_primary='vendor/cheap-primary', open_fallback='vendor/cheap-fallback',
+                                      open_mid='vendor/mid', retries_before_escalation=2)
+        d = router.decide('T1', 'LOW', config=config, failed_open_attempts=4)
+        self.assertEqual((d.executor, d.model), ('open', 'vendor/mid'))
+        self.assertIn('mid open', d.rationale)
+
     # 7. T2/HIGH -> open only when policy and an observable check allow it, then
     #    premium review is mandatory. Without the observable check, premium direct.
     def test_t2_high_without_observable_check_stays_premium(self):
@@ -125,6 +165,9 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(d.verify, "premium_review")
         self.assertEqual(d.planner, self.config.escalation_executor)
         self.assertEqual(d.reviewer, 'claude')
+        self.assertEqual(d.planner_model, self.config.premium_models[d.planner])
+        self.assertEqual(d.reviewer_model, self.config.premium_models[d.reviewer])
+        self.assertEqual(d.fixer_model, self.config.open_primary)
 
 
     # 9. CRITICAL -> no regression: stays on main with approval, nothing routed open.

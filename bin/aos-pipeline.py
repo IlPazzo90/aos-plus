@@ -8,7 +8,7 @@ FINDING_FIELDS = ('id', 'severity', 'category', 'file', 'location', 'finding',
                   'evidence', 'required_fix', 'confidence')
 
 
-def start(tier, risk, planner, reviewer, primary, fallback, attempts):
+def start(tier, risk, planner, reviewer, primary, fallback, attempts, mid=None):
     if tier not in ('T0', 'T1', 'T2', 'T3') or risk not in ('LOW', 'MEDIUM', 'HIGH'):
         raise ValueError('pipeline does not authorize CRITICAL or unknown classifications')
     if not primary or type(attempts) is not int or attempts < 1:
@@ -17,7 +17,7 @@ def start(tier, risk, planner, reviewer, primary, fallback, attempts):
     return dict(tier=tier, risk=risk, planner=planner if complex_task else None,
                 reviewer=reviewer if complex_task or risk == 'HIGH' else None,
                 stage='plan' if complex_task else 'execute', role='executor',
-                primary=primary, fallback=fallback, model=primary, attempts=attempts,
+                primary=primary, fallback=fallback, mid=mid, model=primary, attempts=attempts,
                 failures=0, subtask=0, plan=None, findings=[], verdicts=[], review_rounds=0,
                 findings_total=0, findings_confirmed=0, findings_refuted=0,
                 open_retry_count=0, premium_execution_used=False,
@@ -65,6 +65,8 @@ def fail(state, evidence):
         state.update(stage='execute', model=state['primary'])
     elif state['fallback'] and count < limit * 2:
         state.update(stage='execute', model=state['fallback'])
+    elif state.get('mid') and count == limit * 2:
+        state.update(stage='execute', model=state['mid'])
     else:
         state.update(stage='escalate', premium_execution_reason='open_attempts_exhausted')
 
@@ -168,6 +170,7 @@ def metrics(state):
         result[role + '_runtime'] = selected[-1].get('runtime') if selected else None
         result[role + '_provider'] = selected[-1].get('provider') if selected else None
         result[role + '_tokens'] = None if any(v is None for v in values) else sum(values)
+        result[role + '_cost_class'] = selected[-1].get('cost_class') if selected else None
     for key in ('premium_execution_used','premium_execution_reason','findings_total',
                 'findings_confirmed','findings_refuted','open_retry_count'):
         result[key] = state.get(key)

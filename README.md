@@ -1,7 +1,8 @@
 # AOS Plus — AI Development Operating System
 
-> **WIP sospeso, non una release:** gli adapter nativi non sono approvati per uso
-> operativo. Rilievo HIGH sulle regole Codex e un test benchmark rosso aperti.
+> **WIP, non una release:** `codex-cli` è escluso dall'esecuzione open perché la prova
+> negativa della sua policy restrittiva non è passata. Il benchmark non conta più un
+> timeout come successo. Restano review indipendente e benchmark comparativo da chiudere.
 > Ripresa: [passaggio a Claude](docs/verifiche/premium-plan-open-execute/HANDOFF-2026-09-22.md).
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
