@@ -153,7 +153,7 @@ Piano in [CLOSING-PLAN.md](CLOSING-PLAN.md). Ogni gate ha comando, esito e limit
 | G2 host Codex | **parziale** | `codex exec` con `$aos` sulla stessa fixture: classifica T2, avvia la pipeline con `main_host codex-cli`, misura, `plan` fallisce dentro il sandbox workspace-write di Codex (`claude exited 1`: il CLI annidato non può scrivere nella sua home), riesce con autorizzazione estesa; DeepSeek scrive i file, poi 402 budget Gateway; l'host riporta `execute` incompleto, non PASS. Nessuna sessione TTY registrata. `live/codex-host-t2-state.json`. Limite operativo: dal host Codex i ruoli premium annidati richiedono l'escalation fuori dal sandbox. |
 | G4 benchmark ampio | **non eseguito, per scelta** | Corsa fermata a 3 task su 20 dall'utente: ore di esecuzione per una decisione che non si prende comunque qui. Il benchmark del 2026-09-20 resta autorevole; i tre record e la ragione in `docs/misure/bench/2026-09-22-claude-code/README.md`. Il codice del gate esiste ed è testato (`--planners`, `--review-replay`). |
 | G5 benchmark planner/reviewer | **non eseguito, per scelta** | Stessa ragione: gli strumenti ci sono, la corsa no. Nessun candidato MID è stato promosso; i loro punteggi restano soglie di policy dichiarate, non misure. |
-| G1 review indipendente | **eseguito, 3 round** | Round 1: 2 BLOCKER + 4 MAJOR; round 2: 1 BLOCKER + 2 MAJOR, tutti nuovi e tutti riprodotti meccanicamente prima della correzione. Verbale in REVIEW-LOG.md, report in `round*-codex.md`. |
+| G1 review indipendente | **eseguito, 6 round (tetto), verificato con riserve** | 14 finding, tutti nuovi, tutti riprodotti meccanicamente prima della correzione, nessuno confutato: round 1 (2 BLOCKER + 4 MAJOR), 2 (1+2), 3 (1+3), 4 (1+1), 5 (1+2), 6 (1+1). Nessun BLOCKER aperto, nessun round degradato. Riserva principale: le correzioni del sesto round non hanno ricevuto un round indipendente, perché il tetto era raggiunto. Verbale e verdetto in [REVIEW-LOG.md](REVIEW-LOG.md), report in `rounds/round*-codex.md`, brief in [BRIEF.md](BRIEF.md). |
 
 Blocco esterno incontrato: **AI Gateway Vercel, budget team 50 $ esaurito** durante il
 primo task del bench G4 (`402 Team budget exceeded. Current spend: $50.10`). L'utente
@@ -186,8 +186,10 @@ dimostrabile. Codex resta host, planner MID, reviewer cross-family ed escalation
 premium: è lì che vive il gate indipendente, ed è intatto.
 
 **Claude Code è l'unico harness open**, con `os_isolation: seatbelt`. Record finale
-`isolation/claude-code-seatbelt.json`: 13/13 bersagli vietati negati, entrambi i
-controlli permessi eseguiti, 22 chiamate agli strumenti registrate. Il limite di
+`isolation/claude-code-seatbelt.json`, ripreso dopo ogni cambio del criterio di
+giudizio (i record precedenti restano in `isolation/history/`): 13/13 bersagli
+vietati negati, 0 `unknown`, entrambi i controlli permessi eseguiti, 19 chiamate
+correlate col risultato riportato dal runtime. Il limite di
 questa scelta è dichiarato: nessun harness di riserva — se il contratto del CLI
 cambia, l'esecuzione open si ferma al controllo di versione invece di ripiegare — e
 i modelli raggiungibili sono quelli che il provider serve sul protocollo Anthropic

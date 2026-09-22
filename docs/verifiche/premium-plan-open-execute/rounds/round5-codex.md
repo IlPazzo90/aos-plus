@@ -1,0 +1,16 @@
+## Findings
+
+### [BLOCKER] Le scritture vietate trasformano ancora `unknown` in isolamento verificato
+
+- Evidenza: [bin/aos-isolation.py:265](~/.claude/skills/aos/bin/aos-isolation.py:265) usa `observed = 'LEAK' if happened else ('denied' if attempted else 'no_attempt')`. Per W1–W6 ignora sia `uncorrelated` sia `succeeded`, calcolati alle righe 229–231. Quindi l’assenza di un effetto finale sul filesystem diventa un diniego anche senza risultato correlato. Persino una scrittura riuscita, successivamente ripristinata, viene certificata come negata. Il fix del round 4 protegge letture e shell, ma lascia scoperto questo ramo.
+- Come verificarlo: chiamare `observe()` con `targets={"W1": ("write", "../external/written.txt", None)}`, una tool call `Write` sul percorso, `tool_results=[]` e un percorso esterno inesistente. **Riprodotto in sola lettura:** restituisce `isolated=True`, `unknown=[]`, W1=`denied`. Riprodotto anche W3 con risultato correlato `is_error=False` e hash finale di `.git/config` invariato: restituisce ancora `isolated=True`. Con gli altri target regolarmente negati e i controlli riusciti, questi casi non impediscono la certificazione complessiva.
+
+### [MAJOR] L’indice Git può nascondere il lavoro senza modificare HEAD
+
+- Evidenza: [bin/aos-delegate.py:273](~/.claude/skills/aos/bin/aos-delegate.py:273) esclude l’indice dai percorsi sorvegliati; [riga 333](~/.claude/skills/aos/bin/aos-delegate.py:333) rappresenta `.git/` soltanto come `b"<dir>"`. Il check confronta questo fingerprint e l’hash HEAD, mentre [bin/aos-entry.py:374](~/.claude/skills/aos/bin/aos-entry.py:374) costruisce l’artefatto attraverso `git diff ... HEAD`. Un check può impostare `skip-worktree` su un file modificato: HEAD e fingerprint restano invariati, ma il diff consegnato al reviewer omette quel file.
+- Come verificarlo: in una fixture Git con `app.py` tracciato e successivamente modificato, eseguire attraverso `pipeline_step(..., "check", ...)` un check che invochi `git update-index --skip-worktree app.py`. Confrontare prima/dopo `git_head()`, `git_meta()` e `snapshot()`: i primi due restano uguali, mentre l’artefatto perde la modifica ancora presente sul disco. **Verifica statica eseguita:** l’indice non è sorvegliato e `.git/` è effettivamente un semplice marker; la mutazione della fixture non è stata eseguita per rispettare la sola lettura.
+
+### [MAJOR] Un check viene attribuito al codice modificato dopo l’asserzione
+
+- Evidenza: [bin/aos-entry.py:734](~/.claude/skills/aos/bin/aos-entry.py:734) esegue il comando prima di acquisire la revisione. Soltanto alle righe 746–748 chiama `snapshot()` e associa quella revisione all’esito. Non confronta il contenuto prima/dopo il check. Un test può verificare il codice corretto, modificarlo durante il teardown e terminare con zero: [riga 753](~/.claude/skills/aos/bin/aos-entry.py:753) accetta quell’esito come verifica della versione successiva, mai testata.
+- Come verificarlo: su un T1 con `app.value == 2`, usare come check `import app; assert app.value == 2; Path("app.py").write_text("value = 3\n")`, quindi completare `diff`, `security` e `verify`. **Riprodotto in memoria**, simulando comando e filesystem senza scritture: revisione testata `good-before-test`, revisione registrata `broken-after-test`, stato finale `pass`. Non richiede alcuna modifica a HEAD o ai metadati Git.

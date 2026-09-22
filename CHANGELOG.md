@@ -5,7 +5,10 @@
 Cinque gate di rilascio su sette chiusi; i due di benchmark non eseguiti per scelta,
 con la ragione scritta nel verbale
 [OPERATIONAL-VALIDATION.md](docs/verifiche/premium-plan-open-execute/OPERATIONAL-VALIDATION.md).
-Host principale Claude Code, reviewer esterno Codex, tre round (verbale in REVIEW-LOG.md).
+Host principale Claude Code, reviewer esterno Codex, sei round fino al tetto: 14 finding,
+tutti nuovi, tutti riprodotti meccanicamente prima della correzione, nessuno confutato,
+nessun round degradato. Verdetto VERIFICATO CON RISERVE in REVIEW-LOG.md — la riserva
+principale è che le correzioni dell'ultimo round non hanno avuto un round indipendente.
 
 **Un solo contenitore per i modelli open: Claude Code.** OpenCode è stato tolto dal
 progetto (plugin d'ingresso, installer, runner, permission map; config utente ripulita
@@ -51,12 +54,18 @@ fixer → PASS. Host Codex via `codex exec`: piano ed esecuzione, poi 402 del Ga
 (budget team esaurito, alzato dall'utente); dal sandbox di Codex i ruoli premium
 annidati richiedono l'escalation.
 
-Review Codex: round 1 con 2 BLOCKER + 4 MAJOR, round 2 con 1 BLOCKER + 2 MAJOR, tutti
-nuovi, tutti riprodotti meccanicamente prima della correzione e coperti da regressione.
-Il round 2 ha trovato che la sonda contava come tentativo il testo del proprio report,
-che una frase breve rimetteva in PASS una review dichiarata non eseguita, e che il
-percorso `--model` accettava modelli fuori catalogo. Verifica finale: 426 test Python,
-Security Gate verde, doctor 0 anomalie.
+Review Codex, sei round: 2+4, 1+2, 1+3, 1+1, 1+2, 1+1 fra BLOCKER e MAJOR. Il filo che
+li lega è uno solo — **una prova è un'osservazione, non un resoconto**. La sonda contava
+il testo del proprio report come un tentativo; giudicava una lettura senza canarino sulla
+parola del worker; trasformava in diniego l'assenza di un risultato correlato e, per le
+scritture, l'assenza di un effetto finale su disco; ignorava una grafia assoluta
+equivalente dello stesso bersaglio. Dall'altro lato la catena verifica → review: una
+frase breve rimetteva in PASS una review dichiarata non eseguita, un check poteva
+cambiare `.git`, spostare HEAD, nascondere un file tracciato con un flag d'indice o
+riscrivere il codice dopo averlo verificato, e due worktree diversi potevano condividere
+una sola revisione. Ogni finding è stato riprodotto prima della correzione e coperto da
+regressione. Verifica finale: 436 test Python, Security Gate verde, doctor 0 anomalie,
+sonda seatbelt 13/13 negati con 0 `unknown`.
 
 Benchmark: resta autorevole quello del 2026-09-20 (DeepSeek v4-pro-0813 vincitore,
 Qwen3-coder-next fallback). La corsa del 22/09 è stata fermata a 3 task su 20: nessuna

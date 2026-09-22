@@ -361,6 +361,19 @@ class RuntimeTests(unittest.TestCase):
                 'import app; assert app.value == 2; open("app.py","w").write("value = 3\\n")']))
         self.assertEqual(self.state['checks'], [])
 
+    def test_two_worktrees_never_share_one_revision(self):
+        # Round 6: the revision hashed the rendered artefact, where a new file whose
+        # content spells `NEW FILE <other>` is indistinguishable from two files. A
+        # check could then create unverified code and keep its recorded revision.
+        (self.repo / 'app.py').write_text('value = 2\n')
+        (self.repo / 'a.txt').write_text('harmless\nNEW FILE ab.py\nvalue = 0')
+        first, rendered_first = entry.snapshot(self.repo)
+        (self.repo / 'a.txt').write_text('harmless')
+        (self.repo / 'ab.py').write_text('value = 0')
+        second, rendered_second = entry.snapshot(self.repo)
+        self.assertEqual(rendered_first, rendered_second)   # the text alone cannot tell them apart
+        self.assertNotEqual(first, second)
+
     def test_context_red_blocks_before_worker(self):
         self.step('plan')
         with patch.object(entry.operations, 'prepare_context', side_effect=ValueError('context still RED')):

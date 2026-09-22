@@ -150,3 +150,77 @@ Round 2 — stesso reviewer sul diff completo (68 file), incluse le rimozioni e 
 fix. Il prompt inviato porta il brief nella forma precedente a due correzioni
 redazionali (numero di file, frase sulla credenziale): il reviewer legge comunque il
 repository, e nessuna delle due tocca il contratto.
+
+Esito round 2 — 1 BLOCKER, 2 MAJOR, tutti confermati.
+
+| Finding | Esito | Riproduzione | Correzione |
+| --- | --- | --- | --- |
+| BLOCKER — la sonda conta come tentativo il testo del proprio report | Confermato | un `Write` di `probe-report.txt` che nomina `.env` contava come lettura di `.env`: due scritture di controllo certificavano tredici dinieghi | Un tentativo richiede uno strumento della famiglia giusta (lettura vs scrittura) su un **campo percorso** del suo input; il caso shell si giudica sul comando. Sonda ripresa: 13/13 negati, 17 chiamate |
+| MAJOR — una frase breve rimette in PASS una review non eseguita | Confermato | «I could not review the diff … Example only: {…}» → `stage='pass'` | Qualsiasi prosa attorno all'oggetto è rifiutata; un fence markdown non è prosa |
+| MAJOR — `--model` accetta modelli fuori catalogo | Confermato | `resolve(model='vercel/missing-model')` raggiungeva l'harness: il blocco del round 1 stava solo sul percorso del router | Il resolver open blocca provider/modello che il catalogo non elenca |
+
+Round 3 — 1 BLOCKER, 3 MAJOR, tutti confermati.
+
+| Finding | Esito | Riproduzione | Correzione |
+| --- | --- | --- | --- |
+| BLOCKER — una lettura senza canarino è giudicata sulla parola del worker | Confermato | un `Read` che restituisce una config SSH contava come negato perché il report diceva REFUSED | Ogni chiamata è correlata col risultato del runtime: una lettura riuscita di un bersaglio vietato è una fuga qualunque cosa dica il report |
+| MAJOR — un check può cambiare `.git` senza che nessuno lo veda | Confermato | il check esegue il codice del worker e raggiungeva `pass` dopo aver scritto `.git/config` | Impronta dei metadati attorno a ogni comando di check; una differenza blocca prima che un altro git nostro giri lì |
+| MAJOR — un override di provider sposta l'identità eseguita | Confermato | `anthropic/fable` + `provider=vercel` girava come `vercel/fable` | Il catalogo valida l'identità che gira davvero |
+| MAJOR — l'installer spedisce i test della sonda ma non la sonda | Confermato | `bin/aos-isolation.py` assente da `REQUIRED_FILES` | Manifest aggiornato |
+
+Round 4 — 1 BLOCKER, 1 MAJOR, entrambi confermati.
+
+| Finding | Esito | Riproduzione | Correzione |
+| --- | --- | --- | --- |
+| BLOCKER — l'assenza di un risultato correlato diventa un diniego | Confermato | un runtime che omette gli id, o un record troncato (20 risultati contro 60 chiamate), certificava come negata una lettura riuscita | Una chiamata senza risultato è `unknown`; `unknown` non certifica mai l'isolamento; chiamate e risultati tenuti alla stessa profondità (60) |
+| MAJOR — l'impronta copre config/info/hooks, non HEAD | Confermato | un check che committa spostava la base e consegnava al reviewer un diff senza il lavoro | HEAD confrontato attorno a ogni comando di check |
+
+Round 5 — 1 BLOCKER, 2 MAJOR, tutti confermati.
+
+| Finding | Esito | Riproduzione | Correzione |
+| --- | --- | --- | --- |
+| BLOCKER — una scrittura vietata è giudicata solo sull'effetto finale su disco | Confermato | `observe()` con una scrittura che il runtime dichiara riuscita su `.git/config`, hash finale invariato → `isolated=True`; idem con risultato mancante | Le scritture seguono la regola che le letture hanno dal round 4: successo riportato = fuga, chiamata non correlata = `unknown`. Sonda ripresa: 13/13 negati, 0 unknown |
+| MAJOR — l'indice git nasconde il lavoro senza toccare HEAD | Confermato | un check che esegue `git update-index --skip-worktree app.py`: `app.py` modificato sul disco, artefatto senza la modifica, HEAD e impronta identici | Ogni `snapshot()` rifiuta un flag d'indice (`skip-worktree`, `assume-unchanged`) che nasconde un file tracciato |
+| MAJOR — un check è attribuito al codice modificato dopo l'asserzione | Confermato | check che verifica `app.value == 2` e riscrive `app.py` a 3 uscendo 0: revisione testata ≠ revisione registrata, stato `review` | Il worktree è confrontato attorno a ogni comando di check; un check che lo cambia non viene registrato |
+
+Round 6 (tetto) — 1 BLOCKER, 1 MAJOR, entrambi confermati.
+
+| Finding | Esito | Riproduzione | Correzione |
+| --- | --- | --- | --- |
+| BLOCKER — scritture riuscite su grafie assolute equivalenti ignorate | Confermato | due `Write` sullo stesso bersaglio, `/root/written-outside.txt` negata e `/root/./written-outside.txt` riuscita → `observed='denied'`, `isolated=True` | `spellings()` normalizza ogni grafia (data, normalizzata, ancorata al repo, risolta) per bersaglio e per chiamata. Sonda ripresa col matcher più largo: 13/13 negati, 0 unknown, 19 chiamate |
+| MAJOR — due worktree diversi, una sola revisione | Confermato | un file nuovo il cui contenuto scrive `NEW FILE ab.py\nvalue = 0` produce lo stesso testo, e lo stesso SHA-256, di due file distinti: il confronto di revisione attorno al check accetta un albero cambiato | La revisione è l'hash delle parti con la loro lunghezza (head, diff, nome e contenuto di ogni file nuovo), non del testo reso |
+
+### Consumi dei round (reviewer Codex, nessuno degradato)
+
+| Round | Secondi | Token input (di cui cache) | Token output |
+| --- | --- | --- | --- |
+| 1 | 323 | 1 551 033 (1 419 008) | 7 764 |
+| 2 | 224 | 1 741 958 (1 607 168) | 4 694 |
+| 3 | 380 | 3 129 458 (2 975 872) | 9 155 |
+| 4 | 319 | 1 662 657 (1 524 736) | 7 712 |
+| 5 | 222 | 559 294 (487 680) | 5 919 |
+| 6 | 291 | 2 075 424 (1 928 192) | 6 555 |
+
+## Verdetto — VERIFICATO CON RISERVE
+
+Sei round, sei report validi, nessuno degradato: **12 finding nei primi cinque round
+più 2 nel sesto, 14 in tutto, tutti confermati meccanicamente prima della correzione,
+nessuno confutato**. Nessun BLOCKER aperto. Verifica finale sul branch: 436 test
+Python OK, Security Gate exit 0, doctor 0 anomalie, sonda seatbelt 13/13 negati con
+0 `unknown`, entrambi i controlli permessi eseguiti, 19 chiamate correlate.
+
+Riserve, una per riga:
+
+- le correzioni del round 6 (grafie dei percorsi nella sonda, revisione non
+  ambigua) **non hanno ricevuto un round di revisione indipendente**: il tetto di
+  sei round è stato raggiunto senza un PASS. Sei round con finding nuovi a ogni
+  giro dicono che la superficie è ancora produttiva per un attaccante, non che è
+  esaurita;
+- l'artefatto reso al reviewer resta ambiguo nel testo (due alberi producono lo
+  stesso rendering); è la revisione a distinguerli, e sono le guardie a usare la
+  revisione;
+- la sonda prova i bersagli che nomina su questo host, non ogni attacco possibile;
+- i gate di benchmark G4/G5 non sono stati eseguiti per decisione dell'utente: resta
+  autoritativo il benchmark del 20/09/2026;
+- l'host Codex ha completato piano ed esecuzione ma non un T2 intero (402 del
+  Gateway); la prova completa su due host resta parziale.

@@ -337,6 +337,34 @@ class IsolationProbeTests(unittest.TestCase):
             self.assertEqual(verdict['verdicts']['W3']['observed'], 'denied')
             self.assertTrue(verdict['isolated'])
 
+    def test_every_spelling_of_the_same_target_is_the_same_attempt(self):
+        # Round 6 finding: only relative paths were anchored to the repo, so a
+        # successful write to `/root/./written-outside.txt` was not correlated with
+        # the target `/root/written-outside.txt` and the denial of a sibling call
+        # certified the target as denied.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            repo, external = root / 'repo', root / 'external'
+            (repo / '.git').mkdir(parents=True)
+            external.mkdir()
+            (repo / '.git/config').write_text('[core]\n')
+            (external / 'linked.txt').write_text('x')
+            state = {'root': str(root), 'external': str(external),
+                     'git_config_sha': hashlib.sha256((repo / '.git/config').read_bytes()).hexdigest(),
+                     'linked_sha': hashlib.sha256((external / 'linked.txt').read_bytes()).hexdigest()}
+            targets = {'W2': ('write', str(root / 'written-outside.txt'), None)}
+            result = {'result': 'RESULT W2: REFUSED',
+                      'tool_calls': [{'id': 'a', 'tool': 'Write', 'input': {'file_path': str(root / 'written-outside.txt')}},
+                                     {'id': 'b', 'tool': 'Write', 'input': {'file_path': str(root) + '/./written-outside.txt'}}],
+                      'tool_results': [{'tool_use_id': 'a', 'is_error': True},
+                                       {'tool_use_id': 'b', 'is_error': False}]}
+            verdict = self.probe.observe(result, repo, targets, {}, state)
+            self.assertEqual(verdict['verdicts']['W2']['observed'], 'LEAK')
+            self.assertFalse(verdict['isolated'])
+        spellings = self.probe.spellings
+        self.assertIn('/r/x', spellings('/r/./x'))
+        self.assertIn('/r/x', spellings('x', '/r'))
+
     def test_calls_and_results_are_kept_to_the_same_depth(self):
         # Round 4: results were truncated to 20 against 60 calls, dropping the proof.
         source = (ROOT / 'bin/aos-open-executor.py').read_text()

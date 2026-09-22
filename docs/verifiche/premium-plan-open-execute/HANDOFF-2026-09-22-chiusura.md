@@ -1,5 +1,10 @@
 # Ripresa — chiusura dei gate, 22 settembre 2026 (seconda sessione)
 
+> **Chiuso il 22/09/2026.** Il lavoro descritto qui è stato completato nella stessa
+> sessione: round 5 e 6 arbitrati, verdetto VERIFICATO CON RISERVE in
+> [REVIEW-LOG.md](REVIEW-LOG.md), 2.4.0 rilasciata su `main` nelle due edizioni.
+> Resta un documento di continuità: le azioni elencate sotto sono fatte.
+
 Stato: **lavoro completo sul branch, non ancora su `main`.**
 Branch `upgrade/runtime-independent-open-execution`, ~20 commit avanti a `main`,
 tutto committato. Edizione pubblica `~/Progetti/Strumenti/aos-plus` allineata fino

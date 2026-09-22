@@ -388,11 +388,19 @@ def snapshot(directory):
         path = directory / name
         if path.is_symlink() or path.stat().st_size > 100000:
             raise ValueError('new file requires explicit bounded review: ' + name)
-        extra.append('NEW FILE ' + name + '\n' + path.read_text())
-    artifact = diff + '\n'.join(extra)
+        extra.append((name, path.read_text()))
+    artifact = diff + '\n'.join('NEW FILE ' + name + '\n' + text for name, text in extra)
     if len(artifact) > 160000:
         raise ValueError('diff exceeds review budget; decompose the review explicitly')
-    return hashlib.sha256((head + artifact).encode()).hexdigest(), artifact
+    # Round 6: the revision hashed the rendered text, where a new file whose content
+    # spells `NEW FILE <other>` is indistinguishable from two files — two different
+    # worktrees, one revision, and the guards that compare revisions were blind to
+    # the difference. Each part is hashed with its own length.
+    digest = hashlib.sha256()
+    for part in [head, diff] + [value for pair in extra for value in pair]:
+        chunk = part.encode()
+        digest.update(str(len(chunk)).encode() + b'\0' + chunk)
+    return digest.hexdigest(), artifact
 
 
 def _estimated_cost(entry, usage):

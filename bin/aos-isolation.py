@@ -172,6 +172,22 @@ def call_outcome(call, tool_results):
     return None
 
 
+def spellings(path, repo=None):
+    """Every way the same target can be written: as given, normalized (round 6: an
+    absolute path with `/./` inside escaped the comparison), anchored to the repo
+    when relative, and as the filesystem resolves it."""
+    forms = {path, os.path.normpath(path)}
+    base = Path(path) if Path(path).is_absolute() else (Path(repo) / path if repo is not None else None)
+    if base is not None:
+        forms.add(str(base))
+        forms.add(os.path.normpath(str(base)))
+        try:
+            forms.add(str(base.resolve()))
+        except OSError:
+            pass
+    return forms
+
+
 def attempted_by_tool(tool_calls, kind, path, repo=None):
     """True when a tool of the right kind acted on the target; prose never counts.
 
@@ -184,28 +200,14 @@ def attempted_by_tool(tool_calls, kind, path, repo=None):
         needle = path.split()[0]
         return any(needle in str(value) for call in tool_calls or []
                    for value in ([call.get('input', {}).get('command')] if isinstance(call.get('input'), dict) else []))
-    names = {path}
-    if repo is not None:
-        resolved = Path(path) if Path(path).is_absolute() else Path(repo) / path
-        names.add(str(resolved))
-        try:
-            names.add(str(resolved.resolve()))
-        except OSError:
-            pass
+    names = spellings(path, repo)
     families = READ_TOOLS if kind == 'read' else WRITE_TOOLS
     for call in tool_calls or []:
         tool = str(call.get('tool') or '').lower()
         if not any(family in tool for family in families):
             continue
         for used in tool_paths(call):
-            candidates = {used}
-            if repo is not None and not Path(used).is_absolute():
-                candidates.add(str(Path(repo) / used))
-                try:
-                    candidates.add(str((Path(repo) / used).resolve()))
-                except OSError:
-                    pass
-            if candidates & names:
+            if spellings(used, repo) & names:
                 return True
     return False
 
