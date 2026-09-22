@@ -11,6 +11,7 @@ Every command is a no-op when no session id is available, so a missing status
 directory can never fail a delegation.
 """
 import argparse
+import importlib.util
 import json
 import os
 from datetime import datetime, timezone
@@ -132,7 +133,40 @@ def render(state):
     else:
         price = None
     parts = [part for part in (head, chain, counts, price) if part]
-    return ('🤖 ' + ' · '.join(parts)) if parts else ''
+    if not parts:
+        return ''
+    segment = '🤖 ' + ' · '.join(parts)
+    # Warn only when the router would have sent this task to an open worker but
+    # the caller published something else. Premium-vs-main is deliberately
+    # silent: the main session already runs a premium-grade model, so that
+    # warning would fire on nearly every HIGH task and train the reader to
+    # ignore the symbol.
+    if state.get('routed_executor') == 'open' and executor != 'open':
+        segment += ' ⚠ open'
+    return segment
+
+
+def routed_executor(tier, risk):
+    """What the router would pick for this classification, or None.
+
+    Cosmetic: any failure here must leave the bar exactly as it was, so the
+    caller never learns that the router was unavailable.
+    """
+    tier = (tier or '').upper()
+    risk = (risk or '').upper()
+    if tier not in ('T0', 'T1', 'T2', 'T3') or risk not in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location('aos_router', ROOT / 'bin/aos-router.py')
+        router = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(router)
+        config = router.load_config(ROOT / 'config/open-models.json')
+        decision = router.decide(tier, risk, config=config)
+        return decision.executor
+    except Exception:  # noqa: BLE001 - the bar is cosmetic, the router failing is not
+        # The bar is cosmetic: a router that failed to load or to answer must
+        # not change what the bar shows.
+        return None
 
 
 def write(session, state, ttl):
@@ -157,7 +191,8 @@ def cmd_set(args):
     # A new classification replaces the routing but keeps the tokens already spent
     # in this session: the bar shows the session's cost, not the last task's.
     state.update(tier=args.tier, risk=args.risk, executor=args.executor, model=args.model,
-                 planner=args.planner, reviewer=args.reviewer)
+                 planner=args.planner, reviewer=args.reviewer,
+                 routed_executor=routed_executor(args.tier, args.risk))
     state.setdefault('tokens', {'input': 0, 'output': 0, 'cache': 0})
     state.setdefault('cost_usd', None)
     return write(session, state, args.ttl)

@@ -51,6 +51,43 @@ class StatusTests(unittest.TestCase):
         self.assertIn("sub", self.record()["segment"])
         self.assertNotIn("$", self.record()["segment"])
 
+    def test_set_stores_the_routed_executor(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertEqual(self.record()["routed_executor"], "open")
+
+    def test_set_warns_when_the_open_route_was_published_as_main(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
+                     "--model", "claude-opus-5"])
+        self.assertIn("⚠ open", self.record()["segment"])
+
+    def test_set_does_not_warn_when_the_open_route_was_followed(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertNotIn("⚠", self.record()["segment"])
+
+    def test_set_does_not_warn_on_premium_route_published_as_main(self):
+        status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "main",
+                     "--model", "claude-opus-5"])
+        self.assertNotIn("⚠", self.record()["segment"])
+
+    def test_routed_executor_matches_the_router_for_t2_low(self):
+        self.assertEqual(status.routed_executor("T2", "LOW"), "open")
+
+    def test_routed_executor_returns_none_for_unknown_classification(self):
+        self.assertIsNone(status.routed_executor("T9", "LOW"))
+        self.assertIsNone(status.routed_executor("T2", "BANANA"))
+
+    def test_set_survives_a_router_that_cannot_answer(self):
+        # Point the script at a directory without bin/aos-router.py: the router
+        # cannot load, so the bar must still render what the caller published.
+        with mock.patch.object(status, "ROOT", Path(self.directory.name)):
+            status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                         "--model", DEEPSEEK])
+        state = self.record()
+        self.assertIsNone(state["routed_executor"])
+        self.assertTrue(state["segment"])
+
     def test_usage_accumulates_tokens_across_runs(self):
         status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "open", "--model", DEEPSEEK])
         status.main(["usage", "--model", DEEPSEEK, "--input", "40000", "--output", "10000"])

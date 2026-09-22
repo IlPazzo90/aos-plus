@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.5.2 — la barra dice quando il routing è stato ignorato — 2026-09-22
+
+`aos-status.py` pubblicava quello che il chiamante dichiarava, `aos-router.py`
+sapeva cosa andava fatto, e niente confrontava le due cose: una sessione che
+ignora il routing e lavora sul modello principale era indistinguibile da una che
+lo rispetta. Ora `set` interroga il router con lo stesso tier e rischio, salva la
+decisione in `routed_executor` e la barra mostra `⚠ open` quando il router
+avrebbe delegato a un worker open e il chiamante ha pubblicato altro:
+
+    🤖 T2/LOW · claude-opus-5 · sub ⚠ open
+
+L'avviso tace in ogni altro caso, e in particolare quando il router dice
+`premium` e l'esecutore è `main`: la sessione principale gira già su un modello
+di fascia premium, quindi quell'avviso si accenderebbe su quasi ogni task HIGH e
+insegnerebbe a ignorare il simbolo. Un router che non risponde lascia la barra
+esattamente com'era.
+
+Implementazione delegata al modello open configurato via
+`bin/aos-open-executor.py`: 40.512 token in ingresso, 23.749 in uscita, 26 passi.
+Il worker ha letto il codice e prodotto progetto, patch e test; non ha potuto
+scriverli perché l'harness forza `--permission-mode default` quando
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` è attivo, quindi ogni Edit è stato negato e
+l'executor ha riportato `permission denied; do not escalate as a model failure`
+invece di ricadere su un modello premium. Le modifiche sono state applicate a
+mano dal suo output. Resta da dichiarare `allowedTools` esplicitamente
+nell'executor: finché non lo si fa, un worker open può leggere ma non scrivere.
+
+Verifiche: 7 test nuovi in `tests/test_status.py` (26 nel modulo); 18 moduli verdi
+uno per uno; `aos-doctor.py` senza anomalie.
+
 ## 2.5.1 — il router da riga di comando leggeva la politica giusta — 2026-09-22
 
 `bin/aos-router.py --tier T1 --risk LOW` rispondeva `executor=main`, «not eligible
