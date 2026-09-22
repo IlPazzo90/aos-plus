@@ -1,0 +1,1272 @@
+{
+  "schema": 1,
+  "status": "partial",
+  "benchmark_winner_changed": false,
+  "benchmark_sample_tasks": 1,
+  "benchmark": [
+    {
+      "batch": "bench-claude",
+      "role": "executor",
+      "review": "not_run",
+      "task": "aos-pytest-toml",
+      "model": "claude-code|vercel|alibaba/qwen3-coder-next",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "executor_model": "alibaba/qwen3-coder-next",
+      "first_pass": false,
+      "retry_pass": false,
+      "escalated": true,
+      "capped": false,
+      "seconds": 71.7,
+      "cost_usd": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "exit_code": 125,
+      "recorded_at": "2026-09-22T06:35:04.302718+00:00"
+    },
+    {
+      "batch": "bench-claude",
+      "role": "executor",
+      "review": "not_run",
+      "task": "aos-pytest-toml",
+      "model": "claude-code|vercel|deepseek/deepseek-v4-pro-0813",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "executor_model": "deepseek/deepseek-v4-pro-0813",
+      "first_pass": false,
+      "retry_pass": false,
+      "escalated": true,
+      "capped": false,
+      "seconds": 190.946,
+      "cost_usd": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "exit_code": 125,
+      "recorded_at": "2026-09-22T06:33:48.055250+00:00"
+    },
+    {
+      "batch": "bench-claude-filetools",
+      "role": "executor",
+      "review": "not_run",
+      "task": "aos-pytest-toml",
+      "model": "claude-code|vercel|alibaba/qwen3-coder-next",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "executor_model": "alibaba/qwen3-coder-next",
+      "first_pass": true,
+      "retry_pass": null,
+      "escalated": false,
+      "capped": false,
+      "seconds": 111.247,
+      "cost_usd": null,
+      "input_tokens": 407407,
+      "output_tokens": 4240,
+      "exit_code": 0,
+      "recorded_at": "2026-09-22T07:39:35.066969+00:00"
+    },
+    {
+      "batch": "bench-claude-filetools",
+      "role": "executor",
+      "review": "not_run",
+      "task": "aos-pytest-toml",
+      "model": "claude-code|vercel|deepseek/deepseek-v4-pro-0813",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "executor_model": "deepseek/deepseek-v4-pro-0813",
+      "first_pass": false,
+      "retry_pass": true,
+      "escalated": false,
+      "capped": false,
+      "seconds": 327.513,
+      "cost_usd": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "exit_code": 0,
+      "recorded_at": "2026-09-22T07:37:41.431744+00:00"
+    },
+    {
+      "batch": "bench-open-filetools",
+      "role": "executor",
+      "review": "not_run",
+      "task": "aos-pytest-toml",
+      "model": "opencode|vercel|deepseek/deepseek-v4-pro-0813",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "executor_model": "deepseek/deepseek-v4-pro-0813",
+      "first_pass": false,
+      "retry_pass": true,
+      "escalated": false,
+      "capped": false,
+      "seconds": 356.47,
+      "cost_usd": 0.06128377200000001,
+      "input_tokens": 63266,
+      "output_tokens": 1376,
+      "exit_code": 0,
+      "recorded_at": "2026-09-22T07:52:11.421402+00:00"
+    },
+    {
+      "batch": "bench-open-filetools",
+      "role": "executor",
+      "review": "not_run",
+      "task": "aos-pytest-toml",
+      "model": "opencode|vercel|alibaba/qwen3-coder-next",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "executor_model": "alibaba/qwen3-coder-next",
+      "first_pass": false,
+      "retry_pass": false,
+      "escalated": true,
+      "capped": false,
+      "seconds": 480.15700000000004,
+      "cost_usd": 0.9416829,
+      "input_tokens": 1826949,
+      "output_tokens": 23507,
+      "exit_code": 124,
+      "recorded_at": "2026-09-22T08:00:16.319299+00:00"
+    }
+  ],
+  "open_implementation_calls": [
+    {
+      "task": "doctor-fix",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 1,
+      "error": "Invalid error response format: Gateway request failed: getaddrinfo ENOTFOUND ai-gateway.vercel.sh",
+      "input_tokens": 32109,
+      "output_tokens": 2293,
+      "cost": 0.044097108
+    },
+    {
+      "task": "doctor-retry",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 670848,
+      "output_tokens": 7931,
+      "cost": 0.34494120000000006
+    },
+    {
+      "task": "doctor",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 187127,
+      "output_tokens": 7623,
+      "cost": 0.4359168659999999
+    },
+    {
+      "task": "entry-retry",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 2211365,
+      "output_tokens": 10957,
+      "cost": 1.1188308999999999
+    },
+    {
+      "task": "entry",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 1,
+      "error": "Invalid error response format: Gateway request failed: getaddrinfo ENOTFOUND ai-gateway.vercel.sh",
+      "input_tokens": 170752,
+      "output_tokens": 2662,
+      "cost": 0.28168245599999997
+    },
+    {
+      "task": "integration-fix",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 42565,
+      "output_tokens": 8852,
+      "cost": 0.105048504
+    },
+    {
+      "task": "integration",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 94068,
+      "output_tokens": 10805,
+      "cost": 0.20970186600000001
+    },
+    {
+      "task": "learning-fix",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 100645,
+      "output_tokens": 12443,
+      "cost": 0.17930127599999998
+    },
+    {
+      "task": "learning-report",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost": null
+    },
+    {
+      "task": "learning",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 168573,
+      "output_tokens": 9214,
+      "cost": 0.25152798
+    },
+    {
+      "task": "native-t1",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 3693,
+      "output_tokens": 249,
+      "cost": null
+    },
+    {
+      "task": "routing-correct",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 1896991,
+      "output_tokens": 16491,
+      "cost": 0.9682846999999999
+    },
+    {
+      "task": "routing-fallback",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 1,
+      "error": "Invalid error response format: Gateway request failed: getaddrinfo ENOTFOUND ai-gateway.vercel.sh",
+      "input_tokens": 81679,
+      "output_tokens": 3616,
+      "cost": 0.0451787
+    },
+    {
+      "task": "routing-finish",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 1664268,
+      "output_tokens": 9670,
+      "cost": 0.8437379999999999
+    },
+    {
+      "task": "routing-retry",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 60254,
+      "output_tokens": 1431,
+      "cost": 0.10158297600000002
+    },
+    {
+      "task": "routing",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 92684,
+      "output_tokens": 2973,
+      "cost": 0.187614504
+    },
+    {
+      "task": "runtime-fallback",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 1025131,
+      "output_tokens": 10769,
+      "cost": 0.5254883
+    },
+    {
+      "task": "runtime-fix",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 124,
+      "error": "timeout",
+      "input_tokens": 167753,
+      "output_tokens": 2005,
+      "cost": 0.23444981999999998
+    },
+    {
+      "task": "runtime",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/deepseek/deepseek-v4-pro-0813",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 78341,
+      "output_tokens": 7995,
+      "cost": 0.21840621000000002
+    },
+    {
+      "task": "security-native",
+      "runtime": "claude-code",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 0,
+      "error": "permission denied; do not escalate as a model failure",
+      "input_tokens": 7615,
+      "output_tokens": 176,
+      "cost": null
+    },
+    {
+      "task": "security-opencode",
+      "runtime": "opencode",
+      "provider": "vercel",
+      "model": "vercel/alibaba/qwen3-coder-next",
+      "role": "executor",
+      "exit_code": 0,
+      "error": null,
+      "input_tokens": 9818,
+      "output_tokens": 148,
+      "cost": 0.0050866
+    }
+  ],
+  "implementation_known_cost_subtotal_usd": 6.1008779660000005,
+  "implementation_unknown_cost_calls": 3,
+  "session_total_cost_usd": null,
+  "premium_tokens_saved": null,
+  "notes": [
+    "Benchmark fixture tests fail on parent and pass on reference.",
+    "OpenCode runs began before failed isolation probe disabled future selection; not production eligible.",
+    "Native cost unknown; not zero. Model capability policy scores are not measured benchmark scores.",
+    "Terra MID recovery follows recorded open timeouts/failures; same-family work is not independent review."
+  ],
+  "live_pipeline": [
+    {
+      "case": "pipeline-live-t1.json",
+      "main_host": "codex-cli",
+      "tier": "T1",
+      "stage": "pass",
+      "role_events": [
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "provider": "vercel",
+          "runtime": "claude-code",
+          "runtime_model_pair": "claude-code|vercel|deepseek/deepseek-v4-pro-0813",
+          "cost_class": "CHEAP",
+          "tokens": 11358,
+          "usage": {
+            "input_tokens": 11071,
+            "output_tokens": 287,
+            "reasoning_tokens": null,
+            "cache_read_tokens": 0,
+            "cost_usd": null,
+            "cost_known_usd": null,
+            "session_id": null,
+            "steps": 3
+          },
+          "cost": null,
+          "estimated_cost": 0.007875120000000001,
+          "exit_code": 0,
+          "main_host": "codex-cli",
+          "tier": "T1",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0,
+          "_outcome_recorded": true
+        }
+      ],
+      "context_events": [
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 229,
+          "context_tokens_after": 229,
+          "context_tokens": 229,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 1000000,
+          "context_utilization_ratio": {
+            "target_context": 0.002,
+            "soft_limit": 0.001,
+            "hard_limit": 0.001,
+            "technical_context_limit": 0.0
+          },
+          "model_context_policy_source": "model",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        }
+      ],
+      "findings_confirmed": 0,
+      "findings_refuted": 0,
+      "premium_execution_used": false
+    },
+    {
+      "case": "pipeline-live-claude.json",
+      "main_host": "claude-code",
+      "tier": "T2",
+      "stage": "pass",
+      "role_events": [
+        {
+          "role": "planner",
+          "model": "claude-sonnet-5",
+          "provider": "anthropic",
+          "runtime": "claude-code",
+          "runtime_model_pair": null,
+          "cost_class": "MID",
+          "tokens": 1197,
+          "usage": {
+            "input_tokens": 6,
+            "cache_creation_input_tokens": 2103,
+            "cache_read_input_tokens": 25795,
+            "output_tokens": 1191,
+            "output_tokens_details": {
+              "thinking_tokens": 106
+            },
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 2103,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "not_available",
+            "iterations": [
+              {
+                "input_tokens": 2,
+                "output_tokens": 957,
+                "cache_read_input_tokens": 9456,
+                "cache_creation_input_tokens": 176,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 176
+                },
+                "type": "message"
+              }
+            ],
+            "speed": "standard"
+          },
+          "cost": null,
+          "estimated_cost": null,
+          "exit_code": null,
+          "main_host": "claude-code",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0
+        },
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "provider": "vercel",
+          "runtime": "claude-code",
+          "runtime_model_pair": "claude-code|vercel|deepseek/deepseek-v4-pro-0813",
+          "cost_class": "CHEAP",
+          "tokens": 17206,
+          "usage": {
+            "input_tokens": 16756,
+            "output_tokens": 450,
+            "reasoning_tokens": null,
+            "cache_read_tokens": 0,
+            "cost_usd": null,
+            "cost_known_usd": null,
+            "session_id": null,
+            "steps": 4
+          },
+          "cost": null,
+          "estimated_cost": 0.01194996,
+          "exit_code": 0,
+          "main_host": "claude-code",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0,
+          "_outcome_recorded": true
+        },
+        {
+          "role": "reviewer",
+          "model": "openai/gpt-5.6-sol",
+          "provider": "openai",
+          "runtime": "codex-cli",
+          "runtime_model_pair": null,
+          "cost_class": "MID",
+          "tokens": 19443,
+          "usage": {
+            "input_tokens": 18875,
+            "cached_input_tokens": 11008,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 568,
+            "reasoning_output_tokens": 177
+          },
+          "cost": null,
+          "estimated_cost": null,
+          "exit_code": null,
+          "main_host": "claude-code",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0
+        }
+      ],
+      "context_events": [
+        {
+          "role": "planner",
+          "model": "anthropic/sonnet",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 343,
+          "context_tokens_after": 343,
+          "context_tokens": 343,
+          "context_tokens_source": "estimated",
+          "target_context": 80000,
+          "soft_limit": 120000,
+          "hard_limit": 180000,
+          "technical_context_limit": null,
+          "context_utilization_ratio": {
+            "target_context": 0.004,
+            "soft_limit": 0.003,
+            "hard_limit": 0.002
+          },
+          "model_context_policy_source": "default",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 595,
+          "context_tokens_after": 595,
+          "context_tokens": 595,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 1000000,
+          "context_utilization_ratio": {
+            "target_context": 0.006,
+            "soft_limit": 0.004,
+            "hard_limit": 0.002,
+            "technical_context_limit": 0.001
+          },
+          "model_context_policy_source": "model",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "reviewer",
+          "model": "openai/gpt-5.6-sol",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 1220,
+          "context_tokens_after": 1220,
+          "context_tokens": 1220,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 400000,
+          "context_utilization_ratio": {
+            "target_context": 0.012,
+            "soft_limit": 0.008,
+            "hard_limit": 0.005,
+            "technical_context_limit": 0.003
+          },
+          "model_context_policy_source": "model_class",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        }
+      ],
+      "findings_confirmed": 0,
+      "findings_refuted": 0,
+      "premium_execution_used": false
+    },
+    {
+      "case": "pipeline-live-t2-pass.json",
+      "main_host": "codex-cli",
+      "tier": "T2",
+      "stage": "pass",
+      "role_events": [
+        {
+          "role": "planner",
+          "model": "openai/gpt-5.6-sol",
+          "provider": "openai",
+          "runtime": "codex-cli",
+          "runtime_model_pair": null,
+          "cost_class": "MID",
+          "tokens": 18321,
+          "usage": {
+            "input_tokens": 17771,
+            "cached_input_tokens": 11008,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 550,
+            "reasoning_output_tokens": 268
+          },
+          "cost": null,
+          "estimated_cost": null,
+          "exit_code": null,
+          "main_host": "codex-cli",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0
+        },
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "provider": "vercel",
+          "runtime": "claude-code",
+          "runtime_model_pair": "claude-code|vercel|deepseek/deepseek-v4-pro-0813",
+          "cost_class": "CHEAP",
+          "tokens": 7856,
+          "usage": {
+            "input_tokens": 7628,
+            "output_tokens": 228,
+            "reasoning_tokens": null,
+            "cache_read_tokens": 0,
+            "cost_usd": null,
+            "cost_known_usd": null,
+            "session_id": null,
+            "steps": 3
+          },
+          "cost": null,
+          "estimated_cost": 0.00548592,
+          "exit_code": 0,
+          "main_host": "codex-cli",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0,
+          "_outcome_recorded": true
+        },
+        {
+          "role": "reviewer",
+          "model": "claude-sonnet-5",
+          "provider": "anthropic",
+          "runtime": "claude-code",
+          "runtime_model_pair": null,
+          "cost_class": "MID",
+          "tokens": 4067,
+          "usage": {
+            "input_tokens": 6,
+            "cache_creation_input_tokens": 6658,
+            "cache_read_input_tokens": 27631,
+            "output_tokens": 4061,
+            "output_tokens_details": {
+              "thinking_tokens": 2193
+            },
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 6658,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "not_available",
+            "iterations": [
+              {
+                "input_tokens": 2,
+                "output_tokens": 1953,
+                "cache_read_input_tokens": 11067,
+                "cache_creation_input_tokens": 1970,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 1970
+                },
+                "type": "message"
+              }
+            ],
+            "speed": "standard"
+          },
+          "cost": null,
+          "estimated_cost": null,
+          "exit_code": null,
+          "main_host": "codex-cli",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0
+        },
+        {
+          "role": "fixer",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "provider": "vercel",
+          "runtime": "claude-code",
+          "runtime_model_pair": "claude-code|vercel|deepseek/deepseek-v4-pro-0813",
+          "cost_class": "CHEAP",
+          "tokens": 24685,
+          "usage": {
+            "input_tokens": 23963,
+            "output_tokens": 722,
+            "reasoning_tokens": null,
+            "cache_read_tokens": 0,
+            "cost_usd": null,
+            "cost_known_usd": null,
+            "session_id": null,
+            "steps": 5
+          },
+          "cost": null,
+          "estimated_cost": 0.01724514,
+          "exit_code": 0,
+          "main_host": "codex-cli",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0,
+          "_outcome_recorded": true
+        },
+        {
+          "role": "reviewer",
+          "model": "claude-sonnet-5",
+          "provider": "anthropic",
+          "runtime": "claude-code",
+          "runtime_model_pair": null,
+          "cost_class": "MID",
+          "tokens": 9135,
+          "usage": {
+            "input_tokens": 8,
+            "cache_creation_input_tokens": 6371,
+            "cache_read_input_tokens": 42309,
+            "output_tokens": 9127,
+            "output_tokens_details": {
+              "thinking_tokens": 5801
+            },
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 6371,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "not_available",
+            "iterations": [
+              {
+                "input_tokens": 2,
+                "output_tokens": 7162,
+                "cache_read_input_tokens": 12137,
+                "cache_creation_input_tokens": 1763,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 1763
+                },
+                "type": "message"
+              }
+            ],
+            "speed": "standard"
+          },
+          "cost": null,
+          "estimated_cost": null,
+          "exit_code": null,
+          "main_host": "codex-cli",
+          "tier": "T2",
+          "risk": "MEDIUM",
+          "uncertainty": "LOW",
+          "retry": 0
+        }
+      ],
+      "context_events": [
+        {
+          "role": "planner",
+          "model": "openai/gpt-5.6-sol",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 343,
+          "context_tokens_after": 343,
+          "context_tokens": 343,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 400000,
+          "context_utilization_ratio": {
+            "target_context": 0.003,
+            "soft_limit": 0.002,
+            "hard_limit": 0.001,
+            "technical_context_limit": 0.001
+          },
+          "model_context_policy_source": "model_class",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 463,
+          "context_tokens_after": 463,
+          "context_tokens": 463,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 1000000,
+          "context_utilization_ratio": {
+            "target_context": 0.005,
+            "soft_limit": 0.003,
+            "hard_limit": 0.002,
+            "technical_context_limit": 0.0
+          },
+          "model_context_policy_source": "model",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "executor",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 463,
+          "context_tokens_after": 463,
+          "context_tokens": 463,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 1000000,
+          "context_utilization_ratio": {
+            "target_context": 0.005,
+            "soft_limit": 0.003,
+            "hard_limit": 0.002,
+            "technical_context_limit": 0.0
+          },
+          "model_context_policy_source": "model",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "reviewer",
+          "model": "anthropic/sonnet",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 1076,
+          "context_tokens_after": 1076,
+          "context_tokens": 1076,
+          "context_tokens_source": "estimated",
+          "target_context": 80000,
+          "soft_limit": 120000,
+          "hard_limit": 180000,
+          "technical_context_limit": null,
+          "context_utilization_ratio": {
+            "target_context": 0.013,
+            "soft_limit": 0.009,
+            "hard_limit": 0.006
+          },
+          "model_context_policy_source": "default",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "fixer",
+          "model": "vercel/deepseek/deepseek-v4-pro-0813",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 1996,
+          "context_tokens_after": 1996,
+          "context_tokens": 1996,
+          "context_tokens_source": "estimated",
+          "target_context": 100000,
+          "soft_limit": 160000,
+          "hard_limit": 250000,
+          "technical_context_limit": 1000000,
+          "context_utilization_ratio": {
+            "target_context": 0.02,
+            "soft_limit": 0.012,
+            "hard_limit": 0.008,
+            "technical_context_limit": 0.002
+          },
+          "model_context_policy_source": "model",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        },
+        {
+          "role": "reviewer",
+          "model": "anthropic/sonnet",
+          "context_state_before": "GREEN",
+          "context_state_after": "GREEN",
+          "context_tokens_before": 1645,
+          "context_tokens_after": 1645,
+          "context_tokens": 1645,
+          "context_tokens_source": "estimated",
+          "target_context": 80000,
+          "soft_limit": 120000,
+          "hard_limit": 180000,
+          "technical_context_limit": null,
+          "context_utilization_ratio": {
+            "target_context": 0.021,
+            "soft_limit": 0.014,
+            "hard_limit": 0.009
+          },
+          "model_context_policy_source": "default",
+          "context_state": "GREEN",
+          "measurement_scope": "prompt_only",
+          "compaction_triggered": false,
+          "compaction": null,
+          "handoff_created": true
+        }
+      ],
+      "findings_confirmed": 2,
+      "findings_refuted": 6,
+      "premium_execution_used": false
+    }
+  ],
+  "context_probe": {
+    "model": "vercel/deepseek/deepseek-v4-pro-0813",
+    "context_state_before": "ORANGE",
+    "context_state_after": "GREEN",
+    "context_tokens_before": 225011,
+    "context_tokens_after": 11,
+    "context_tokens": 11,
+    "context_tokens_source": "estimated",
+    "target_context": 100000,
+    "soft_limit": 160000,
+    "hard_limit": 250000,
+    "technical_context_limit": 1000000,
+    "context_utilization_ratio": {
+      "target_context": 0.0,
+      "soft_limit": 0.0,
+      "hard_limit": 0.0,
+      "technical_context_limit": 0.0
+    },
+    "model_context_policy_source": "model",
+    "context_state": "GREEN",
+    "measurement_scope": "prompt_only",
+    "compaction_triggered": true,
+    "handoff_created": true
+  },
+  "routing_matrix": [
+    {
+      "tier": "T0",
+      "risk": "LOW",
+      "uncertainty": "LOW",
+      "decision": {
+        "executor": "open",
+        "planner": null,
+        "reviewer": null,
+        "fixer": "open",
+        "planner_model": null,
+        "reviewer_model": null,
+        "fixer_model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "executor_cost_class": "CHEAP",
+        "cross_model_review": false,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": false,
+        "model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "provider": "vercel",
+        "manual_model_override": false,
+        "routed_by_aos": true,
+        "verify": "deterministic",
+        "retries": 2,
+        "escalation_target": null,
+        "rationale": [
+          "T0",
+          "LOW",
+          "open executor"
+        ]
+      }
+    },
+    {
+      "tier": "T1",
+      "risk": "MEDIUM",
+      "uncertainty": "LOW",
+      "decision": {
+        "executor": "open",
+        "planner": null,
+        "reviewer": null,
+        "fixer": "open",
+        "planner_model": null,
+        "reviewer_model": null,
+        "fixer_model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "executor_cost_class": "CHEAP",
+        "cross_model_review": false,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": false,
+        "model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "provider": "vercel",
+        "manual_model_override": false,
+        "routed_by_aos": true,
+        "verify": "deterministic",
+        "retries": 2,
+        "escalation_target": null,
+        "rationale": [
+          "T1",
+          "MEDIUM",
+          "open executor"
+        ]
+      }
+    },
+    {
+      "tier": "T2",
+      "risk": "MEDIUM",
+      "uncertainty": "LOW",
+      "decision": {
+        "executor": "open",
+        "planner": "claude",
+        "reviewer": "codex",
+        "fixer": "open",
+        "planner_model": "anthropic/sonnet",
+        "reviewer_model": "openai/gpt-5.6-sol",
+        "fixer_model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "executor_cost_class": "CHEAP",
+        "cross_model_review": true,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": true,
+        "model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "provider": "vercel",
+        "manual_model_override": false,
+        "routed_by_aos": true,
+        "verify": "premium_review",
+        "retries": 2,
+        "escalation_target": null,
+        "rationale": [
+          "T2",
+          "MEDIUM",
+          "open executor"
+        ]
+      }
+    },
+    {
+      "tier": "T2",
+      "risk": "MEDIUM",
+      "uncertainty": "HIGH",
+      "decision": {
+        "executor": "open",
+        "planner": "claude",
+        "reviewer": "codex",
+        "fixer": "open",
+        "planner_model": "anthropic/fable",
+        "reviewer_model": "openai/gpt-6-astra",
+        "fixer_model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "executor_cost_class": "CHEAP",
+        "cross_model_review": true,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": true,
+        "model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "provider": "vercel",
+        "manual_model_override": false,
+        "routed_by_aos": true,
+        "verify": "premium_review",
+        "retries": 2,
+        "escalation_target": null,
+        "rationale": [
+          "T2",
+          "MEDIUM",
+          "open executor"
+        ]
+      }
+    },
+    {
+      "tier": "T3",
+      "risk": "MEDIUM",
+      "uncertainty": "LOW",
+      "decision": {
+        "executor": "open",
+        "planner": "claude",
+        "reviewer": "codex",
+        "fixer": "open",
+        "planner_model": "anthropic/fable",
+        "reviewer_model": "openai/gpt-6-astra",
+        "fixer_model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "executor_cost_class": "CHEAP",
+        "cross_model_review": true,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": true,
+        "model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "provider": "vercel",
+        "manual_model_override": false,
+        "routed_by_aos": true,
+        "verify": "premium_review",
+        "retries": 2,
+        "escalation_target": null,
+        "rationale": [
+          "T3",
+          "MEDIUM",
+          "open executor"
+        ]
+      }
+    },
+    {
+      "tier": "T2",
+      "risk": "HIGH",
+      "uncertainty": "HIGH",
+      "decision": {
+        "executor": "open",
+        "planner": "claude",
+        "reviewer": "codex",
+        "fixer": "open",
+        "planner_model": "anthropic/fable",
+        "reviewer_model": "openai/gpt-6-astra",
+        "fixer_model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "executor_cost_class": "CHEAP",
+        "cross_model_review": true,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": true,
+        "model": "vercel/deepseek/deepseek-v4-pro-0813",
+        "provider": "vercel",
+        "manual_model_override": false,
+        "routed_by_aos": true,
+        "verify": "premium_review",
+        "retries": 2,
+        "escalation_target": null,
+        "rationale": [
+          "open allowed by policy",
+          "observable check present",
+          "premium review mandatory"
+        ]
+      }
+    },
+    {
+      "tier": "T2",
+      "risk": "CRITICAL",
+      "uncertainty": "HIGH",
+      "decision": {
+        "executor": "main",
+        "planner": null,
+        "reviewer": null,
+        "fixer": null,
+        "planner_model": null,
+        "reviewer_model": null,
+        "fixer_model": null,
+        "executor_cost_class": null,
+        "cross_model_review": false,
+        "premium_execution_used": false,
+        "premium_execution_reason": null,
+        "pipeline": false,
+        "model": null,
+        "provider": null,
+        "manual_model_override": false,
+        "routed_by_aos": false,
+        "verify": "needs_approval",
+        "retries": 0,
+        "escalation_target": null,
+        "rationale": [
+          "CRITICAL risk requires human approval"
+        ]
+      }
+    }
+  ],
+  "review": {
+    "reviewer": "claude-fable-5-1",
+    "round4": "completed; one minor confirmed and fixed",
+    "round5": "PASS scoped to rejected-candidate dedup correction",
+    "full_release_validated": false
+  },
+  "final_source_sha256": {
+    "bin/aos-entry.py": "b5470c2cd57f983d6a644bdcdec8db990d7d81cac6aa77fa1c8800bf12a18202",
+    "bin/aos-learning.py": "e23ff3dee4946e13637216cd387df675674dffb923dd11d21bb927046934f4f5",
+    "bin/aos-router.py": "0a65d3c71b0504bc2e9eef01954cf7a58dbdad2c70f5b0a65749641b5f487d34",
+    "bin/aos-operations.py": "a272e1e4d79f37693ebc7f5f7ddb22da13925a5f5f3d572df1d08ddb2e1de9d9"
+  },
+  "tests": {
+    "private": {
+      "python_total": 452,
+      "python_pass": 448,
+      "python_skip": 4,
+      "node_pass": 22
+    },
+    "public": {
+      "python_total": 452,
+      "python_pass": 448,
+      "python_skip": 4,
+      "node_pass": 22
+    }
+  },
+  "doctor": {
+    "private_anomalies": 0,
+    "private_warnings": 7,
+    "scope": "local only"
+  }
+}

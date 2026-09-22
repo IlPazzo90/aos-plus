@@ -1,9 +1,10 @@
 # AOS Plus — AI Development Operating System
 
-> **WIP, non una release:** `codex-cli` è escluso dall'esecuzione open perché la prova
-> negativa della sua policy restrittiva non è passata. Il benchmark non conta più un
-> timeout come successo. Restano review indipendente e benchmark comparativo da chiudere.
-> Ripresa: [passaggio a Claude](docs/verifiche/premium-plan-open-execute/HANDOFF-2026-09-22.md).
+> **2.4.0 WIP — NOT READY FOR MAIN.** Il routing separa host, ruolo, runtime e
+> modello; T2 definiti scelgono MID per planning/review. Il runtime open abilitato è
+> Claude Code con soli strumenti file. OpenCode e Codex CLI sono esclusi come worker
+> per prove di isolamento fallite; restano nel progetto. Stato e prove:
+> [validazione operativa](docs/verifiche/premium-plan-open-execute/OPERATIONAL-VALIDATION.md).
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
@@ -198,3 +199,5 @@ Claude's open adapter currently uses file tools only; deterministic tests run in
 host's Verify stage. See [runtime configuration and boundaries](references/orchestration.md#runtime-independent-open-executor).
 The runtime comparison and independent release review are still pending; the measured
 OpenCode/model winner remains the default.
+
+Verified lesson ledger, context handoff and budget admission: [learning](references/learning.md).

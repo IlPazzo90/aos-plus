@@ -118,6 +118,25 @@ class PipelineTests(unittest.TestCase):
         s = self.p.advance(s, 'executed', {'ok': False, 'evidence': 'test failed'})
         self.assertEqual(s['stage'], 'escalate')
 
+    def test_failure_ladder_records_observed_transitions_without_cost_claims(self):
+        s = self.p.start('T2', 'MEDIUM', 'codex', 'claude', 'open/primary', 'open/fallback', 2,
+                         mid='open/mid')
+        s = self.p.advance(s, 'plan', self.plan)
+        for failure in ('primary retry', 'fallback', 'fallback retry', 'mid', 'premium'):
+            s = self.p.advance(s, 'executed', {'ok': False, 'evidence': failure})
+        events = s['escalation_events']
+        self.assertEqual([(event['previous_failure'], event['selected_next_model'], event['target']) for event in events], [
+            ('primary retry', 'open/primary', 'open_executor'),
+            ('fallback', 'open/fallback', 'open_executor'),
+            ('fallback retry', 'open/fallback', 'open_executor'),
+            ('mid', 'open/mid', 'open_executor'),
+            ('premium', None, 'premium_executor'),
+        ])
+        self.assertEqual([event['transition'] for event in events], [False, True, False, True, True])
+        self.assertTrue(all(event['estimated_cost_increase'] is None for event in events))
+        self.assertTrue(all('not guaranteed' in event['expected_capability_gain'] or
+                            'no capability gain' in event['expected_capability_gain'] for event in events))
+
     def test_failed_last_resort_blocks_instead_of_looping_premium(self):
         s = self.start()
         for _ in range(4): s = self.p.advance(s, 'executed', {'ok':False,'evidence':'failure'})

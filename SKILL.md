@@ -130,15 +130,18 @@ it is the only one whose savings are permanent.
   primary, its cheap fallback, an explicitly benchmarked MID candidate, then premium.
   A missing MID candidate is skipped; no name is promoted in code. `codex-cli` remains
   a premium host/reviewer but is incompatible as an open worker until its restrictive
-  rule layer has a passing native negative probe. The manual main model executes only on an
+  rule layer has a passing native negative probe. OpenCode open execution is also
+  disabled after native file reads bypassed the configured secret/symlink restrictions;
+  use the enabled Claude Code file-tools adapter. Runtime overrides do not bypass blocks. The manual main model executes only on an
   explicit user override, on CRITICAL/HIGH without an observable check, or where the
   policy reserves premium (planning, arbitration, final report). For T2/T3 within the open policy,
   premium produces the plan and cross-family review; open implements and fixes.
   LOW/MEDIUM work
   within policy runs on the open benchmark winner. In the OpenCode entry, the
   global plugin selects the native model for each turn before generation and keeps
-  the shared skills and MCP. From Claude/Codex, bounded workers use `bin/aos-open-executor.py`: Codex CLI,
-  Claude Code (file tools only), or OpenCode with the configured open model.
+  the shared skills and MCP. From Claude/Codex, bounded workers use `bin/aos-open-executor.py`: the enabled runtime with the configured open model. Claude Code currently passes
+  the native restricted-file probes; the other adapters remain available for future
+  isolation validation but cannot be selected while disabled.
   The main host never selects the executor model implicitly. Premium entry tasks use the configured Claude/Codex CLI in the
   same directory. A native task can decompose work under AOS; a premium worker must
   not route the same task back to the entry. Host-only plugins are not portable

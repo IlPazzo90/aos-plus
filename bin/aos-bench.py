@@ -215,18 +215,19 @@ def open_executor_runner(runtime, provider, model):
             return {"exit_code": refused.code, "seconds": 0, "usage": {}, "diff_stat": "",
                     "reply": "", "stderr_tail": "", "error": str(refused),
                     "runtime": runtime, "provider": provider, "executor_model": model,
-                    "runtime_model_pair": pair}
+                    "runtime_model_pair": pair, "role": "executor"}
         except (ValueError, OSError) as error:
             # No runtime installed, no endpoint/credential, custom permissions, a project
             # runtime config: the executor refuses before a worker ran (exit 4 = no run).
             return {"exit_code": delegate.EXIT_NO_OPENCODE, "seconds": 0, "usage": {}, "diff_stat": "",
                     "reply": "", "stderr_tail": "", "error": str(error),
                     "runtime": runtime, "provider": provider, "executor_model": model,
-                    "runtime_model_pair": pair}
+                    "runtime_model_pair": pair, "role": "executor"}
         result.setdefault("runtime", runtime)
         result.setdefault("provider", provider)
         result.setdefault("executor_model", model)
         result.setdefault("runtime_model_pair", pair)
+        result.setdefault("role", "executor")
         return result
     runner.retry_dir = retry_dir
     return runner
@@ -354,7 +355,10 @@ def add_cost(a, b):
 def identity_fields(record):
     """The runtime dimension a paired executor adds to the delegate's record; empty for
     the legacy runners, so their records are byte-for-byte the old shape."""
-    return {k: record[k] for k in ("runtime", "provider", "executor_model", "runtime_model_pair") if k in record}
+    identity = {k: record[k] for k in ("runtime", "provider", "executor_model", "runtime_model_pair", "role") if k in record}
+    if "runtime" in identity:
+        identity.setdefault("role", "executor")
+    return identity
 
 
 def executor_succeeded(record):
@@ -514,7 +518,9 @@ def summary(rows):
             hml = "not_run"
         else:
             hml = "n/d"
-        cost = f"{sum(known):.2f} $" + (f" (costo n/d: {unknown})" if unknown else "")
+        cost = "n/d" if unknown else f"{sum(known):.2f} $"
+        if unknown:
+            cost += f" (costo n/d: {unknown})"
         diff = sum(r.get("diff_lines", 0) for r in rs) / n
         esc_cell = f"{esc}/{n}" + (f" (+{capped} fermati dal tetto)" if capped else "")
         lines.append(f"| {model} | {fp}/{n} | {rp}/{n} | {esc_cell} | {secs:.0f} | {cost} | {hml} | {diff:.0f} |")

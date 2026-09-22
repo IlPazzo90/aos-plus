@@ -51,6 +51,7 @@ REQUIRED_FILES="SKILL.md README.md CHANGELOG.md VERSION
 references/orchestration.md
 references/opencode-entry.md
 references/context-budget.md
+references/learning.md
 references/risk-and-tiers.md
 references/project-profiles.md
 references/quality-gates.md
@@ -63,6 +64,8 @@ bin/aos-doctor.py
 bin/aos-measure.py
 bin/aos-bench.py
 bin/aos-context.py
+bin/aos-learning.py
+bin/aos-operations.py
 bin/aos-delegate.py
 bin/aos-entry.py
 bin/aos-pipeline.py
@@ -82,6 +85,9 @@ evals/scenarios.json
 evals/opencode-run-sample.jsonl
 tests/test_bench.py
 tests/test_context.py
+tests/test_learning.py
+tests/test_operations.py
+tests/test_hook_protocol.py
 tests/test_delegate.py
 tests/test_entry.py
 tests/test_pipeline.py

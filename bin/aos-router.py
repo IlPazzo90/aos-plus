@@ -22,6 +22,7 @@ no cross-model review (quality-gates fallback applies).
 """
 
 import json
+import math
 from dataclasses import asdict, dataclass, field, replace
 
 
@@ -156,7 +157,7 @@ def choose_model(config, role, *, capability_requirements=None, runtime=None, bu
     if role not in ('planner', 'executor', 'reviewer', 'fixer'):
         raise ValueError('unknown routing role')
     requirements = capability_requirements or {}
-    if not isinstance(requirements, dict) or any(not isinstance(k, str) or type(v) not in (int, float) or v < 0
+    if not isinstance(requirements, dict) or any(not isinstance(k, str) or type(v) not in (int, float) or not math.isfinite(v) or v < 0
                                                 for k, v in requirements.items()):
         raise ValueError('capability requirements must be nonnegative scores')
     budget = budget or {}
@@ -177,23 +178,52 @@ def choose_model(config, role, *, capability_requirements=None, runtime=None, bu
         if _COST_CLASSES.index(entry['cost_class']) > _COST_CLASSES.index(ceiling):
             continue
         scores = entry.get('capability_scores', {})
-        if any(scores.get(name, 0) < score for name, score in requirements.items()):
+        if any(not isinstance(scores.get(name, 0), (int, float)) or not math.isfinite(scores.get(name, 0))
+               or scores.get(name, 0) < score for name, score in requirements.items()):
             continue
         for cost_key in ('input_cost_per_million', 'output_cost_per_million'):
-            limit = budget.get('max_' + cost_key)
             value = entry.get(cost_key)
-            if limit is not None and (type(limit) not in (int, float) or limit < 0 or value is None or value > limit):
+            if value is None:
+                continue
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 break
         else:
-            # The catalog's availability flags are facts, not a model promotion.
-            availability = entry.get('benchmark', {}).get('available') or entry.get('historical', {}).get('available')
-            if availability:
+            for cost_key in ('input_cost_per_million', 'output_cost_per_million'):
+                limit = budget.get('max_' + cost_key)
+                value = entry.get(cost_key)
+                if limit is not None and (type(limit) not in (int, float) or not math.isfinite(limit) or limit < 0
+                                          or value is None or value > limit):
+                    break
+            else:
+                # A missing benchmark is not a runtime outage: premium subscriptions
+                # are deliberately not compared with metered open models. Only an
+                # explicit availability false marks a model unavailable.
+                if entry.get('availability') is False or entry.get('historical', {}).get('available') is False:
+                    continue
+                minimum_success_rate = budget.get('minimum_success_rate')
+                if minimum_success_rate is not None:
+                    if (type(minimum_success_rate) not in (int, float) or not math.isfinite(minimum_success_rate)
+                            or not 0 <= minimum_success_rate <= 1):
+                        raise ValueError('minimum_success_rate must be between zero and one')
+                    success_rate = entry.get('historical_success_rate')
+                    if success_rate is not None and (not isinstance(success_rate, (int, float))
+                                                     or not math.isfinite(success_rate)
+                                                     or success_rate < minimum_success_rate):
+                        continue
+                input_cost = entry.get('input_cost_per_million')
+                output_cost = entry.get('output_cost_per_million')
+                if input_cost is None:
+                    input_cost = float('inf')
+                elif not isinstance(input_cost, (int, float)) or not math.isfinite(input_cost):
+                    continue
+                if output_cost is None:
+                    output_cost = float('inf')
+                elif not isinstance(output_cost, (int, float)) or not math.isfinite(output_cost):
+                    continue
                 eligible.append((
                     _COST_CLASSES.index(entry['cost_class']),
-                    entry.get('input_cost_per_million') is None,
-                    entry.get('input_cost_per_million') or float('inf'),
-                    entry.get('output_cost_per_million') is None,
-                    entry.get('output_cost_per_million') or float('inf'), identity))
+                    input_cost,
+                    output_cost, identity))
     return min(eligible)[-1] if eligible else None
 
 
@@ -208,6 +238,56 @@ def _eligible_open_model(config, model, *, capability_requirements=None, runtime
 
 def _model_cost_class(config, model):
     return config.catalog.get(model, {}).get('cost_class') if model else None
+
+
+_FAMILY_PROVIDER = {'claude': 'anthropic', 'codex': 'openai'}
+_FAMILY_RUNTIME = {'claude': 'claude-code', 'codex': 'codex-cli'}
+
+
+def _role_requirements(role, requirements, tier, risk, uncertainty):
+    result = dict(requirements or {})
+    elevated = tier == 'T3' or risk == 'HIGH' or str(uncertainty).upper() in ('HIGH', 'UNSETTLED')
+    if elevated:
+        for name in ('planning', 'reasoning', 'review'):
+            result[name] = max(result.get(name, 0), 5)
+    elif tier == 'T2':
+        if role == 'planner':
+            for name in ('planning', 'reasoning'):
+                result[name] = max(result.get(name, 0), 3)
+        elif role == 'reviewer':
+            result['review'] = max(result.get('review', 0), 3)
+    return result
+
+
+def _role_budget(budget, tier, risk, uncertainty):
+    result = dict(budget or {})
+    ceiling = 'PREMIUM' if tier == 'T3' or risk == 'HIGH' or str(uncertainty).upper() in ('HIGH', 'UNSETTLED') else 'MID'
+    requested = result.get('max_cost_class')
+    if requested is None:
+        result['max_cost_class'] = ceiling
+    elif requested in _COST_CLASSES:
+        result['max_cost_class'] = _COST_CLASSES[min(_COST_CLASSES.index(requested), _COST_CLASSES.index(ceiling))]
+    return result
+
+
+def _select_model_for_role(config, role, family, families, capability_requirements, budget, tier, risk, uncertainty,
+                           premium_only=False):
+    if not family or family not in families:
+        return None
+    provider = _FAMILY_PROVIDER.get(family, family)
+    candidates = tuple(identity for identity, entry in config.catalog.items()
+                       if (_model_provider(identity) == provider and role in entry.get('roles', ())
+                           and (not premium_only or entry.get('cost_class') == 'PREMIUM')))
+    return choose_model(config, role, capability_requirements=_role_requirements(
+        role, capability_requirements, tier, risk, uncertainty), runtime=_FAMILY_RUNTIME.get(family),
+        budget=_role_budget(budget, tier, risk, uncertainty), candidates=candidates)
+
+
+def _model_sort_key(config, model):
+    entry = config.catalog[model]
+    price = lambda name: entry.get(name) if isinstance(entry.get(name), (int, float)) else float('inf')
+    return (_COST_CLASSES.index(entry['cost_class']), price('input_cost_per_million'),
+            price('output_cost_per_million'), model)
 
 
 def _requirements(capability_requirements, uncertainty, security_impact):
@@ -317,28 +397,83 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kw
                        executor_cost_class=_model_cost_class(config, decision.model))
     if not config.role_pipeline or kwargs.get('manual_override') or risk == 'CRITICAL':
         return decision
+    if not config.catalog:
+        return _legacy_role_decision(decision, config, tier, risk, planner, premium_families, kwargs)
     families = ('codex', 'claude') if premium_families is None else tuple(premium_families)
     if kwargs.get('premium_reviewer_available') is False:
         families = ()
-    chosen = planner or config.escalation_executor
-    if chosen not in families:
-        chosen = next((f for f in families if f in ('codex', 'claude')), None)
+    capability_requirements = _requirements(kwargs.get('capability_requirements'), kwargs.get('uncertainty'), kwargs.get('security_impact'))
+    budget = kwargs.get('budget')
     needs_plan = tier in ('T2', 'T3')
-    reviewer = ('claude' if chosen == 'codex' else 'codex') if chosen else None
-    if reviewer not in families:
-        reviewer = None  # Never relabel same-family review as cross-model.
     needs_review = needs_plan or risk == 'HIGH'
-    planner_model = config.premium_models.get(chosen) if needs_plan and chosen else None
-    reviewer_model = config.premium_models.get(reviewer) if needs_review and reviewer else None
-    return replace(decision, planner=chosen if needs_plan else None,
-                   reviewer=reviewer if needs_review else None,
+    planner_model = None
+    planner_family = None
+    if needs_plan:
+        candidate_families = (planner,) if planner is not None else families
+        candidates = []
+        for family in candidate_families:
+            model = _select_model_for_role(config, 'planner', family, families, capability_requirements,
+                                           budget, tier, risk, kwargs.get('uncertainty'))
+            if model:
+                candidates.append((model, family))
+        if candidates:
+            planner_model, planner_family = min(candidates, key=lambda item: _model_sort_key(config, item[0]))
+
+    reviewer_family = None
+    reviewer_model = None
+    if needs_review and planner_family:
+        reviewer_family = 'claude' if planner_family == 'codex' else 'codex'
+        reviewer_model = _select_model_for_role(
+            config, 'reviewer', reviewer_family, families, capability_requirements, budget, tier, risk,
+            kwargs.get('uncertainty'), premium_only=risk == 'HIGH')
+        if reviewer_model is None:
+            reviewer_family = None
+    elif needs_review:
+        candidates = []
+        for family in families:
+            model = _select_model_for_role(
+                config, 'reviewer', family, families, capability_requirements, budget, tier, risk,
+                kwargs.get('uncertainty'), premium_only=risk == 'HIGH')
+            if model:
+                candidates.append((model, family))
+        if candidates:
+            reviewer_model, reviewer_family = min(candidates, key=lambda item: _model_sort_key(config, item[0]))
+    return replace(decision, planner=planner_family if needs_plan else None,
+                   reviewer=reviewer_family if needs_review else None,
                    fixer='open' if decision.executor == 'open' else decision.executor,
                    planner_model=planner_model,
                    reviewer_model=reviewer_model,
                    fixer_model=decision.model if decision.executor == 'open' else None,
-                   cross_model_review=needs_review and reviewer is not None,
+                   cross_model_review=needs_plan and planner_family is not None and reviewer_family is not None,
                    verify='premium_review' if needs_review else 'deterministic',
                    pipeline=decision.executor == 'open' and needs_plan)
+
+
+def _legacy_role_decision(decision, config, tier, risk, planner, premium_families, kwargs):
+    if not config.role_pipeline or kwargs.get('manual_override') or risk == 'CRITICAL':
+        return decision
+    needs_plan = tier in ('T2', 'T3')
+    needs_review = needs_plan or risk == 'HIGH'
+    families = ('codex', 'claude') if premium_families is None else tuple(premium_families)
+    if kwargs.get('premium_reviewer_available') is False:
+        families = ()
+    planner_family = planner if planner in families else None
+    if planner_family is None and planner is None:
+        planner_family = config.escalation_executor
+        if planner_family not in families:
+            planner_family = next((f for f in families if f in ('codex', 'claude')), None)
+    reviewer_family = None
+    if reviewer_family is None and planner_family:
+        reviewer_family = 'claude' if planner_family == 'codex' else 'codex'
+        if reviewer_family not in families:
+            reviewer_family = None
+    return replace(decision, planner=planner_family if needs_plan else None,
+                   reviewer=reviewer_family if needs_review else None,
+                   fixer=decision.executor,
+                   planner_model=None,
+                   reviewer_model=None,
+                   cross_model_review=False,
+                   pipeline=False)
 
 
 def _high_review(config, premium_reviewer_available):
@@ -368,10 +503,14 @@ def _open_decision(config, primary_available, fallback_available, failed_attempt
         config, fallback, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
     mid = config.open_mid if mid_available and _eligible_open_model(
         config, config.open_mid, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
-    if failed_attempts >= retries * 2 and mid:
-        return Decision(executor='open', model=mid, provider=_model_provider(mid), routed_by_aos=True,
-                        verify=verify, retries=retries, rationale=(*rationale, 'mid open'))
-    if failed_attempts >= retries * 2 or (not primary and not usable_fallback and not mid):
+    if failed_attempts >= retries * 2:
+        if mid and failed_attempts == retries * 2:
+            return Decision(executor='open', model=mid, provider=_model_provider(mid), routed_by_aos=True,
+                            verify=verify, retries=retries, rationale=(*rationale, 'mid open'))
+        return Decision(executor="premium", verify=verify,
+                        escalation_target=config.escalation_executor,
+                        rationale=(*rationale, "open unavailable or exhausted"))
+    if not primary and not usable_fallback and not mid:
         return Decision(executor="premium", verify=verify,
                         escalation_target=config.escalation_executor,
                         rationale=(*rationale, "open unavailable or exhausted"))

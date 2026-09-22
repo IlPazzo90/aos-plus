@@ -2,7 +2,9 @@
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,6 +29,8 @@ class EntryTests(unittest.TestCase):
                       dict(capabilities='web'), dict(domain='unknown')]:
             with self.assertRaises(ValueError):
                 self.entry.parse_classification(json.dumps(good | extra))
+        self.assertEqual(self.entry.parse_classification(json.dumps(good | {'uncertainty': 'UNSETTLED'}))['uncertainty'],
+                         'UNSETTLED')
 
     def test_empty_or_prose_classification_fails_closed(self):
         for value in ['', 'okay', '{}', '[]']:
@@ -77,11 +81,180 @@ class EntryTests(unittest.TestCase):
             command = self.entry.premium_command(backend)
             self.assertIn(policy['premium'][backend + '_model'], command)
 
+    def test_catalog_role_model_is_the_actual_cli_argument(self):
+        command = self.entry.premium_command('codex', 'openai/gpt-6-astra')
+        self.assertEqual(command[command.index('-m') + 1], 'gpt-6-astra')
+        command = self.entry.premium_command('claude', 'anthropic/fable')
+        self.assertEqual(command[command.index('--model') + 1], 'fable')
+
     def test_codex_cli_requirement_routes_to_premium_without_claiming_app_tools(self):
         info = dict(tier='T0', risk='LOW', domain='general', capabilities=['codex_runtime'], reason='CLI required')
         parsed = self.entry.parse_classification(json.dumps(info))
         result = self.entry.route(parsed)
         self.assertEqual((result['executor'], result['backend']), ('premium', 'codex'))
+
+    def test_selected_open_runtime_consumes_its_own_capability(self):
+        info = dict(tier='T1', risk='LOW', domain='general', capabilities=['claude_runtime'], reason='runtime')
+        result = self.entry.route(info, executor_runtime='claude-code')
+        self.assertEqual(result['executor'], 'open')
+
+    def test_classification_uses_resolved_runtime_without_opencode_fallback(self):
+        reply = json.dumps(dict(tier='T1', risk='LOW', domain='general', capabilities=[], reason='bounded'))
+        with patch.object(self.entry.open_executor, 'resolve', return_value={'runtime': 'claude-code'}), \
+             patch.object(self.entry.open_executor, 'infer', return_value={
+                 'exit_code': 0, 'reply': reply, 'usage': {}, 'runtime': 'claude-code'}
+             ) as infer, patch.object(self.entry.delegate, 'run_config') as run_config:
+            result = self.entry.classify('write one local file')
+        self.assertEqual(result['classifier'][0]['runtime'], 'claude-code')
+        self.assertEqual(infer.call_args.kwargs['runtime'], 'claude-code')
+        run_config.assert_not_called()
+
+    def test_role_usage_keeps_actual_cost_separate_from_catalog_estimate(self):
+        state = dict(main_host='codex-cli', tier='T2', risk='MEDIUM', failures=1,
+                     classification={'uncertainty': 'HIGH'})
+        self.entry.role_usage(state, 'executor', 'open', dict(
+            model='deepseek-v4-pro-0813', requested_model='vercel/deepseek/deepseek-v4-pro-0813',
+            runtime='claude-code', usage={'input_tokens': 4, 'output_tokens': 2}, cost=0.07, exit_code=0))
+        event = state['role_events'][0]
+        self.assertEqual(event['cost'], 0.07)
+        catalog = json.loads(self.entry.POLICY.read_text())['model_catalog']['vercel/deepseek/deepseek-v4-pro-0813']
+        self.assertEqual(event['estimated_cost'], self.entry._estimated_cost(catalog, event['usage']))
+        self.assertEqual((event['main_host'], event['tier'], event['risk'], event['uncertainty'], event['retry']),
+                         ('codex-cli', 'T2', 'MEDIUM', 'HIGH', 1))
+
+    def test_learning_configuration_honors_disabled_flag_and_database_path(self):
+        policy = json.loads(self.entry.POLICY.read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / 'ledger.sqlite3')
+            policy['learning'] = {'enabled': False, 'database': database}
+            configured = Path(directory) / 'policy.json'
+            configured.write_text(json.dumps(policy))
+            with patch.object(self.entry, 'POLICY', configured):
+                enabled, path = self.entry._learning_configuration()
+        self.assertFalse(enabled)
+        self.assertEqual(path, Path(database).resolve())
+
+    def test_learning_configuration_expands_tilde_and_refuses_worktree_storage(self):
+        with patch.object(self.entry, 'POLICY', self.entry.POLICY):
+            enabled, path = self.entry._learning_configuration(
+                {'learning_enabled': False, 'learning_database': '~/.local/state/aos/test-ledger.sqlite3'})
+        self.assertFalse(enabled)
+        self.assertEqual(path, (Path.home() / '.local/state/aos/test-ledger.sqlite3').resolve())
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory) / 'repo'
+            worktree.mkdir()
+            database = worktree / 'learning.sqlite3'
+            with self.assertRaisesRegex(ValueError, 'outside the worktree'):
+                self.entry._learning_configuration({'learning_database': str(database)}, worktree)
+            self.assertFalse(database.exists())
+
+    def test_budget_uses_global_outcomes_and_requires_explicit_allow(self):
+        state = {'budget': {'daily_budget': 1}, 'learning_database': '/tmp/aos-ledger.sqlite3',
+                 'project': '/project', 'task_id': 'task'}
+        with patch.object(self.entry.learning, 'list_outcomes', return_value=[{'project': '/other'}]) as outcomes, \
+             patch.object(self.entry.operations, 'budget_check', return_value={'allowed': True}) as check:
+            self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
+        outcomes.assert_called_once_with('/tmp/aos-ledger.sqlite3')
+        self.assertEqual(check.call_args.args[1], [{'project': '/other'}])
+        with patch.object(self.entry.learning, 'list_outcomes', return_value=[]), \
+             patch.object(self.entry.operations, 'budget_check', return_value={'allowed': False}):
+            with self.assertRaisesRegex(ValueError, 'explicitly allowed'):
+                self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
+
+    def test_budget_without_applicable_cap_skips_ledger_and_disabled_learning_fails_closed_when_capped(self):
+        state = {'learning_enabled': False, 'learning_database': '/tmp/aos-ledger.sqlite3',
+                 'budget': {}, 'task_id': 'task'}
+        with patch.object(self.entry.learning, 'list_outcomes') as outcomes:
+            self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
+        outcomes.assert_not_called()
+        state['budget'] = {'daily_budget': 1}
+        with patch.object(self.entry.learning, 'list_outcomes') as outcomes, \
+                self.assertRaisesRegex(ValueError, 'requires accounting'):
+            self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
+        outcomes.assert_not_called()
+
+    def test_role_model_mismatch_fails_instead_of_silent_premium_substitution(self):
+        state = {'role_models': {'planner': 'anthropic/fable'}}
+        with self.assertRaisesRegex(ValueError, 'backend not compatible'):
+            self.entry._role_model(state, 'planner', 'codex')
+
+    def test_catalog_era_requires_explicit_role_model_but_legacy_policy_is_compatible(self):
+        with self.assertRaisesRegex(ValueError, 'missing from routing decision'):
+            self.entry._role_model({'role_models': {}}, 'planner', 'codex')
+        policy = json.loads(self.entry.POLICY.read_text())
+        policy['model_catalog'] = {}
+        with tempfile.TemporaryDirectory() as directory:
+            configured = Path(directory) / 'policy.json'
+            configured.write_text(json.dumps(policy))
+            with patch.object(self.entry, 'POLICY', configured):
+                self.assertEqual(self.entry._role_model({'role_models': {}}, 'planner', 'codex'),
+                                 'openai/gpt-6-astra')
+
+    def test_start_passes_a_budget_copy_to_routing_and_blocks_premium_roles_over_ceiling(self):
+        classification = {'tier': 'T2', 'risk': 'MEDIUM', 'capabilities': []}
+        budget = {'max_cost_class': 'CHEAP'}
+        observed = {}
+        actual_route = self.entry.route
+
+        def capture(info, **kwargs):
+            observed['info'] = info
+            return actual_route(info, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.entry.open_executor, 'resolve', return_value={'runtime': 'claude-code'}), \
+                patch.object(self.entry, 'route', side_effect=capture), \
+                patch.object(self.entry, 'execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'planner model does not satisfy'):
+                self.entry.pipeline_step(None, 'start', {
+                    'classification': classification, 'budget': budget, 'text': 'bounded task',
+                    'learning_enabled': False,
+                }, directory)
+        self.assertIsNot(observed['info'], classification)
+        self.assertEqual(observed['info']['budget'], budget)
+        self.assertNotIn('budget', classification)
+        execute.assert_not_called()
+
+    def test_native_claude_open_refuses_active_dollar_budget_but_premium_review_keeps_budget_check(self):
+        policy = json.loads(self.entry.POLICY.read_text())
+        policy['budgets'] = {'max_task_cost': None, 'daily_budget': None,
+                             'monthly_budget': None, 'premium_budget': None}
+        with tempfile.TemporaryDirectory() as directory:
+            configured = Path(directory) / 'policy.json'
+            configured.write_text(json.dumps(policy))
+            state = {'executor_runtime': 'claude-code', 'budget': {'daily_budget': 1},
+                     'learning_database': '/tmp/aos-ledger.sqlite3', 'task_id': 'task'}
+            with patch.object(self.entry, 'POLICY', configured), \
+                    self.assertRaisesRegex(ValueError, 'static estimates are insufficient'):
+                self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
+            state['budget'] = {'premium_budget': 1}
+            with patch.object(self.entry, 'POLICY', configured), \
+                    patch.object(self.entry.learning, 'list_outcomes', return_value=[]), \
+                    patch.object(self.entry.operations, 'budget_check', return_value={'allowed': True}):
+                self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
+            with patch.object(self.entry, 'POLICY', configured), \
+                    patch.object(self.entry.learning, 'list_outcomes', return_value=[]), \
+                    patch.object(self.entry.operations, 'budget_check', return_value={'allowed': True}) as check:
+                self.entry._budget(state, 'anthropic/fable', premium=True)
+            self.assertTrue(check.called)
+
+    def test_recorded_observation_keeps_retry_and_context_fields(self):
+        state = {'learning_enabled': True, 'learning_database': '/tmp/aos-ledger.sqlite3',
+                 'tier': 'T2', 'risk': 'MEDIUM', 'task_id': 'task', 'project': '/project'}
+        event = {'role': 'planner', 'runtime': 'claude-code', 'provider': 'anthropic',
+                 'model': 'anthropic/fable', 'exit_code': 0, 'cost_class': 'PREMIUM',
+                 'cost': None, 'usage': {}, 'retry': 2, 'main_host': 'codex-cli', 'uncertainty': 'HIGH'}
+        with patch.object(self.entry.learning, 'record_outcome') as record:
+            self.entry._record_event(state, event, False, 'role quality not scored')
+        observed = record.call_args.args[1]
+        self.assertEqual((observed['retry'], observed['main_host'], observed['uncertainty']),
+                         (2, 'codex-cli', 'HIGH'))
+        self.assertEqual(observed['verification_status'], 'verified')
+        observation = dict(event)
+        observation.pop('_outcome_recorded', None)
+        state['role_events'] = [observation]
+        with patch.object(self.entry.learning, 'record_outcome') as record:
+            self.entry._record_role_observation(state)
+        self.assertEqual(record.call_args.args[1]['verification_status'], 'not_scored')
 
     def test_readonly_roles_reuse_verify_agent_tool_restrictions(self):
         self.assertTrue(hasattr(self.entry, 'readonly_command'))

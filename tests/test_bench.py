@@ -309,6 +309,7 @@ class BenchTests(unittest.TestCase):
         self.assertIn("| m1 | 1/2 | 0/2 | 1/2 |", md)
         self.assertIn("0/1/0", md)
         self.assertIn("costo n/d: 1", md)
+        self.assertIn("| m1 | 1/2 | 0/2 | 1/2 | 20 | n/d (costo n/d: 1) |", md)
 
     def test_parse_findings_counts_by_severity(self):
         report = json.dumps({"findings": [{"severity": "high", "title": "a"}, {"severity": "low", "title": "b"},
@@ -473,6 +474,7 @@ class ExecutorBenchTests(unittest.TestCase):
         self.assertEqual(rec["provider"], "vercel")
         self.assertEqual(rec["executor_model"], "deepseek/deepseek-v4-pro-0813")
         self.assertEqual(rec["runtime_model_pair"], "codex-cli|vercel|deepseek/deepseek-v4-pro-0813")
+        self.assertEqual(rec["role"], "executor")
         # The old delegate fields still move through the pipeline unchanged.
         self.assertEqual(rec["exit_code"], 0)
         self.assertFalse(rec["git_meta_changed"])
@@ -517,6 +519,7 @@ class ExecutorBenchTests(unittest.TestCase):
         self.assertEqual(r["attempt_costs"], [None])
         self.assertEqual(r["runtime"], "codex-cli")
         self.assertEqual(r["runtime_model_pair"], "codex-cli|vercel|deepseek/deepseek-v4-pro-0813")
+        self.assertEqual(r["role"], "executor")
 
     def test_legacy_runners_carry_no_runtime_dimension(self):
         # Backward compatibility: a legacy runner's record has none of the new fields,

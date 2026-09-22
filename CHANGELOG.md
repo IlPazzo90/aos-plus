@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.4.0 WIP — pipeline operativa e learning verificato — 2026-09-22
+
+Recuperati i worker DeepSeek/Qwen con interventi MID Terra dopo failure documentati.
+Selezione dei modelli per ruolo indipendente dal main host; T2 definito usa MID,
+T3/HIGH richiede capacità superiori. I modelli selezionati arrivano ai CLI reali.
+Aggiunti ledger SQLite host-owned, lesson con check completi, report filtrabili,
+storico scoped, context handoff e controlli budget. Costi mancanti restano null.
+
+Prova offensiva OpenCode: lettura di `.env` sintetico e symlink esterno consentita
+nonostante i deny. Runtime escluso fail-closed; Claude Code file-tools è il default
+open. Codex CLI open resta escluso. Nessuna modifica al delegate o Security Gate.
+Hook Stop compatibile verificato e coperto da regressione. Benchmark live su task
+storico reale, senza promozione del vincitore e senza considerare i timeout successi.
+Risultati, test finali e limiti nel verbale OPERATIONAL-VALIDATION.md. Nessun merge,
+nessuna nuova release stabile; versione conservata a 2.4.0 WIP.
+
+
+Review Fable mirata completata: finding corretti, PASS sull’ultima correzione.
+Verifica finale: 452 test Python (4 skip) e 22 Node per edizione, Security Gate verde.
+
 ## 2.4.0 WIP — runtime indipendente — 2026-09-22
 
 Il catalogo modelli registra provider, runtime compatibili, classe di costo,

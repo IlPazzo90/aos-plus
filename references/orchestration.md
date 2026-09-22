@@ -384,44 +384,49 @@ verified installation files; model behavior requires separate observations.
 ## Runtime-independent Open Executor
 
 `bin/aos-open-executor.py` separates **role**, **runtime**, **provider**, **model**
-and **main_host**. The host chooses the preferred premium planner family, not the
-open model. Claude Code and Codex CLI can both host the pipeline and both serve as
-open-model harnesses. OpenCode remains supported and optional.
+and **main_host**. Host identity does not choose the planner family or executor.
+An explicit `planner_preference` may constrain the planner family; otherwise the
+catalog selects the cheapest sufficient role model. Claude Code and Codex CLI both
+host the pipeline. The currently enabled open harness is Claude Code; Codex CLI and
+OpenCode adapters remain present but are disabled by verified security findings.
 
 ```text
-TASK → classification → PREMIUM PLANNER → structured plan
-                                       ↓
-                                 OPEN EXECUTOR
-                         ┌─────────────┼─────────────┐
-                      Codex CLI    Claude Code    OpenCode
-                         └─────────────┼─────────────┘
-                          configured benchmark model
-                                       ↓
-                           DETERMINISTIC VERIFY
-                                       ↓
-                       PREMIUM CROSS-MODEL REVIEW
-                                       ↓
-                                VERIFY AGENT
-                                       ↓
-                                  OPEN FIXER
-                                       ↓
-                                  reverify → PASS
+TASK → classification → appropriate PLANNER (MID / PREMIUM for T2/T3)
+                                 ↓ structured plan
+                         CHEAP / OPEN EXECUTOR
+                      Claude Code file-tools runtime
+                         benchmark primary/fallback
+                                 ↓
+                       DETERMINISTIC VERIFY
+                                 ↓
+                      CROSS-FAMILY REVIEWER
+                                 ↓
+                  VERIFY AGENT validates findings
+                                 ↓
+                        CHEAP / OPEN FIXER
+                                 ↓
+                           reverify → PASS
 
-open primary → retry → open fallback → retry → premium executor
+primary → retry → fallback → retry → eligible MID → last-resort PREMIUM
 ```
+
+OpenCode and Codex CLI open execution require a new passing isolation gate before
+re-enablement. An explicit runtime override cannot bypass this block. This changes
+the eligible runtime, not the historical model winner. Main host capabilities and
+subscription planner/reviewer sessions remain separate.
+
 
 ### Configuration and use from either host
 
 `config/open-models.json` keeps `open.primary` and `open.fallback` unchanged.
-`executors.default_runtime` keeps the measured incumbent; `runtime_order` supplies
-an installed runtime when it is absent. `--runtime` explicitly selects a harness
+`executors.default_runtime` selects the security-eligible default; `runtime_order`
+supplies an enabled installed runtime when it is absent. `--runtime` explicitly selects a harness
 without changing the configured model. Runtime availability does not prove provider
 authentication. No selection silently substitutes an OpenAI or Anthropic model.
 
 ```sh
-python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime codex-cli
 python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime claude-code
-python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime opencode --slot fallback
+python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime claude-code --slot fallback
 ```
 
 The brief contains the task, structured premium plan, acceptance criteria, relevant
@@ -434,11 +439,11 @@ For T2/T3, call `aos-entry.py pipeline --directory /path/to/repo` with a JSON
 `start` action and data containing `main_host` (`claude-code` or `codex-cli`),
 `executor_runtime`, `classification` and `text`. Continue one authorized stage at a
 time using the returned state. The host owns state and authorization; model-generated
-state is not trusted. An explicit `codex-cli`/`claude-code` open runtime satisfies
-that harness capability without selecting its premium model. Host-only app/MCP
+state is not trusted. An enabled explicit open runtime satisfies its harness
+capability without selecting its premium model. Host-only app/MCP
 integrations remain outside the restricted worker.
 
-Codex uses the configured provider's Responses endpoint, `wire_api=responses`,
+The disabled Codex adapter is configured for the provider's Responses endpoint, `wire_api=responses`,
 `model_provider=aos_open`, and the model ID after its provider prefix. Claude uses
 the provider's Anthropic-compatible endpoint and the same model ID. Vercel endpoints
 are `/codex/v1` and `/claude-code`; other providers require explicit HTTPS endpoints
@@ -460,11 +465,11 @@ escalate privileges. GREEN is the only implemented native worker profile. YELLOW
 network/dependency operations require a separately authorized host action; RED and
 CRITICAL do not gain permission from an adapter.
 
-Codex uses a workspace-only native permission profile, read-only Git/runtime metadata,
-no network, no credential environment inheritance, no apps/plugins/hooks/subagents,
-and task-scoped native command deny rules. The task-scoped trust map activates only
-the adapter's own rules; it is removed after the run. No global runtime configuration
-is modified. System toolchain directories are readable, not writable.
+The attempted Codex native restrictive rule layer did not enforce a negative probe.
+OpenCode also read a denied synthetic `.env` and a symlink outside the fixture.
+Both adapters are blocked before invocation. Configured permission maps alone are
+not evidence of isolation. Global runtime configuration and the original delegate
+guard are unchanged; direct legacy delegate use is not certified by this upgrade.
 
 Claude uses restricted/safe mode and only Read/Glob/Grep/Edit/Write tools.
 **Its open adapter currently declares `shell=false`.** Negative sandbox probes found
@@ -482,7 +487,7 @@ remain available; same-family self-review is never labeled cross-model verificat
 
 `aos-bench.py --executors executors.json --out results` accepts a list of
 `{runtime, provider, model}`; model excludes the provider prefix. Legacy `--models`
-continues to work. Results group by `runtime|provider|model`; the same model under
+continues to work. Results retain `role=executor` and group by `runtime|provider|model`; the same model under
 two runtimes is two candidates. `--no-review` explicitly records `not_run`, never
 zero findings or reviewer acceptance. Revalidate the historical task before scoring:
 tests must fail on the parent and pass on the reference commit.
@@ -494,9 +499,9 @@ The model catalog in `config/open-models.json` supplies provider, compatible run
 cost class, capability scores, context, input/output prices and the availability of
 benchmark or historical evidence. The router selects the cheapest sufficient candidate
 within that data and the stated budget. The execution ladder is cheap primary, cheap
-fallback, an explicitly configured MID model, then premium. Codex CLI is excluded from
-open execution until a restrictive-policy probe passes; it remains a premium host and
-reviewer.
+fallback, an explicitly configured MID model, then premium. No MID entry means no MID
+attempt. Codex CLI is excluded from open execution until a real negative restrictive-
+policy probe passes; it remains available as the premium host and reviewer.
 Do not promote a runtime from connectivity tests, two-task samples, missing review
 or unknown cost. The existing benchmark winner remains authoritative until a complete,
 comparable benchmark and its review support changing the configuration.
@@ -511,3 +516,23 @@ Sources: [Codex provider configuration](https://learn.chatgpt.com/docs/config-fi
 [Vercel Codex endpoint](https://vercel.com/docs/ai-gateway/coding-agents/openai-codex),
 [Vercel Claude endpoint](https://vercel.com/docs/ai-gateway/coding-agents/claude-code),
 [Claude sandbox boundaries](https://code.claude.com/docs/en/sandboxing).
+
+## Verified learning and operational limits
+
+The host pipeline evaluates prompt context before each role call, writes structured
+handoff state and records role telemetry. `aos-operations.py` preserves protected
+context and blocks remaining RED requests. Its token estimate covers the supplied
+prompt, not all hidden runtime context. Cost caps are point-in-time checks; unknown
+billing under an active cap blocks execution rather than skipping required review.
+No concurrent budget reservation service is claimed.
+
+`aos-learning.py` admits scoped lessons only with complete observed host checks,
+keeps rejected candidates, and exposes project/date-filtered reports. Application
+records require evidence and a rollback reference. Model claims are never enough.
+Project-scoped routing advice requires multiple independent verified tasks; it does
+not overwrite the global benchmark winner. See [learning](learning.md).
+
+The 2026-09-22 live validation used open workers followed by MID recovery for failed
+bounded tasks. Native open editing and security denials were observed. Full release
+readiness still requires the complete host pipelines and independent review; see
+[validation](../docs/verifiche/premium-plan-open-execute/OPERATIONAL-VALIDATION.md).

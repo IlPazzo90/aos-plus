@@ -311,6 +311,155 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("zero_data_retention=not_configured", result.stdout)
         self.assertIn("AVVISO PRIVACY", result.stdout)
 
+    def _write_models_config(self, with_budgets=True, budgets_value=None, with_mid=False, with_invalid_budget=False):
+        codex, claude = self.roots
+        (claude / "config").mkdir(exist_ok=True)
+        cfg = {
+            "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813",
+                     "fallback": "vercel/alibaba/qwen3-coder-next",
+                     "source": "benchmark 2026-09-20"},
+            "model_catalog": {
+                "vercel/deepseek/deepseek-v4-pro-0813": {
+                    "cost_class": "CHEAP",
+                    "roles": ["executor", "fixer"],
+                    "benchmark": {"available": True, "status": "winner", "source": "comparable benchmark"}}},
+            "executors": {"runtime_status": {"codex-cli": {
+                "open_execution": False, "reason": "restrictive rule loading unverified"}},
+                "opencode": {"file_tools": True}, "claude-code": {"file_tools": True}},
+            "providers": {"vercel": {"api_key_env": "AOS_OPEN_API_KEY"}},
+            "premium": {"reviewer": "claude"},
+            "context_policy": {"defaults": {"target_context": 80000, "soft_limit": 120000, "hard_limit": 180000}}}
+        if budgets_value is not None:
+            cfg["budgets"] = budgets_value
+        elif with_budgets and not with_invalid_budget:
+            cfg["budgets"] = {"cheap": 1000, "mid": 5000}
+        elif with_invalid_budget:
+            cfg["budgets"] = {"cheap": float('nan')}
+        if with_mid:
+            cfg["model_catalog"]["vercel/alibaba/qwen3-coder-next"] = {
+                "cost_class": "MID",
+                "roles": ["primary"],
+                "benchmark": {"available": True, "status": "runnerup", "source": "comparable benchmark"}}
+        (claude / "config/open-models.json").write_text(json.dumps(cfg))
+        home = self.base / "home"
+        home.mkdir()
+        xdg = self.base / "xdg"
+        (xdg / "opencode").mkdir(parents=True, exist_ok=True)
+        (xdg / "opencode/opencode.json").write_text(json.dumps({
+            "provider": {"vercel": {"models": {
+                "deepseek/deepseek-v4-pro-0813": {"options": {"zeroDataRetention": True}},
+                "alibaba/qwen3-coder-next": {"options": {"zeroDataRetention": True}}}}}}))
+        return dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(xdg))
+
+    def test_operational_status_reports_policy_without_certifying_live(self):
+        env = self._write_models_config()
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("local health, no live certification", result.stdout)
+        self.assertIn("benchmark winner=vercel/deepseek/deepseek-v4-pro-0813", result.stdout)
+        self.assertIn("cost class (primary)=CHEAP", result.stdout)
+        self.assertIn("cost_budgets=configured", result.stdout)
+        self.assertIn("authentication unknown", result.stdout)
+
+    def test_operational_status_budgets_unset(self):
+        codex, claude = self.roots
+        (claude / "config").mkdir(exist_ok=True)
+        (claude / "config/open-models.json").write_text(json.dumps({
+            "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813"},
+            "model_catalog": {"vercel/deepseek/deepseek-v4-pro-0813": {"cost_class": "CHEAP"}},
+            "context_policy": {"defaults": {"target_context": 80000}},
+            "budgets": {"cheap": None, "mid": None}}))
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("cost_budgets=unset", result.stdout)
+
+    def test_operational_status_budgets_finite(self):
+        env = self._write_models_config(with_budgets=True, budgets_value={"cheap": 1000, "mid": 5000}, with_mid=True)
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("cost_budgets=configured (cheap, mid)", result.stdout)
+        self.assertIn("cost classes configured=CHEAP, MID", result.stdout)
+
+    def test_operational_status_budgets_invalid_nan(self):
+        env = self._write_models_config(with_budgets=True, budgets_value={"cheap": float('nan')})
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("CONFIG", result.stdout)
+        self.assertIn("cost_budgets=invalid", result.stdout)
+
+    def test_main_host_env_else_unknown(self):
+        env = self._write_models_config()
+        env["AOS_MAIN_HOST"] = "claude-code"
+        self.assertIn("main_host=claude-code", self.run_doctor(env).stdout)
+        env.pop("AOS_MAIN_HOST")
+        self.assertIn("main_host=unknown", self.run_doctor(env).stdout)
+
+    def test_codex_disabled_is_informational_when_another_runtime_exists(self):
+        env = self._write_models_config()
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("runtime codex-cli: disabled; reason=restrictive rule loading unverified", result.stdout)
+        self.assertIn("viable enabled installed runtime=", result.stdout)
+
+    def test_every_disabled_runtime_is_reported_and_none_viable_fails(self):
+        env = self._write_models_config()
+        cfg_path = self.roots[1] / "config/open-models.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg["executors"]["runtime_status"] = {
+            "opencode": {"open_execution": False, "reason": "external config path denied"},
+            "claude-code": {"open_execution": False, "reason": "host policy"},
+            "codex-cli": {"open_execution": False, "reason": "native rules unverified"},
+        }
+        cfg_path.write_text(json.dumps(cfg))
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("runtime opencode: disabled; reason=external config path denied", result.stdout)
+        self.assertIn("runtime claude-code: disabled; reason=host policy", result.stdout)
+        self.assertIn("runtime codex-cli: disabled; reason=native rules unverified", result.stdout)
+        self.assertIn("RUNTIME", result.stdout)
+
+    def test_enabled_installed_runtime_is_reported_without_live_security_claim(self):
+        env = self._write_models_config()
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir()
+        opencode = bin_dir / "opencode"
+        opencode.write_text("#!/bin/sh\n")
+        opencode.chmod(0o755)
+        env["PATH"] = str(bin_dir) + os.pathsep + "/bin"
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("runtime opencode: enabled by configuration; installed=yes; live security unknown", result.stdout)
+        self.assertIn("viable enabled installed runtime=opencode", result.stdout)
+
+    def test_missing_mid_candidate_is_a_warning(self):
+        env = self._write_models_config()
+        result = self.run_doctor(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AVVISO MID", result.stdout)
+
+    def test_malformed_model_config_is_an_error(self):
+        codex, claude = self.roots
+        (claude / "config").mkdir(exist_ok=True)
+        (claude / "config/open-models.json").write_text("{invalid")
+        result = self.run_doctor(dict(os.environ, HOME=str(self.base / "home")))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("CONFIG", result.stdout)
+
+    def test_hook_status_reports_declarations_without_executing(self):
+        home = self.base / "home"
+        (home / ".codex").mkdir(parents=True)
+        (home / ".codex/hooks.json").write_text(json.dumps({
+            "hooks": {"Stop": [{"matcher": "x",
+                                "hooks": [{"type": "command", "command": "touch SHOULD_NOT_RUN"}]}]}}))
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude/settings.json").write_text(json.dumps({"permissions": {"deny": []}}))
+        result = self.run_doctor(dict(os.environ, HOME=str(home)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Hook Stop (codex): configurato", result.stdout)
+        self.assertIn("Hook Stop (claude): non configurato", result.stdout)
+        self.assertNotIn("SHOULD_NOT_RUN", result.stdout + result.stderr)
+        self.assertFalse((self.base / "SHOULD_NOT_RUN").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

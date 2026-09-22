@@ -22,7 +22,7 @@ def start(tier, risk, planner, reviewer, primary, fallback, attempts, mid=None):
                 findings_total=0, findings_confirmed=0, findings_refuted=0,
                 open_retry_count=0, premium_execution_used=False,
                 current_execution_premium=False,
-                premium_execution_reason=None, history=[])
+                premium_execution_reason=None, escalation_events=[], history=[])
 
 
 def validate_plan(plan):
@@ -59,16 +59,29 @@ def validate_plan(plan):
 def fail(state, evidence):
     if not isinstance(evidence, str) or not evidence.strip():
         raise ValueError('failure evidence required')
+    previous_model, previous_stage = state.get('model'), state.get('stage')
     state['failures'] += 1
     count, limit = state['failures'], state['attempts']
     if count < limit:
         state.update(stage='execute', model=state['primary'])
+        target, gain = 'open_executor', 'retry of the configured open model; no capability gain'
     elif state['fallback'] and count < limit * 2:
         state.update(stage='execute', model=state['fallback'])
+        target, gain = 'open_executor', 'configured fallback class; capability gain is not guaranteed'
     elif state.get('mid') and count == limit * 2:
         state.update(stage='execute', model=state['mid'])
+        target, gain = 'open_executor', 'configured MID class; capability gain is not guaranteed'
     else:
         state.update(stage='escalate', premium_execution_reason='open_attempts_exhausted')
+        target, gain = 'premium_executor', 'premium executor target; capability gain is not guaranteed'
+    next_model = state.get('model') if target == 'open_executor' else None
+    transition = state.get('stage') != previous_stage or next_model != previous_model
+    state['escalation_events'].append(dict(
+        failure_count=count, previous_failure=evidence, previous_stage=previous_stage,
+        previous_model=previous_model, next_stage=state.get('stage'),
+        selected_next_model=next_model, target=target, transition=transition,
+        expected_capability_gain=gain, estimated_cost_increase=None,
+    ))
 
 
 def review_or_pass(state):

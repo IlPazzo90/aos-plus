@@ -158,15 +158,27 @@ class RouterTests(unittest.TestCase):
         d = router.decide("T2", "HIGH", config=strict, observable_check=True)
         self.assertEqual(d.executor, "premium")
 
+    def test_t1_high_assigns_a_configured_premium_reviewer_without_planner(self):
+        for families in (('codex', 'claude'), ('codex',), ('claude',)):
+            with self.subTest(families=families):
+                d = router.decide('T1', 'HIGH', config=self.config, observable_check=True,
+                                  premium_families=families)
+                self.assertIsNone(d.planner)
+                self.assertIn(d.reviewer, families)
+                self.assertIsNotNone(d.reviewer_model)
+                entry = self.config.catalog[d.reviewer_model]
+                self.assertEqual(entry['cost_class'], 'PREMIUM')
+                self.assertIn('reviewer', entry['roles'])
+                self.assertFalse(d.cross_model_review)
+                self.assertEqual(d.verify, 'premium_review')
+
     # 8. T3 -> premium planning/final review; open is reserved for bounded subtasks.
     def test_t3_routes_to_open_with_premium_plan_and_review(self):
         d = router.decide("T3", "MEDIUM", config=self.config)
         self.assertEqual(d.executor, "open")
         self.assertEqual(d.verify, "premium_review")
-        self.assertEqual(d.planner, self.config.escalation_executor)
-        self.assertEqual(d.reviewer, 'claude')
-        self.assertEqual(d.planner_model, self.config.premium_models[d.planner])
-        self.assertEqual(d.reviewer_model, self.config.premium_models[d.reviewer])
+        self.assertEqual((d.planner, d.planner_model), ('claude', 'anthropic/fable'))
+        self.assertEqual((d.reviewer, d.reviewer_model), ('codex', 'openai/gpt-6-astra'))
         self.assertEqual(d.fixer_model, self.config.open_primary)
 
 
@@ -224,6 +236,118 @@ class RouterTests(unittest.TestCase):
     def test_critical_cannot_be_overridden_into_execution(self):
         d = router.decide('T1', 'CRITICAL', config=self.config, manual_override=True)
         self.assertEqual(d.verify, 'needs_approval')
+
+    def _entry(self, provider, runtime, cost_class, scores, input_cost, output_cost):
+        return {'provider': provider, 'compatible_runtimes': [runtime],
+                'cost_class': cost_class, 'capability_scores': scores,
+                'roles': ['planner', 'reviewer', 'executor'],
+                'benchmark': {'available': True}, 'historical': {'available': True},
+                'input_cost_per_million': input_cost, 'output_cost_per_million': output_cost}
+
+    def test_catalog_mid_planner_for_simple_t2(self):
+        catalog = {
+            'openai/mid': self._entry('openai', 'codex-cli', 'MID',
+                                       {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.0, 2.0),
+            'openai/premium': self._entry('openai', 'codex-cli', 'PREMIUM',
+                                           {'planning': 5, 'reasoning': 5, 'review': 5, 'coding': 5}, 10.0, 20.0),
+            'anthropic/mid': self._entry('anthropic', 'claude-code', 'MID',
+                                         {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.5, 2.5),
+            'anthropic/premium': self._entry('anthropic', 'claude-code', 'PREMIUM',
+                                             {'planning': 5, 'reasoning': 5, 'review': 5, 'coding': 5}, 15.0, 25.0),
+        }
+        config = router.RoutingConfig(role_pipeline=True, catalog=catalog)
+        d = router.decide('T2', 'MEDIUM', config=config)
+        self.assertEqual(d.planner_model, 'openai/mid')
+        self.assertEqual(d.planner, 'codex')
+        self.assertEqual(d.reviewer_model, 'anthropic/mid')
+        self.assertEqual(d.reviewer, 'claude')
+
+    def test_catalog_premium_planner_for_high_uncertainty_t2(self):
+        catalog = {
+            'openai/mid': self._entry('openai', 'codex-cli', 'MID',
+                                       {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.0, 2.0),
+            'openai/premium': self._entry('openai', 'codex-cli', 'PREMIUM',
+                                           {'planning': 5, 'reasoning': 5, 'review': 5, 'coding': 5}, 10.0, 20.0),
+            'anthropic/mid': self._entry('anthropic', 'claude-code', 'MID',
+                                         {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.5, 2.5),
+            'anthropic/premium': self._entry('anthropic', 'claude-code', 'PREMIUM',
+                                             {'planning': 5, 'reasoning': 5, 'review': 5, 'coding': 5}, 15.0, 25.0),
+        }
+        config = router.RoutingConfig(role_pipeline=True, catalog=catalog)
+        d = router.decide('T2', 'HIGH', config=config, uncertainty='HIGH')
+        self.assertEqual(d.planner_model, 'openai/premium')
+        self.assertEqual(d.planner, 'codex')
+        self.assertEqual(d.reviewer_model, 'anthropic/premium')
+        self.assertEqual(d.reviewer, 'claude')
+
+    def test_catalog_opposite_provider_reviewer_when_available(self):
+        catalog = {
+            'openai/mid': self._entry('openai', 'codex-cli', 'MID',
+                                       {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.0, 2.0),
+            'anthropic/mid': self._entry('anthropic', 'claude-code', 'MID',
+                                         {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.5, 2.5),
+        }
+        config = router.RoutingConfig(role_pipeline=True, catalog=catalog, escalation_executor='claude')
+        d = router.decide('T2', 'MEDIUM', config=config, planner='claude')
+        self.assertEqual(d.planner, 'claude')
+        self.assertEqual(d.planner_model, 'anthropic/mid')
+        self.assertEqual(d.reviewer, 'codex')
+        self.assertEqual(d.reviewer_model, 'openai/mid')
+
+    def test_catalog_host_preference_only_explicit(self):
+        catalog = {
+            'openai/mid': self._entry('openai', 'codex-cli', 'MID',
+                                       {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.0, 2.0),
+            'anthropic/mid': self._entry('anthropic', 'claude-code', 'MID',
+                                         {'planning': 3, 'reasoning': 3, 'review': 3, 'coding': 4}, 1.5, 2.5),
+        }
+        config = router.RoutingConfig(role_pipeline=True, catalog=catalog)
+        d = router.decide('T2', 'MEDIUM', config=config, planner='codex')
+        self.assertEqual(d.planner, 'codex')
+        self.assertEqual(d.planner_model, 'openai/mid')
+        self.assertEqual(d.reviewer, 'claude')
+        self.assertEqual(d.reviewer_model, 'anthropic/mid')
+
+    def test_open_decision_premium_when_exhausted_with_mid_available(self):
+        config = router.RoutingConfig(open_primary='vendor/cheap', open_mid='vendor/mid',
+                                       retries_before_escalation=2)
+        d = router.decide('T1', 'LOW', config=config, failed_open_attempts=5)
+        self.assertEqual(d.executor, 'premium')
+        self.assertNotEqual(d.model, 'vendor/mid')
+        self.assertIn('exhausted', d.rationale[-1])
+
+    def test_real_catalog_keeps_configured_premium_models_without_benchmark(self):
+        d = router.decide('T3', 'MEDIUM', config=self.config, executor_runtime='opencode')
+        self.assertEqual((d.planner_model, d.reviewer_model), ('anthropic/fable', 'openai/gpt-6-astra'))
+
+    def test_legacy_role_pipeline_without_catalog_has_no_name_error(self):
+        config = router.RoutingConfig(role_pipeline=True, open_primary='vendor/open')
+        d = router.decide('T2', 'MEDIUM', config=config)
+        self.assertEqual((d.executor, d.planner, d.reviewer), ('open', 'codex', 'claude'))
+        self.assertEqual((d.planner_model, d.reviewer_model), (None, None))
+
+    def test_unavailable_family_never_claims_cross_model_review(self):
+        catalog = {'openai/mid': self._entry('openai', 'codex-cli', 'MID',
+                                               {'planning': 3, 'reasoning': 3, 'review': 3}, 1, 1)}
+        d = router.decide('T2', 'MEDIUM', config=router.RoutingConfig(role_pipeline=True, catalog=catalog))
+        self.assertEqual((d.planner, d.reviewer, d.cross_model_review), ('codex', None, False))
+
+    def test_zero_price_wins_and_nonfinite_prices_are_rejected(self):
+        catalog = {
+            'vendor/free': self._entry('vendor', 'opencode', 'CHEAP', {'coding': 3}, 0, 0),
+            'vendor/paid': self._entry('vendor', 'opencode', 'CHEAP', {'coding': 3}, 1, 1),
+            'vendor/nan': self._entry('vendor', 'opencode', 'CHEAP', {'coding': 3}, float('nan'), 1),
+        }
+        self.assertEqual(router.choose_model(router.RoutingConfig(catalog=catalog), 'executor',
+                                              capability_requirements={'coding': 3}, runtime='opencode'), 'vendor/free')
+
+    def test_benchmark_absence_is_not_unavailability_but_explicit_false_is(self):
+        entry = self._entry('vendor', 'opencode', 'CHEAP', {'coding': 3}, 1, 1)
+        entry['benchmark']['available'] = False
+        config = router.RoutingConfig(catalog={'vendor/configured': entry})
+        self.assertEqual(router.choose_model(config, 'executor', runtime='opencode'), 'vendor/configured')
+        entry['availability'] = False
+        self.assertIsNone(router.choose_model(config, 'executor', runtime='opencode'))
 
 
 if __name__ == "__main__":

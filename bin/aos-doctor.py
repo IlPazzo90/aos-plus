@@ -302,6 +302,151 @@ class Doctor:
                 self.warn("PRIVACY", f"{model}: zero_data_retention={status}",
                           "impostare zeroDataRetention: true sul modello, o verificare l'account del provider")
 
+    def operational_status(self, root):
+        # Read-only report of the routing/operational policy. Only
+        # config/open-models.json and PATH binary presence are inspected; a
+        # credential env var names presence, never live authentication, and zero
+        # anomalies here never means a live validation passed.
+        route = root / "config/open-models.json"
+        try:
+            raw = route.read_text()
+        except OSError:
+            return  # absent config: legacy behavior, nothing to report
+        try:
+            cfg = json.loads(raw)
+        except ValueError:
+            self.fail("CONFIG", "config/open-models.json illeggibile", "correggere il file")
+            return
+        if not isinstance(cfg, dict):
+            self.fail("CONFIG", "config/open-models.json non è un oggetto", "correggere il file")
+            return
+
+        print("Operational status: local health, no live certification")
+        host = os.environ.get("AOS_MAIN_HOST")
+        print(f"  main_host={host if host else 'unknown'}")
+
+        open_cfg = cfg.get("open")
+        open_cfg = open_cfg if isinstance(open_cfg, dict) else {}
+        primary = open_cfg.get("primary")
+        catalog = cfg.get("model_catalog")
+        catalog = catalog if isinstance(catalog, dict) else {}
+        entry = catalog.get(primary) if isinstance(primary, str) else {}
+        entry = entry if isinstance(entry, dict) else {}
+        benchmark = entry.get("benchmark") if isinstance(entry.get("benchmark"), dict) else {}
+        source = benchmark.get("source") or open_cfg.get("source") or "no source"
+        print(f"  benchmark winner={primary if primary else 'unknown'} "
+              f"({benchmark.get('status', 'unknown')}, {source})")
+        print(f"  cost class (primary)={entry.get('cost_class', 'unknown')}")
+        cost_classes = sorted(set(m.get("cost_class") for m in catalog.values() if isinstance(m, dict) and m.get("cost_class")))
+        print(f"  cost classes configured={', '.join(cost_classes) if cost_classes else 'none'}")
+
+        executors = cfg.get("executors")
+        executors = executors if isinstance(executors, dict) else {}
+        runtime_status = executors.get("runtime_status")
+        runtime_status = runtime_status if isinstance(runtime_status, dict) else {}
+        viable = []
+        for name, binary in (("opencode", "opencode"), ("claude-code", "claude"), ("codex-cli", "codex")):
+            status = runtime_status.get(name)
+            status = status if isinstance(status, dict) else {}
+            installed = shutil.which(binary) is not None
+            if status.get("open_execution") is False:
+                print(f"  runtime {name}: disabled; reason={status.get('reason') or 'disabled'}; installed={'yes' if installed else 'no'}")
+            else:
+                print(f"  runtime {name}: enabled by configuration; installed={'yes' if installed else 'no'}; live security unknown")
+                if installed:
+                    viable.append(name)
+        if viable:
+            print("  viable enabled installed runtime=" + ", ".join(viable))
+        else:
+            self.fail("RUNTIME", "nessuna runtime open abilitata e installata",
+                      "abilitare una runtime configurata e installare il relativo binario")
+
+        mid_models = [identity for identity, model in catalog.items()
+                      if isinstance(model, dict) and model.get("cost_class") == "MID"]
+        mid = bool(mid_models)
+        if mid:
+            print("  MID candidate configured=" + ", ".join(sorted(mid_models)))
+        if catalog and not mid:
+            self.warn("MID", "nessun modello MID configurato",
+                      "aggiungere un candidato MID con benchmark confrontabile o proseguire con primary/fallback/premium")
+
+        providers = cfg.get("providers")
+        providers = providers if isinstance(providers, dict) else {}
+        for name, block in providers.items():
+            if not isinstance(block, dict):
+                continue
+            env_name = block.get("api_key_env")
+            cred = isinstance(env_name, str) and bool(os.environ.get(env_name))
+            print(f"  provider {name}: configured (credential env {'set' if cred else 'not set'}); authentication unknown")
+
+        premium = cfg.get("premium")
+        premium = premium if isinstance(premium, dict) else {}
+        reviewer = premium.get("reviewer")
+        binaries = {"claude": "claude", "codex": "codex"}
+        if reviewer:
+            installed = isinstance(reviewer, str) and shutil.which(binaries.get(reviewer, reviewer)) is not None
+            print(f"  reviewer={reviewer} installed={'presente' if installed else 'assente'}, authenticated=unknown")
+
+        file_tools = [name for name in ("opencode", "claude-code")
+                      if ((isinstance(executors.get(name), dict) and executors[name].get("file_tools") is True)
+                          or (isinstance(runtime_status.get(name), dict)
+                              and runtime_status[name].get("file_tools") is True))]
+        if file_tools:
+            print("  file-tools policy configured for " + ", ".join(file_tools) + "; live security unknown")
+        permission_profile = executors.get("permission_profile")
+        if isinstance(permission_profile, str) and permission_profile:
+            print(f"  permission_profile configured={permission_profile}; live security unknown")
+
+        context_policy = cfg.get("context_policy")
+        context_policy = context_policy if isinstance(context_policy, dict) else {}
+        defaults = context_policy.get("defaults")
+        if isinstance(defaults, dict):
+            print(f"  context policy: target={defaults.get('target_context')}, "
+                  f"soft={defaults.get('soft_limit')}, hard={defaults.get('hard_limit')}")
+            print("  context_budgets=configured")
+        else:
+            print("  context_budgets=unknown")
+
+        cost_budgets = cfg.get("budgets")
+        if not isinstance(cost_budgets, dict) or not cost_budgets or all(value is None for value in cost_budgets.values()):
+            print("  cost_budgets=unset")
+        else:
+            invalid = [name for name, value in cost_budgets.items()
+                       if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                                 or value < 0 or value != value or value in (float("inf"), float("-inf")))]
+            if invalid:
+                self.fail("CONFIG", "budgets contiene valori non validi", "correggere i valori budget (solo numeri finiti non negativi)")
+                print("  cost_budgets=invalid")
+            else:
+                active = [name for name, value in cost_budgets.items() if value is not None]
+                print(f"  cost_budgets=configured ({', '.join(active)})")
+
+        learning = cfg.get("learning")
+        if isinstance(learning, dict):
+            enabled = bool(learning.get("enabled"))
+            db = learning.get("database")
+            exists = isinstance(db, str) and bool(db) and Path(db).expanduser().is_file()
+            print(f"  learning={'enabled' if enabled else 'disabled'}; database={'existing' if exists else 'missing'}")
+        else:
+            print("  learning=not_configured; database=unknown")
+
+    def hook_status(self):
+        # Read-only schema inspection of host Stop-hook declarations: only whether
+        # a Stop hook is declared, never its command, matcher or any path, and no
+        # configured hook is executed.
+        for name, path in (("codex", Path.home() / ".codex/hooks.json"),
+                           ("claude", Path.home() / ".claude/settings.json")):
+            configured = False
+            try:
+                data = json.loads(path.read_text())
+                hooks = data.get("hooks") if isinstance(data, dict) else None
+                stop = hooks.get("Stop") if isinstance(hooks, dict) else None
+                configured = isinstance(stop, list) and bool(stop)
+            except (OSError, ValueError):
+                configured = False
+            print(f"Hook Stop ({name}): {'configurato' if configured else 'non configurato'}")
+        print("Hook runtime: il protocollo richiede un test live separato per la validazione")
+
     def run(self, codex_root, claude_root):
         print(f"Python {sys.version.split()[0]}: {sys.executable}; sola verifica locale")
         if sys.version_info < (3, 9):
@@ -319,6 +464,8 @@ class Doctor:
         self.provider_privacy(claude_root)
         self.tmp_weight(claude_root)
         self.backups()
+        self.operational_status(claude_root)
+        self.hook_status()
         for root in (codex_root, claude_root):
             router = root.parent / "skill-library"
             try:
@@ -331,6 +478,7 @@ class Doctor:
         print("Open Executor: runtime separato dal modello; OpenCode opzionale. Claude open usa file tools, senza Bash.")
         print("Frontmatter: presenza campi; sintassi YAML completa non verificata (usare quick_validate).")
         print(f"CLI opzionali (solo PATH): {runtime}. Autenticazione e backend non verificati.")
+        print("Esito locale: sola verifica locale,nessuna certificazione live.")
         print(f"{'ERRORE' if self.errors else 'OK'}: {len(maintained)} file mantenuti in {claude_root}, "
               f"{self.errors} anomalie, {self.warnings} avvisi; nessuna modifica.")
         return 1 if self.errors else 0

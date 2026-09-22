@@ -12,6 +12,7 @@ import shutil
 import sys
 import subprocess
 from functools import lru_cache
+from fnmatch import fnmatchcase
 import tempfile
 from urllib.parse import urlparse
 
@@ -25,7 +26,7 @@ OPEN_EXECUTION_RUNTIMES = ('opencode', 'claude-code')
 # deny-rule layer. Keep the host usable, but refuse it as an open worker until a
 # real negative native-policy probe proves the restrictive contract.
 CODEX_RUNTIME_BLOCK = 'Codex CLI open execution is disabled: restrictive rule loading is unverified'
-CAPABILITIES = {name: dict(read_repo=True, write_repo=True, shell=name != 'claude-code',
+CAPABILITIES = {name: dict(read_repo=True, write_repo=True, shell=name == 'codex-cli',
                          structured_output=True, provider_override=True, model_override=True,
                          sandbox=name != 'opencode', network=False, subagent=False,
                          timeout=True, usage_reporting=True, json_output=True, tool_calling=True)
@@ -34,6 +35,15 @@ CAPABILITIES = {name: dict(read_repo=True, write_repo=True, shell=name != 'claud
 
 def policy():
     return json.loads((ROOT / 'config/open-models.json').read_text())
+
+
+def runtime_block(config, runtime):
+    executors = config.get('executors', {})
+    status = executors.get('runtime_status', {}) if isinstance(executors, dict) else {}
+    entry = status.get(runtime, {}) if isinstance(status, dict) else {}
+    if isinstance(entry, dict) and entry.get('open_execution') is False:
+        return str(entry.get('reason') or 'disabled by runtime policy')
+    return None
 
 
 def resolve(config=None, slot='primary', runtime=None, model=None, provider=None, required_capabilities=()):
@@ -47,13 +57,17 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
     if runtime is None:
         ordered = [settings.get('default_runtime', 'opencode')] + settings.get('runtime_order', list(RUNTIMES))
         runtime = next((r for r in ordered if r in OPEN_EXECUTION_RUNTIMES and shutil.which(RUNTIMES[r])
+                        and not runtime_block(config, r)
                         and all(CAPABILITIES[r].get(c) for c in required_capabilities)), None)
         if runtime is None and 'codex-cli' in ordered and shutil.which(RUNTIMES['codex-cli']):
             raise ValueError(CODEX_RUNTIME_BLOCK)
-    if runtime == 'codex-cli':
-        raise ValueError(CODEX_RUNTIME_BLOCK)
     if runtime not in RUNTIMES:
         raise ValueError('no compatible open runtime installed or invalid runtime')
+    blocked = runtime_block(config, runtime)
+    if blocked:
+        raise ValueError(f'{runtime} open execution is disabled: {blocked}')
+    if runtime == 'codex-cli':
+        raise ValueError(CODEX_RUNTIME_BLOCK)
     entry = config.get('model_catalog', {}).get(identity) if isinstance(config.get('model_catalog', {}), dict) else None
     if isinstance(entry, dict) and runtime not in entry.get('compatible_runtimes', ()):
         raise ValueError('selected model is not compatible with the requested runtime')
@@ -67,6 +81,9 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
 
 @lru_cache(maxsize=None)
 def check_runtime(runtime):
+    blocked = runtime_block(policy(), runtime)
+    if blocked:
+        raise ValueError(f'{runtime} open execution is disabled: {blocked}')
     if runtime == 'opencode':
         return
     if runtime == 'codex-cli':
@@ -191,6 +208,81 @@ def claude_command(repo, model, brief, runtime_tmp=None):
             '--tools', 'Read,Glob,Grep,Edit,Write', '--permission-mode', 'dontAsk',
             '--no-session-persistence', '--output-format', 'stream-json', '--verbose',
             '--effort', 'low', '--model', model, '--settings', json.dumps(settings), '--', brief]
+
+
+# The only environment an open OpenCode worker inherits: nothing that could carry a
+# credential or reopen a layer the run has already closed. Provider authentication is
+# in the task-scoped config, never a secret environment tool.
+OPENCODE_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+# A denylist has no closure, but the read tool is one bounded surface: deny secrets
+# and the directories that hold repository/editor metadata, while read/edit/write
+# stay permitted inside the repo. Ours go in last so a user's stricter read still wins.
+OPENCODE_READ_DENY = ("**/.env*", "**/*.pem", "**/*.key",
+                      ".git/**", "**/.git/**", ".claude/**", "**/.claude/**",
+                      ".codex/**", "**/.codex/**")
+
+
+def opencode_env(config_root, repo):
+    env = {key: os.environ[key] for key in OPENCODE_ENV_KEYS if key in os.environ}
+    env['XDG_CONFIG_HOME'] = str(config_root)
+    env['PWD'] = str(repo)
+    return env
+
+
+def inherited_tool_rules(permission, tool):
+    """Resolve matching OpenCode rules in their original insertion order."""
+    rules = {}
+    for pattern, value in permission.items():
+        if not isinstance(pattern, str) or not fnmatchcase(tool, pattern):
+            continue
+        if isinstance(value, str):
+            rules = {'*': value}
+        elif isinstance(value, dict):
+            rules.update((key, decision) for key, decision in value.items()
+                         if isinstance(key, str) and isinstance(decision, str))
+    return rules or {'*': 'allow'}
+
+
+def restrict_tool(permission, tool, deny_patterns):
+    """Append adapter denials without widening preceding user rules."""
+    rules = inherited_tool_rules(permission, tool)
+    for pattern in deny_patterns:
+        # Assignment retains an existing key's position, so pop it first: these
+        # restrictions must be the final matching rules.
+        rules.pop(pattern, None)
+        rules[pattern] = 'deny'
+    return rules
+
+
+def restrict_opencode(config):
+    """Restrictions appended to the task-only config, deny rules last, nothing replaced.
+
+    The bash allow+deny patterns carried by delegate.run_config are not isolation:
+    arbitrary python in the shell bypasses them. The whole bash tool is denied and the
+    worker is left with file tools inside the repo.
+    """
+    permission = config.get('permission')
+    if not isinstance(permission, dict):
+        permission = {'*': 'deny'}
+    def append_rule(name, value):
+        permission.pop(name, None)
+        permission[name] = value
+
+    append_rule('bash', 'deny')
+    for key in ('webfetch', 'websearch', 'task', 'external_directory', 'codesearch'):
+        append_rule(key, 'deny')
+    read_rules = restrict_tool(permission, 'read', OPENCODE_READ_DENY)
+    edit_deny_patterns = OPENCODE_READ_DENY + ('.git/**', '.claude/**', '.codex/**')
+    edit_rules = {tool: restrict_tool(permission, tool, edit_deny_patterns)
+                  for tool in ('edit', 'write', 'patch')}
+    append_rule('read', read_rules)
+    for tool, rules in edit_rules.items():
+        append_rule(tool, rules)
+    append_rule('lsp', 'deny')
+    config['permission'] = permission
+    config['formatter'] = False
+    config['lsp'] = False
+    return config
 
 
 class Stream:
@@ -360,11 +452,34 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
                 if rules_tmp:
                     rules_tmp.cleanup()
 
+    else:
+        # OpenCode: the guard is not the shell denylist (arbitrary python bypasses it)
+        # but file-tools-only isolation. The task-only config run_config builds is read,
+        # restricted in place, and served via the run's own XDG root; the process gets
+        # none of the inherited environment beyond the five safe keys.
+        def runner(workdir, model, prompt, seconds, cost, steps):
+            config_path = Path(delegate.run_config(model))
+            try:
+                config = json.loads(config_path.read_text())
+                config = restrict_opencode(config)
+                config_path.write_text(json.dumps(config))
+                env = opencode_env(config_path.parents[1], workdir)
+                prompt = ('FILE TOOLS ONLY. Do not use shell, skills, or test commands; '
+                          'the host runs tests. Do not alter tests or policy.\n\n' + prompt)
+                code, out, err = delegate.invoke(delegate.command(model, prompt, workdir),
+                                                 str(workdir), seconds, cost, steps, env)
+                return code, out, err
+            finally:
+                shutil.rmtree(config_path.parents[1], ignore_errors=True)
+
     result = delegate.run(repo, identity['model_ref'], brief, timeout, allow_dirty,
                           max_cost=max_cost, max_steps=max_steps, state_file=state_file, runner=runner)
+    catalog = policy().get('model_catalog', {}).get(identity['model_ref'], {})
     result.update(role=role, runtime=runtime, provider=identity['provider'],
                   executor_model=identity['model'], task_id=task_id,
                   runtime_model_pair=identity['runtime_model_pair'], permission_profile=permission_profile,
+                  cost_class=catalog.get('cost_class'), file_tools_isolation=True,
+                  isolation_level='file_tools_policy', isolation_verified=False,
                   result=result.get('reply', ''), files_changed=sorted(delegate.dirty_paths(repo) or [])
                   if not result.get('git_meta_changed') else None, tests=[])
     if stream:

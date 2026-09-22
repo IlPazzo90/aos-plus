@@ -9,51 +9,269 @@
   "model_catalog": {
     "vercel/deepseek/deepseek-v4-pro-0813": {
       "provider": "vercel",
-      "compatible_runtimes": ["opencode", "claude-code"],
+      "compatible_runtimes": [
+        "opencode",
+        "claude-code"
+      ],
       "cost_class": "CHEAP",
-      "capability_scores": {"coding": 5, "reasoning": 5, "planning": 4, "review": 3, "security": 3},
+      "capability_scores": {
+        "coding": 5,
+        "reasoning": 5,
+        "planning": 4,
+        "review": 3,
+        "security": 3,
+        "tool_use": 3
+      },
       "context": 1000000,
-      "input_cost_per_million": null,
-      "output_cost_per_million": null,
-      "roles": ["executor", "fixer"],
-      "benchmark": {"available": true, "status": "winner", "source": "2026-09-20 comparable OpenCode benchmark"},
-      "historical": {"available": true, "source": "existing AOS benchmark record"}
+      "input_cost_per_million": 0.66,
+      "output_cost_per_million": 1.9800000000000002,
+      "roles": [
+        "executor",
+        "fixer"
+      ],
+      "benchmark": {
+        "available": true,
+        "status": "winner",
+        "source": "2026-09-20 comparable OpenCode benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "existing AOS benchmark record"
+      },
+      "id": "vercel/deepseek/deepseek-v4-pro-0813",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null,
+      "privacy_status": "configured; provider enforcement not independently verified",
+      "availability": "configured",
+      "pricing_source": "https://ai-gateway.vercel.sh/v1/models",
+      "pricing_observed_at": "2026-09-22",
+      "pricing_details": {
+        "input": "0.00000066",
+        "output": "0.00000198",
+        "input_cache_read": "0.000000066",
+        "peak_pricing": {
+          "multiplier": 2,
+          "windows": [
+            {
+              "start_minute_utc": 0,
+              "end_minute_utc": 840
+            }
+          ]
+        },
+        "varies_by_provider": true,
+        "regional": {
+          "us": {
+            "input": "0.00000132",
+            "output": "0.00000396",
+            "input_cache_read": "0.000000132"
+          }
+        }
+      },
+      "pricing_basis": "published base token prices; peak/regional/provider charges may differ",
+      "provider_reported_zdr": "some"
     },
     "vercel/alibaba/qwen3-coder-next": {
       "provider": "vercel",
-      "compatible_runtimes": ["opencode", "claude-code"],
+      "compatible_runtimes": [
+        "opencode",
+        "claude-code"
+      ],
       "cost_class": "CHEAP",
-      "capability_scores": {"coding": 4, "reasoning": 3, "planning": 3, "review": 3, "security": 3},
-      "context": 262144,
-      "input_cost_per_million": null,
-      "output_cost_per_million": null,
-      "roles": ["executor", "fixer"],
-      "benchmark": {"available": true, "status": "fallback", "source": "2026-09-20 comparable OpenCode benchmark"},
-      "historical": {"available": true, "source": "existing AOS benchmark record"}
+      "capability_scores": {
+        "coding": 4,
+        "reasoning": 3,
+        "planning": 3,
+        "review": 3,
+        "security": 3,
+        "tool_use": 3
+      },
+      "context": 256000,
+      "input_cost_per_million": 0.5,
+      "output_cost_per_million": 1.2,
+      "roles": [
+        "executor",
+        "fixer"
+      ],
+      "benchmark": {
+        "available": true,
+        "status": "fallback",
+        "source": "2026-09-20 comparable OpenCode benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "existing AOS benchmark record"
+      },
+      "id": "vercel/alibaba/qwen3-coder-next",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null,
+      "privacy_status": "configured; provider enforcement not independently verified",
+      "availability": "configured",
+      "pricing_source": "https://ai-gateway.vercel.sh/v1/models",
+      "pricing_observed_at": "2026-09-22",
+      "pricing_details": {
+        "input": "0.0000005",
+        "output": "0.0000012"
+      },
+      "pricing_basis": "published base token prices; peak/regional/provider charges may differ",
+      "provider_reported_zdr": "all"
     },
     "anthropic/fable": {
       "provider": "anthropic",
-      "compatible_runtimes": ["claude-code"],
+      "compatible_runtimes": [
+        "claude-code"
+      ],
       "cost_class": "PREMIUM",
-      "capability_scores": {"coding": 5, "reasoning": 5, "planning": 5, "review": 5, "security": 5},
+      "capability_scores": {
+        "coding": 5,
+        "reasoning": 5,
+        "planning": 5,
+        "review": 5,
+        "security": 5,
+        "tool_use": 3
+      },
       "context": 1000000,
       "input_cost_per_million": null,
       "output_cost_per_million": null,
-      "roles": ["planner", "executor", "reviewer", "fixer"],
-      "benchmark": {"available": false, "status": "not_compared", "source": "no comparable metered benchmark"},
-      "historical": {"available": true, "source": "configured premium host runtime"}
+      "roles": [
+        "planner",
+        "executor",
+        "reviewer",
+        "fixer"
+      ],
+      "benchmark": {
+        "available": false,
+        "status": "not_compared",
+        "source": "no comparable metered benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "configured premium host runtime"
+      },
+      "id": "anthropic/fable",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null,
+      "privacy_status": "configured; provider enforcement not independently verified",
+      "availability": "configured"
     },
     "openai/gpt-6-astra": {
       "provider": "openai",
-      "compatible_runtimes": ["codex-cli"],
+      "compatible_runtimes": [
+        "codex-cli"
+      ],
       "cost_class": "PREMIUM",
-      "capability_scores": {"coding": 5, "reasoning": 5, "planning": 5, "review": 5, "security": 5},
+      "capability_scores": {
+        "coding": 5,
+        "reasoning": 5,
+        "planning": 5,
+        "review": 5,
+        "security": 5,
+        "tool_use": 3
+      },
       "context": 400000,
       "input_cost_per_million": null,
       "output_cost_per_million": null,
-      "roles": ["planner", "executor", "reviewer", "fixer"],
-      "benchmark": {"available": false, "status": "not_compared", "source": "no comparable metered benchmark"},
-      "historical": {"available": true, "source": "configured premium host runtime"}
+      "roles": [
+        "planner",
+        "executor",
+        "reviewer",
+        "fixer"
+      ],
+      "benchmark": {
+        "available": false,
+        "status": "not_compared",
+        "source": "no comparable metered benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "configured premium host runtime"
+      },
+      "id": "openai/gpt-6-astra",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null,
+      "privacy_status": "configured; provider enforcement not independently verified",
+      "availability": "configured"
+    },
+    "openai/gpt-5.6-sol": {
+      "id": "openai/gpt-5.6-sol",
+      "provider": "openai",
+      "compatible_runtimes": [
+        "codex-cli"
+      ],
+      "cost_class": "MID",
+      "capability_scores": {
+        "coding": 3,
+        "reasoning": 3,
+        "planning": 3,
+        "review": 3,
+        "security": 3,
+        "tool_use": 3
+      },
+      "context": 400000,
+      "roles": [
+        "planner",
+        "reviewer"
+      ],
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "benchmark": {
+        "available": false,
+        "status": "not_compared",
+        "source": "role capability policy; no comparable quality benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "configured subscription runtime; live availability checked separately"
+      },
+      "score_source": "conservative policy thresholds, not measured benchmark scores",
+      "billing": "subscription; marginal token price unknown",
+      "availability": "configured",
+      "privacy_status": "provider account policy; not independently verified",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null
+    },
+    "anthropic/sonnet": {
+      "id": "anthropic/sonnet",
+      "provider": "anthropic",
+      "compatible_runtimes": [
+        "claude-code"
+      ],
+      "cost_class": "MID",
+      "capability_scores": {
+        "coding": 3,
+        "reasoning": 3,
+        "planning": 3,
+        "review": 3,
+        "security": 3,
+        "tool_use": 3
+      },
+      "context": 200000,
+      "roles": [
+        "planner",
+        "reviewer"
+      ],
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "benchmark": {
+        "available": false,
+        "status": "not_compared",
+        "source": "role capability policy; no comparable quality benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "configured subscription runtime; live availability checked separately"
+      },
+      "score_source": "conservative policy thresholds, not measured benchmark scores",
+      "billing": "subscription; marginal token price unknown",
+      "availability": "configured",
+      "privacy_status": "provider account policy; not independently verified",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null
     }
   },
   "premium": {
@@ -200,19 +418,31 @@
     "note": "Unavailable capability and permission refusal are blockers, not failed open attempts."
   },
   "executors": {
-    "default_runtime": "opencode",
+    "default_runtime": "claude-code",
     "runtime_order": [
+      "claude-code",
       "opencode",
-      "codex-cli",
-      "claude-code"
+      "codex-cli"
     ],
     "runtime_status": {
       "codex-cli": {
         "open_execution": false,
         "reason": "Native restrictive rule loading is unverified; do not route an open worker here."
+      },
+      "opencode": {
+        "open_execution": false,
+        "file_tools": true,
+        "isolation_verified": false,
+        "reason": "Live negative probe read a denied .env and an external symlink; requires verified isolation before re-enabling."
+      },
+      "claude-code": {
+        "open_execution": true,
+        "file_tools": true,
+        "isolation_verified": false,
+        "reason": "File tools only; host runs checks. Live probes do not certify full OS isolation."
       }
     },
-    "source": "Existing OpenCode benchmark; alternative runtimes require comparative measurements before promotion.",
+    "source": "Runtime availability is constrained by live security probes; model benchmark ranking unchanged.",
     "permission_profile": "GREEN"
   },
   "providers": {
@@ -222,5 +452,18 @@
       "api_key_env": "AOS_OPEN_API_KEY",
       "opencode_credentials": true
     }
+  },
+  "budgets": {
+    "max_task_cost": null,
+    "daily_budget": null,
+    "monthly_budget": null,
+    "premium_budget": null
+  },
+  "learning": {
+    "enabled": true,
+    "database": "~/.local/state/aos/learning.sqlite3",
+    "global_min_independent_evidence": 3,
+    "automatic_global_policy_changes": false,
+    "min_routing_observations": 5
   }
 }
