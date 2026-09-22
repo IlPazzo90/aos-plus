@@ -69,6 +69,7 @@ bin/aos-delegate.py
 bin/aos-entry.py
 bin/aos-pipeline.py
 bin/aos-open-executor.py
+bin/aos-isolation.py
 bin/aos-router.py
 bin/aos-security.sh
 bin/aos-install.sh

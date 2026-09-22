@@ -300,6 +300,23 @@ class RuntimeTests(unittest.TestCase):
         self.step('verify')
         self.assertEqual(entry.learning.report(self.learning_db)['lessons']['approved'], 1)
 
+    def test_a_check_that_changes_git_metadata_blocks_the_pipeline(self):
+        # Round 3 finding: a check runs the worker's code and could write .git/config
+        # while the pipeline reached pass with no fingerprint taken.
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        real = entry.delegate.git_meta
+        calls = {'n': 0}
+
+        def drifting(paths):
+            calls['n'] += 1
+            return {'config': 'modified'} if calls['n'] > 1 else real(paths)
+        with patch.object(entry.delegate, 'git_meta', side_effect=drifting):
+            with self.assertRaisesRegex(ValueError, 'check changed repository metadata'):
+                self.step('check', {'id': 'unit', 'argv': ['python3', '-c', 'pass']})
+        self.assertEqual(self.state['checks'], [])
+
     def test_context_red_blocks_before_worker(self):
         self.step('plan')
         with patch.object(entry.operations, 'prepare_context', side_effect=ValueError('context still RED')):

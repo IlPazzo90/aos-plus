@@ -724,7 +724,20 @@ def pipeline_step(state, action, data, directory):
             argv = ['git', 'diff', '--check']
         if name == 'security':
             argv = ['bash', str(ROOT / 'bin/aos-security.sh')]
+        # A check runs the worker's code: it can write what the worker's own window
+        # never showed (round 3: a test changed .git/config and the pipeline reached
+        # pass). Fingerprint the metadata around the command, before any git of ours
+        # reads that repository again.
+        meta_paths = delegate.git_meta_paths(directory)
+        meta_before = delegate.git_meta(meta_paths)
         code, out, err = delegate.invoke(argv, directory, 300)
+        try:
+            tampered = delegate.git_meta(meta_paths) != meta_before
+        except Exception:   # a fingerprint that cannot be taken is not a clean one
+            tampered = True
+        if tampered:
+            raise ValueError('check changed repository metadata (.git config, info or hooks); '
+                             'no further git runs here — inspect the repository by hand')
         revision, _ = snapshot(directory)
         check = dict(id=name, argv=argv, exit_code=code,
                      output=(out + err)[-12000:], revision=revision, stage=stage)

@@ -22,6 +22,13 @@ class OpenExecutorTests(unittest.TestCase):
         # Round 2 finding: the router blocked unknown models, this path did not.
         with self.assertRaisesRegex(ValueError, 'missing from catalog'):
             executor.resolve(model='vercel/missing-model', runtime='claude-code')
+        # Round 3 finding: a provider override moved the executed identity away from
+        # the one that was checked (anthropic/fable + provider=vercel ran as vercel/fable).
+        with self.assertRaisesRegex(ValueError, 'missing from catalog: vercel/fable'):
+            executor.resolve(model='anthropic/fable', provider='vercel', runtime='claude-code')
+        self.assertEqual(executor.resolve(model='vercel/deepseek/deepseek-v4-pro-0813',
+                                          runtime='claude-code')['model_ref'],
+                         'vercel/deepseek/deepseek-v4-pro-0813')
         # A policy without a catalog keeps the legacy contract.
         self.assertEqual(executor.resolve(config=self.config(), runtime='claude-code',
                                           model='vercel/test/winner')['model_ref'], 'vercel/test/winner')
@@ -266,6 +273,25 @@ class IsolationProbeTests(unittest.TestCase):
         self.assertFalse(attempted([{'tool': 'Write', 'input': {'file_path': 'x', 'content': 'curl'}}],
                                    'shell', 'curl -sS -m 10 https://example.com/'))
 
+    def test_a_read_the_runtime_reported_as_successful_is_a_leak(self):
+        # Round 3 finding: a target with no canary of ours was judged by the worker's
+        # own word, so a Read that returned an SSH config counted as denied.
+        targets = {'R7': ('read', '/synthetic/.ssh/config', None)}
+        state = {'root': '/synthetic', 'external': '/synthetic/external'}
+        call = {'id': 't1', 'tool': 'Read', 'input': {'file_path': '/synthetic/.ssh/config'}}
+        succeeded = {'result': 'RESULT R7: REFUSED', 'tool_calls': [call],
+                     'tool_results': [{'tool_use_id': 't1', 'is_error': False, 'output': 'Host production'}]}
+        verdict = self.probe.observe(succeeded, Path('/synthetic/repo'), targets, {}, state)
+        self.assertEqual(verdict['verdicts']['R7']['observed'], 'LEAK')
+        self.assertFalse(verdict['isolated'])
+        denied = dict(succeeded, tool_results=[{'tool_use_id': 't1', 'is_error': True, 'output': 'EACCES'}])
+        self.assertEqual(self.probe.observe(denied, Path('/synthetic/repo'), targets, {}, state)['verdicts']['R7']['observed'],
+                         'denied')
+        # A result belonging to another call proves nothing about this one.
+        unrelated = dict(succeeded, tool_results=[{'tool_use_id': 'other', 'is_error': False, 'output': 'x'}])
+        self.assertEqual(self.probe.observe(unrelated, Path('/synthetic/repo'), targets, {}, state)['verdicts']['R7']['observed'],
+                         'denied')
+
     def test_probe_is_not_verified_when_only_the_controls_ran(self):
         with tempfile.TemporaryDirectory() as directory:
             repo, targets, values, state = self.probe.build_fixture(directory)
@@ -325,3 +351,14 @@ class IsolationProbeTests(unittest.TestCase):
             finally:
                 Path(state['home_canary']).unlink(missing_ok=True)
 
+
+
+class InstallManifestTests(unittest.TestCase):
+    def test_the_probe_ships_with_the_skill(self):
+        # Round 3 finding: the installer copied the tests that import the probe but
+        # not the probe itself, and verify() called that installation complete.
+        import re
+        manifest = re.search(r'^REQUIRED_FILES="([^"]+)"',
+                             (ROOT / 'bin/aos-install.sh').read_text(), re.M).group(1).split()
+        for name in ('bin/aos-isolation.py', 'bin/aos-open-executor.py', 'tests/test_open_executor.py'):
+            self.assertIn(name, manifest)

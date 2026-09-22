@@ -71,6 +71,10 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
         if blocked:
             raise ValueError(f'{runtime} open execution is disabled: {blocked}')
     catalog = config.get('model_catalog') if isinstance(config.get('model_catalog'), dict) else None
+    # The identity that runs is `provider/model`, which a provider override can move
+    # away from the one asked for (round 3: model=anthropic/fable provider=vercel ran
+    # as vercel/fable). The catalog must know the identity that actually runs.
+    identity = f'{provider}/{model_id}'
     entry = catalog.get(identity) if catalog else None
     if catalog and entry is None and probe_root is None:
         # Round 2 finding: the router blocked unknown models, this path did not, so
@@ -282,10 +286,15 @@ class Stream:
             if kind == 'item.completed':
                 step = item.get('type') in ('command_execution', 'file_change', 'mcp_tool_call')
                 if item.get('type') == 'command_execution':
-                    self.tool_results.append({k: item.get(k) for k in ('command', 'exit_code', 'aggregated_output')})
-                    self.tool_calls.append({'tool': 'shell', 'input': {'command': item.get('command')}})
+                    self.tool_results.append({'tool_use_id': item.get('id'), 'is_error': item.get('exit_code') != 0,
+                                              **{k: item.get(k) for k in ('command', 'exit_code', 'aggregated_output')}})
+                    self.tool_calls.append({'id': item.get('id'), 'tool': 'shell',
+                                            'input': {'command': item.get('command')}})
                 if item.get('type') == 'file_change':
-                    self.tool_calls.append({'tool': 'file_change', 'input': {'changes': item.get('changes')}})
+                    self.tool_calls.append({'id': item.get('id'), 'tool': 'file_change',
+                                            'input': {'changes': item.get('changes')}})
+                    self.tool_results.append({'tool_use_id': item.get('id'),
+                                              'is_error': item.get('status') not in (None, 'completed')})
                 if item.get('type') == 'agent_message':
                     self.reply = item.get('text', '')
             if kind == 'turn.completed':
@@ -305,7 +314,8 @@ class Stream:
                 step = True
                 for part in event.get('message', {}).get('content', []):
                     if isinstance(part, dict) and part.get('type') == 'tool_use':
-                        self.tool_calls.append({'tool': part.get('name'), 'input': part.get('input')})
+                        self.tool_calls.append({'id': part.get('id'), 'tool': part.get('name'),
+                                                'input': part.get('input')})
             if event.get('type') == 'result':
                 usage = event.get('usage', {})
                 self.usage.update(input_tokens=usage.get('input_tokens'), output_tokens=usage.get('output_tokens'),
