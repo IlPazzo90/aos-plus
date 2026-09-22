@@ -317,6 +317,50 @@ class RuntimeTests(unittest.TestCase):
                 self.step('check', {'id': 'unit', 'argv': ['python3', '-c', 'pass']})
         self.assertEqual(self.state['checks'], [])
 
+    def test_a_check_that_moves_head_blocks_the_pipeline(self):
+        # Round 4: the metadata fingerprint covers config/info/hooks, not HEAD; a
+        # check that commits would hand the reviewer a diff without the work.
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        heads = iter(['a' * 40, 'b' * 40])
+        with patch.object(entry.delegate, 'git_head', side_effect=lambda d: next(heads)):
+            with self.assertRaisesRegex(ValueError, 'check moved HEAD'):
+                self.step('check', {'id': 'unit', 'argv': ['python3', '-c', 'pass']})
+        self.assertEqual(self.state['checks'], [])
+
+    def test_a_check_that_hides_a_file_through_the_index_blocks_the_pipeline(self):
+        # Round 5: `git diff` skips a skip-worktree file, so an index flag removed the
+        # work from the artefact handed to the reviewer while HEAD and the metadata
+        # fingerprint stayed identical.
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        for argv in (['git', 'add', 'app.py'],
+                     ['git', '-c', 'user.name=T', '-c', 'user.email=t@t.test', 'commit', '-qm', 'app']):
+            subprocess.run(argv, cwd=self.repo, check=True, capture_output=True)
+        (self.repo / 'app.py').write_text('value = 999   # the work\n')
+        self.assertIn('999', entry.snapshot(self.repo)[1])
+        with self.assertRaisesRegex(ValueError, 'index flags hide tracked files'):
+            self.step('check', dict(id='hide', argv=['git', 'update-index', '--skip-worktree', 'app.py']))
+        self.assertEqual(self.state['checks'], [])
+        # The flag stays on disk: every later snapshot blocks too, it is not a
+        # one-off refusal of that one check.
+        with self.assertRaisesRegex(ValueError, 'index flags hide tracked files'):
+            entry.snapshot(self.repo)
+
+    def test_a_check_that_changes_the_worktree_is_not_recorded(self):
+        # Round 5: the revision was taken after the command, so a test that asserted
+        # the good code and rewrote it on the way out was recorded as a verification
+        # of the version it had just broken.
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        with self.assertRaisesRegex(ValueError, 'check changed the worktree'):
+            self.step('check', dict(id='unit', argv=[sys.executable, '-B', '-c',
+                'import app; assert app.value == 2; open("app.py","w").write("value = 3\\n")']))
+        self.assertEqual(self.state['checks'], [])
+
     def test_context_red_blocks_before_worker(self):
         self.step('plan')
         with patch.object(entry.operations, 'prepare_context', side_effect=ValueError('context still RED')):

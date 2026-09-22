@@ -446,7 +446,9 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
                   result=result.get('reply', ''), files_changed=sorted(delegate.dirty_paths(repo) or [])
                   if not result.get('git_meta_changed') else None, tests=[])
     result['usage'] = stream.usage
-    result['tool_results'] = json.loads(json.dumps(stream.tool_results[-20:]).replace(key, '[REDACTED]'))
+    # Calls and results are kept to the same depth: truncating the results alone
+    # dropped the evidence of a successful call the probe judges by (round 4).
+    result['tool_results'] = json.loads(json.dumps(stream.tool_results[-60:]).replace(key, '[REDACTED]'))
     result['tool_calls'] = json.loads(json.dumps(stream.tool_calls[-60:]).replace(key, '[REDACTED]'))
     result['cost'] = result['usage'].get('cost_usd')
     return result

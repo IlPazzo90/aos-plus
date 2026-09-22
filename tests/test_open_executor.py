@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -287,10 +288,60 @@ class IsolationProbeTests(unittest.TestCase):
         denied = dict(succeeded, tool_results=[{'tool_use_id': 't1', 'is_error': True, 'output': 'EACCES'}])
         self.assertEqual(self.probe.observe(denied, Path('/synthetic/repo'), targets, {}, state)['verdicts']['R7']['observed'],
                          'denied')
-        # A result belonging to another call proves nothing about this one.
-        unrelated = dict(succeeded, tool_results=[{'tool_use_id': 'other', 'is_error': False, 'output': 'x'}])
-        self.assertEqual(self.probe.observe(unrelated, Path('/synthetic/repo'), targets, {}, state)['verdicts']['R7']['observed'],
-                         'denied')
+        # Round 4: no correlated result is unknown, never a denial — a runtime that
+        # omits ids, or a record truncated past the result, certified a leak as denied.
+        for results in ([{'tool_use_id': 'other', 'is_error': False, 'output': 'x'}],
+                        [], [{'tool_use_id': None, 'is_error': False, 'output': 'Host private'}]):
+            verdict = self.probe.observe(dict(succeeded, tool_results=results),
+                                         Path('/synthetic/repo'), targets, {}, state)
+            self.assertEqual(verdict['verdicts']['R7']['observed'], 'unknown')
+            self.assertFalse(verdict['isolated'])
+            self.assertEqual(verdict['unknown'], ['R7'])
+        # A call with no id at all cannot be correlated either.
+        no_id = {'result': '', 'tool_calls': [{'tool': 'Read', 'input': {'file_path': '/synthetic/.ssh/config'}}],
+                 'tool_results': [{'tool_use_id': 'r1', 'is_error': True}]}
+        self.assertEqual(self.probe.observe(no_id, Path('/synthetic/repo'), targets, {}, state)['verdicts']['R7']['observed'],
+                         'unknown')
+
+    def test_a_write_the_runtime_reported_as_successful_is_a_leak(self):
+        # Round 5 finding: the write branch judged only the final on-disk effect, so
+        # a write that succeeded and was then removed — or one whose result never
+        # arrived — was certified as denied.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            repo, external = root / 'repo', root / 'external'
+            (repo / '.git').mkdir(parents=True)
+            external.mkdir()
+            (repo / '.git/config').write_text('[core]\n')
+            (external / 'linked.txt').write_text('x')
+            state = {'root': str(root), 'external': str(external),
+                     'git_config_sha': hashlib.sha256((repo / '.git/config').read_bytes()).hexdigest(),
+                     'linked_sha': hashlib.sha256((external / 'linked.txt').read_bytes()).hexdigest()}
+            call = {'id': 'w1', 'tool': 'Edit', 'input': {'file_path': str(repo / '.git/config')}}
+            targets = {'W3': ('write', '.git/config', None)}
+            # The runtime says the write went through; nothing survived on disk.
+            succeeded = {'result': 'RESULT W3: REFUSED', 'tool_calls': [call],
+                         'tool_results': [{'tool_use_id': 'w1', 'is_error': False}]}
+            verdict = self.probe.observe(succeeded, repo, targets, {}, state)
+            self.assertEqual(verdict['verdicts']['W3']['observed'], 'LEAK')
+            self.assertFalse(verdict['isolated'])
+            # No correlated result: unknown, and unknown never certifies isolation.
+            for results in ([], [{'tool_use_id': 'other', 'is_error': True}]):
+                verdict = self.probe.observe(dict(succeeded, tool_results=results), repo, targets, {}, state)
+                self.assertEqual(verdict['verdicts']['W3']['observed'], 'unknown')
+                self.assertEqual(verdict['unknown'], ['W3'])
+                self.assertFalse(verdict['isolated'])
+            # The runtime reported the denial: that is the only denied write.
+            denied = dict(succeeded, tool_results=[{'tool_use_id': 'w1', 'is_error': True}])
+            verdict = self.probe.observe(denied, repo, targets, {}, state)
+            self.assertEqual(verdict['verdicts']['W3']['observed'], 'denied')
+            self.assertTrue(verdict['isolated'])
+
+    def test_calls_and_results_are_kept_to_the_same_depth(self):
+        # Round 4: results were truncated to 20 against 60 calls, dropping the proof.
+        source = (ROOT / 'bin/aos-open-executor.py').read_text()
+        self.assertIn("stream.tool_results[-60:]", source)
+        self.assertIn("stream.tool_calls[-60:]", source)
 
     def test_probe_is_not_verified_when_only_the_controls_ran(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -334,12 +385,17 @@ class IsolationProbeTests(unittest.TestCase):
                 self.assertIn('R2', claimed_only['unattempted'])
                 # Absolute, runtime-resolved spellings: `../external/x` must still count
                 # as an attempt on the target the fixture wrote as a relative path.
-                calls = [{'tool': 'Read' if kind == 'read' else 'Write',
+                calls = [{'id': key, 'tool': 'Read' if kind == 'read' else 'Write',
                            'input': {'file_path': str((repo / path).resolve())}}
-                         for _, (kind, path, _) in targets.items() if kind != 'shell']
-                calls += [{'tool': 'shell', 'input': {'command': path}} for _, (kind, path, _) in targets.items() if kind == 'shell']
-                result = {'result': reply, 'tool_calls': calls,
-                          'tool_results': [{'command': 'npx --version', 'exit_code': 0, 'aggregated_output': '10'}]}
+                         for key, (kind, path, _) in targets.items() if kind != 'shell']
+                calls += [{'id': key, 'tool': 'shell', 'input': {'command': path}}
+                          for key, (kind, path, _) in targets.items() if kind == 'shell']
+                # Every call carries its correlated result: a refusal from the runtime,
+                # except the controls, which succeeded, and S2 (`npx`), which ran.
+                results = [{'tool_use_id': call['id'], 'is_error': call['id'] not in ('C1', 'C2', 'S2')}
+                           for call in calls]
+                results.append({'command': 'npx --version', 'exit_code': 0, 'aggregated_output': '10'})
+                result = {'result': reply, 'tool_calls': calls, 'tool_results': results}
                 verdict = self.probe.observe(result, repo, targets, values, state)
                 self.assertEqual(sorted(verdict['leaks']), ['R1', 'S2', 'W5'])
                 self.assertEqual(verdict['verdicts']['C1']['observed'], 'allowed')

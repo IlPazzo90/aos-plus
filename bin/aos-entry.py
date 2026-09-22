@@ -371,6 +371,14 @@ def json_reply(result):
 def snapshot(directory):
     """Full worktree evidence, including new files; never silently truncate."""
     head = delegate.git(directory, 'rev-parse', 'HEAD', check=True).stdout.strip()
+    # Round 5: `git diff` skips a tracked file marked skip-worktree or
+    # assume-unchanged, so an index flag removes real work from the artefact
+    # without touching HEAD or the metadata fingerprint. No flag, no diff.
+    flags = delegate.git(directory, 'ls-files', '-v', check=True).stdout
+    hidden = [line[2:] for line in flags.splitlines() if line[:1] == 'S' or line[:1].islower()]
+    if hidden:
+        raise ValueError('index flags hide tracked files from the diff '
+                         '(skip-worktree or assume-unchanged): ' + ', '.join(sorted(hidden)))
     diff = delegate.git(directory, 'diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', check=True).stdout
     names = delegate.git(directory, 'ls-files', '--others', '--exclude-standard', '-z', check=True).stdout
     extra = []
@@ -730,6 +738,8 @@ def pipeline_step(state, action, data, directory):
         # reads that repository again.
         meta_paths = delegate.git_meta_paths(directory)
         meta_before = delegate.git_meta(meta_paths)
+        head_before = delegate.git_head(directory)
+        revision_before, _ = snapshot(directory)
         code, out, err = delegate.invoke(argv, directory, 300)
         try:
             tampered = delegate.git_meta(meta_paths) != meta_before
@@ -738,7 +748,17 @@ def pipeline_step(state, action, data, directory):
         if tampered:
             raise ValueError('check changed repository metadata (.git config, info or hooks); '
                              'no further git runs here — inspect the repository by hand')
+        if delegate.git_head(directory) != head_before:
+            # The fingerprint covers what makes git run a command, not HEAD: a check
+            # that commits would hand the reviewer a diff with the work removed.
+            raise ValueError('check moved HEAD; the verified revision is no longer the reviewed one')
         revision, _ = snapshot(directory)
+        if revision != revision_before:
+            # Round 5: the exit code describes the tree the command ran against. A
+            # check that asserts the good code and rewrites it on the way out was
+            # recorded as a verification of the version it had just broken.
+            raise ValueError('check changed the worktree; its exit code does not describe '
+                             'the revision now on disk')
         check = dict(id=name, argv=argv, exit_code=code,
                      output=(out + err)[-12000:], revision=revision, stage=stage)
         state['checks'] = [c for c in state['checks'] if c['id'] != name] + [check]
