@@ -11,9 +11,13 @@ Every command is a no-op when no session id is available, so a missing status
 directory can never fail a delegation.
 """
 import argparse
+import contextlib
+import fcntl
 import importlib.util
 import json
 import os
+import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -26,8 +30,14 @@ def status_dir():
     return Path(os.environ.get('AOS_STATUS_DIR') or (Path.home() / '.claude/aos-status'))
 
 
+SESSION_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+
+
 def session_id(explicit=None):
-    return explicit or os.environ.get('CLAUDE_CODE_SESSION_ID') or ''
+    # The id becomes a file name: anything that could leave the status directory
+    # (a separator, a leading dot, `..`) is treated as no session at all.
+    value = explicit or os.environ.get('CLAUDE_CODE_SESSION_ID') or ''
+    return value if SESSION_RE.match(value) and '..' not in value else ''
 
 
 def record_path(session):
@@ -36,9 +46,23 @@ def record_path(session):
 
 def load(session):
     try:
-        return json.loads(record_path(session).read_text())
+        data = json.loads(record_path(session).read_text())
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+@contextlib.contextmanager
+def locked(session):
+    """Serialize read-modify-write of one session record across processes."""
+    directory = status_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    with open(directory / (session + '.lock'), 'w') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def catalog(model_ref):
@@ -179,26 +203,47 @@ def write(session, state, ttl):
     directory = status_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = record_path(session)
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(state, ensure_ascii=False))
-    temporary.replace(path)
+    fd, temporary = tempfile.mkstemp(dir=str(directory), prefix=session + '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(json.dumps(state, ensure_ascii=False))
+        os.replace(temporary, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
     return state
 
 
 def cmd_set(args):
     session = session_id(args.session)
+    if not session:
+        return {}
+    routed = routed_executor(args.tier, args.risk)
+    with locked(session):
+        return _set(session, args, routed)
+
+
+def _set(session, args, routed):
     state = load(session)
     # A new classification replaces the routing but keeps the tokens already spent
     # in this session: the bar shows the session's cost, not the last task's.
     state.update(tier=args.tier, risk=args.risk, executor=args.executor, model=args.model,
                  planner=args.planner, reviewer=args.reviewer,
-                 routed_executor=routed_executor(args.tier, args.risk))
+                 routed_executor=routed)
     state.setdefault('tokens', {'input': 0, 'output': 0, 'cache': 0})
     state.setdefault('cost_usd', None)
     return write(session, state, args.ttl)
 
 
 def add_usage(session, model_ref, tokens, ttl):
+    if not session:
+        return {}
+    with locked(session):
+        return _add_usage(session, model_ref, tokens, ttl)
+
+
+def _add_usage(session, model_ref, tokens, ttl):
     state = load(session)
     total = state.get('tokens') or {}
     for key in ('input', 'output', 'cache'):
@@ -230,6 +275,8 @@ def cmd_usage(args):
             result = json.loads(text)
         except ValueError:
             return {}
+        if not isinstance(result, dict):
+            return {}
         return add_usage(session, result.get('model_ref') or args.model,
                          tokens_from_result(result), args.ttl)
     tokens = {'input': args.input, 'output': args.output, 'cache': args.cache}
@@ -247,8 +294,18 @@ def cmd_show(args):
 def cmd_clear(args):
     session = session_id(args.session)
     if session:
-        record_path(session).unlink(missing_ok=True)
+        # Under the lock, and the lock file stays: deleting it would let a waiting
+        # writer and a new one hold locks on two different inodes.
+        with locked(session):
+            record_path(session).unlink(missing_ok=True)
     return ''
+
+
+def _count(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError('must be >= 0')
+    return number
 
 
 def main(argv=None):
@@ -269,9 +326,9 @@ def main(argv=None):
 
     usage = sub.add_parser('usage', help='add the tokens an open worker burned')
     usage.add_argument('--model')
-    usage.add_argument('--input', type=int, default=0)
-    usage.add_argument('--output', type=int, default=0)
-    usage.add_argument('--cache', type=int, default=0)
+    usage.add_argument('--input', type=_count, default=0)
+    usage.add_argument('--output', type=_count, default=0)
+    usage.add_argument('--cache', type=_count, default=0)
     usage.add_argument('--from-result', help='aos-open-executor.py JSON, or - for stdin')
     usage.set_defaults(handler=cmd_usage)
 
@@ -293,6 +350,6 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except OSError:
+    except Exception:  # noqa: BLE001
         # The status bar is cosmetic: never fail a delegation because of it.
         sys.exit(0)

@@ -190,7 +190,8 @@ def claude_command(repo, model, brief, runtime_tmp=None):
                             'credentials': {'envVars': [{'name': n, 'mode': 'deny'} for n in
                                                         ('ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'AOS_OPEN_API_KEY')]}}}
     return ['claude', '-p', '--safe-mode', '--restricted', '--disable-slash-commands',
-            '--tools', 'Read,Glob,Grep,Edit,Write', '--permission-mode', 'dontAsk',
+            '--tools', 'Read,Glob,Grep,Edit,Write', '--allowedTools', 'Read,Glob,Grep,Edit,Write',
+            '--permission-mode', 'dontAsk',
             '--no-session-persistence', '--output-format', 'stream-json', '--verbose',
             '--effort', 'low', '--model', model, '--settings', json.dumps(settings), '--', brief]
 
@@ -270,6 +271,7 @@ class Stream:
         self.error = None
         self.tool_results = []
         self.tool_calls = []
+        self._message_id = None
 
     def __call__(self, line):
         try:
@@ -280,7 +282,7 @@ class Stream:
             return ''
         step = False
         if self.runtime == 'codex-cli':
-            kind, item = event.get('type'), event.get('item', {})
+            kind, item = event.get('type'), event.get('item') or {}
             if not isinstance(item, dict):
                 item = {}
             if kind == 'item.completed':
@@ -296,37 +298,46 @@ class Stream:
                     self.tool_results.append({'tool_use_id': item.get('id'),
                                               'is_error': item.get('status') not in (None, 'completed')})
                 if item.get('type') == 'agent_message':
-                    self.reply = item.get('text', '')
+                    self.reply = item.get('text') or ''
             if kind == 'turn.completed':
-                usage = event.get('usage', {})
+                usage = event.get('usage') or {}
                 self.usage.update(input_tokens=usage.get('input_tokens'), output_tokens=usage.get('output_tokens'),
                                   cache_read_tokens=usage.get('cached_input_tokens'))
             if kind in ('error', 'turn.failed'):
                 self.error = str(event.get('message') or event.get('error'))
         else:
+            message = event.get('message') if isinstance(event.get('message'), dict) else {}
             if event.get('type') == 'user':
-                for part in event.get('message', {}).get('content', []):
+                for part in message.get('content') or []:
                     if isinstance(part, dict) and part.get('type') == 'tool_result':
                         self.tool_results.append({'tool_use_id': part.get('tool_use_id'),
                                                   'is_error': part.get('is_error', False),
                                                   'output': part.get('content')})
             if event.get('type') == 'assistant':
-                step = True
-                for part in event.get('message', {}).get('content', []):
+                # Claude emits one assistant event per content block (thinking,
+                # text, tool_use): a step is a model turn, i.e. a new message id.
+                message_id = message.get('id')
+                step = message_id is None or message_id != self._message_id
+                self._message_id = message_id
+                for part in message.get('content') or []:
                     if isinstance(part, dict) and part.get('type') == 'tool_use':
                         self.tool_calls.append({'id': part.get('id'), 'tool': part.get('name'),
                                                 'input': part.get('input')})
             if event.get('type') == 'result':
-                usage = event.get('usage', {})
+                usage = event.get('usage') or {}
                 self.usage.update(input_tokens=usage.get('input_tokens'), output_tokens=usage.get('output_tokens'),
                                   cache_read_tokens=usage.get('cache_read_input_tokens'))
                 # Claude reports an estimate even for unknown custom-model prices.
                 # Only gateway billing or an explicit known basis can establish cost.
-                self.reply = event.get('result', '')
+                self.reply = event.get('result') or ''
                 if event.get('is_error'):
                     self.error = str(event.get('errors') or self.reply)
-                if event.get('permission_denials'):
-                    self.error = 'permission denied; do not escalate as a model failure'
+                denials = event.get('permission_denials')
+                if denials:
+                    first = denials[0] if isinstance(denials[0], dict) else {}
+                    target = (first.get('tool_input') or {}).get('file_path') if isinstance(first.get('tool_input'), dict) else None
+                    self.error = ('permission denied (%s%s); do not escalate as a model failure'
+                                  % (first.get('tool_name') or 'tool', ' ' + target if target else ''))
         if step:
             self.usage['steps'] += 1
             return json.dumps({'type': 'step_finish', 'part': {}}) + '\n'
@@ -377,6 +388,12 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
     if permission_profile != 'GREEN':
         raise ValueError('only GREEN open execution is implemented; no automatic privilege increase')
     repo = Path(repo).resolve()
+    # Claude Code treats any path with a .claude/.codex segment as a sensitive file
+    # and denies every write there, whatever the permission mode: refuse before any
+    # token is spent (2.5.2 paid for a whole run of denied edits under ~/.claude).
+    if {'.claude', '.codex'} & set(repo.parts):
+        raise ValueError('repo is under a .claude/.codex path, where the harness denies every write; '
+                         'delegate from a worktree outside it (git worktree add --detach <path>)')
     if probe_root is not None:
         probe_root = probe_fixture(probe_root)
         if probe_root not in repo.parents:

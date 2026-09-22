@@ -1,11 +1,11 @@
 # AOS Plus — AI Development Operating System
 
-> **2.4.0.** Il routing separa host, ruolo, runtime e modello; T2 definiti scelgono
-> MID per planning/review. L'harness open è Claude Code con soli strumenti file sotto
-> un profilo seatbelt macOS, verificato bersaglio per bersaglio da una sonda d'attacco
-> (13/13 negati). Codex resta host, planner, reviewer cross-family ed escalation
-> premium, e non esegue lavoro open. Stato e prove:
-> [validazione operativa](docs/verifiche/premium-plan-open-execute/OPERATIONAL-VALIDATION.md).
+> **2.6.0.** Il router decide anche i task piccoli: un T0 resta sulla sessione host,
+> sul suo subagent economico per rischio (`host_subagents` nella politica), e non passa
+> più dal worker open. La review cross-model vale per ogni T2/T3 a qualsiasi rischio,
+> mai per T0/T1. L'harness open è Claude Code con soli strumenti file sotto seatbelt;
+> rifiuta prima di spendere un repository sotto `.claude/` o `.codex/`, dove ogni
+> scrittura verrebbe negata.
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using

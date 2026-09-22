@@ -62,13 +62,16 @@ def fail(state, evidence):
     previous_model, previous_stage = state.get('model'), state.get('stage')
     state['failures'] += 1
     count, limit = state['failures'], state['attempts']
+    # The MID model gets one attempt once the cheap budget is spent: primary
+    # retries, plus the fallback's when one is configured.
+    cheap_budget = limit * 2 if state['fallback'] else limit
     if count < limit:
         state.update(stage='execute', model=state['primary'])
         target, gain = 'open_executor', 'retry of the configured open model; no capability gain'
     elif state['fallback'] and count < limit * 2:
         state.update(stage='execute', model=state['fallback'])
         target, gain = 'open_executor', 'configured fallback class; capability gain is not guaranteed'
-    elif state.get('mid') and count == limit * 2:
+    elif state.get('mid') and count == cheap_budget:
         state.update(stage='execute', model=state['mid'])
         target, gain = 'open_executor', 'configured MID class; capability gain is not guaranteed'
     else:
@@ -206,6 +209,7 @@ def metrics(state):
     result['benchmark_pair'] = result['runtime_model_pair']
     result['open_executor_success'] = sum(e.get('exit_code') == 0 for e in open_events)
     result['open_executor_retry'] = state.get('open_retry_count', 0)
-    result['open_fallback_used'] = any(e.get('model') == state.get('fallback') for e in open_events)
+    result['open_fallback_used'] = bool(state.get('fallback')) and any(
+        e.get('model') == state['fallback'] for e in open_events)
     result['estimated_premium_tokens_saved'] = None  # Requires a comparable measured baseline.
     return result

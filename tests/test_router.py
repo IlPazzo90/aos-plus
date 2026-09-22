@@ -46,13 +46,17 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(self.config.open_primary, "config/open-models.json must set open.primary")
 
     # 1. T0/LOW -> open primary executor.
-    def test_t0_low_routes_to_open_primary(self):
-        d = router.decide("T0", "LOW", config=self.config)
-        self.assertEqual(d.executor, "open")
-        self.assertEqual(d.model, "vercel/deepseek/deepseek-v4-pro-0813")
-        self.assertEqual(d.provider, "vercel")
-        self.assertTrue(d.routed_by_aos)
-        self.assertFalse(d.manual_model_override)
+    def test_t0_stays_on_the_host_with_a_cheaper_subagent_by_risk(self):
+        policy = json.loads(CONFIG.read_text())['host_subagents']
+        for risk, klass in (('LOW', 'cheap'), ('MEDIUM', 'mid'), ('HIGH', None)):
+            d = router.decide("T0", risk, config=self.config)
+            self.assertEqual((d.executor, d.host_model_class, d.model), ('main', klass, None), risk)
+            self.assertTrue(d.routed_by_aos)
+            self.assertIsNone(d.reviewer)
+            for host in ('claude', 'codex'):
+                named = router.decide("T0", risk, config=self.config, host=host)
+                self.assertEqual(named.model, policy[host][klass] if klass else None, (risk, host))
+        self.assertEqual(router.decide("T0", "CRITICAL", config=self.config).verify, 'needs_approval')
 
     # 2. T1/MEDIUM -> DeepSeek/open winner via config, not hardcoded in the router.
     def test_t1_medium_routes_to_config_open_winner(self):
@@ -161,21 +165,21 @@ class RouterTests(unittest.TestCase):
         d = router.decide("T2", "HIGH", config=strict, observable_check=True)
         self.assertEqual(d.executor, "premium")
 
-    def test_t1_high_assigns_a_configured_premium_reviewer_without_planner(self):
+    def test_t1_high_gets_inline_checks_not_an_external_reviewer(self):
+        # External cross-model review is for T2/T3 (HIGH included); T0/T1 HIGH
+        # run the extended HIGH checks inline.
         for families in (('codex', 'claude'), ('codex',), ('claude',)):
             with self.subTest(families=families):
                 d = router.decide('T1', 'HIGH', config=self.config, observable_check=True,
                                   premium_families=families)
                 self.assertIsNone(d.planner)
-                self.assertIn(d.reviewer, families)
-                self.assertIsNotNone(d.reviewer_model)
-                entry = self.config.catalog[d.reviewer_model]
-                self.assertEqual(entry['cost_class'], 'PREMIUM')
-                self.assertIn('reviewer', entry['roles'])
+                self.assertIsNone(d.reviewer)
                 self.assertFalse(d.cross_model_review)
-                self.assertEqual(d.verify, 'premium_review')
+                self.assertEqual(d.verify, 'deterministic')
+        d = router.decide('T2', 'HIGH', config=self.config)
+        self.assertTrue(d.cross_model_review)
+        self.assertEqual(d.verify, 'premium_review')
 
-    # 8. T3 -> premium planning/final review; open is reserved for bounded subtasks.
     def test_t3_routes_to_open_with_premium_plan_and_review(self):
         d = router.decide("T3", "MEDIUM", config=self.config)
         self.assertEqual(d.executor, "open")
@@ -395,12 +399,98 @@ class CommandLineDefaultTests(unittest.TestCase):
         self.assertEqual(decision['executor'], 'open')
 
     def test_an_explicit_config_still_wins_over_the_default(self):
+        # The explicit file is read (not the default), and an unusable one is an
+        # error rather than a silent route to main.
         with tempfile.TemporaryDirectory() as directory:
-            unusable = Path(directory) / 'policy.json'
-            unusable.write_text(json.dumps({'schema': 2}))
-            decision = self.run_cli('--tier', 'T1', '--risk', 'LOW', '--config', str(unusable), '--json')
-        self.assertEqual(decision['executor'], 'main')
-        self.assertIn('not eligible for open', decision['rationale'])
+            for payload in ({'schema': 2}, None):
+                unusable = Path(directory) / 'policy.json'
+                if payload is None:
+                    unusable.unlink()
+                else:
+                    unusable.write_text(json.dumps(payload))
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    code = router.main(['--tier', 'T1', '--risk', 'LOW', '--config', str(unusable), '--json'])
+                self.assertEqual(code, 2)
+                self.assertIn('non utilizzabile', err.getvalue())
+
+    def test_open_ladder_never_goes_backwards_from_premium(self):
+        config = router.load_config(CONFIG)
+        # An eligible MID (the fallback's model, reused) with the fallback unavailable:
+        # primary twice, then the MID stands in; once the caller reports it ran, premium.
+        config = router.replace(config, open_mid=config.open_fallback)
+        seen = [router.decide('T1', 'LOW', config=config, open_fallback_available=False,
+                              failed_open_attempts=n) for n in range(3)]
+        self.assertEqual([d.model for d in seen[:2]], [config.open_primary] * 2)
+        self.assertIn('mid open', seen[2].rationale)
+        after = [router.decide('T1', 'LOW', config=config, open_fallback_available=False,
+                               mid_available=False, failed_open_attempts=n) for n in range(3, 6)]
+        self.assertEqual([d.executor for d in after], ['premium'] * 3)
+
+    def test_manual_override_keeps_the_t2_review(self):
+        config = router.load_config(CONFIG)
+        for tier in ('T2', 'T3'):
+            for host, opposite in (('claude', 'codex'), ('codex', 'claude')):
+                d = router.decide(tier, 'HIGH', config=config, manual_override=True, host=host)
+                self.assertEqual((d.executor, d.reviewer, d.verify, d.cross_model_review),
+                                 ('main', opposite, 'premium_review', True), (tier, host))
+                self.assertIsNotNone(d.reviewer_model)
+        for risk in ('LOW', 'MEDIUM'):
+            d = router.decide('T2', risk, config=config, manual_override=True, host='codex')
+            self.assertEqual(d.reviewer, 'claude', risk)
+            self.assertIsNotNone(d.reviewer_model, risk)
+        for kwargs in (dict(premium_reviewer_available=False), dict(premium_families=('claude',))):
+            d = router.decide('T2', 'HIGH', config=config, manual_override=True, host='claude', **kwargs)
+            self.assertEqual((d.reviewer, d.reviewer_model, d.verify, d.cross_model_review),
+                             (None, None, 'reported', False), kwargs)
+        d = router.decide('T1', 'HIGH', config=config, manual_override=True, host='claude')
+        self.assertIsNone(d.reviewer)
+
+    def test_a_fallback_lost_after_its_turns_still_leaves_the_mid(self):
+        config = router.RoutingConfig(open_primary='vendor/primary', open_fallback='vendor/fallback',
+                                      open_mid='vendor/mid', retries_before_escalation=2)
+        d = router.decide('T1', 'LOW', config=config, failed_open_attempts=4,
+                          open_fallback_available=False)
+        self.assertEqual((d.executor, d.model), ('open', 'vendor/mid'))
+
+    def test_router_and_pipeline_give_the_mid_the_same_budget(self):
+        import importlib.util as iu
+        spec = iu.spec_from_file_location('pipe_for_mid', CONFIG.parents[1] / 'bin/aos-pipeline.py')
+        pipe = iu.module_from_spec(spec)
+        spec.loader.exec_module(pipe)
+        for fallback in (None, 'vendor/fallback'):
+            config = router.RoutingConfig(open_primary='vendor/primary', open_fallback=fallback,
+                                          open_mid='vendor/mid', retries_before_escalation=2)
+            state = pipe.start('T1', 'LOW', None, None, 'vendor/primary', fallback, 2, mid='vendor/mid')
+            for n in range(7):
+                d = router.decide('T1', 'LOW', config=config, failed_open_attempts=n)
+                routed = d.model if d.executor == 'open' else 'premium'
+                piped = state['model'] if state['stage'] == 'execute' else 'premium'
+                self.assertEqual(routed, piped, (fallback, n))
+                if state['stage'] == 'execute':
+                    pipe.fail(state, 'failed')
+
+    def test_a_primary_lost_mid_task_does_not_consume_the_fallback(self):
+        config = router.load_config(CONFIG)
+        d = router.decide('T1', 'LOW', config=config, open_primary_available=False,
+                          failed_open_attempts=2)
+        self.assertEqual((d.executor, d.model), ('open', config.open_fallback))
+
+    def test_no_premium_review_is_promised_without_a_reviewer(self):
+        config = router.load_config(CONFIG)
+        for risk in ('MEDIUM', 'HIGH'):
+            decision = router.decide('T2', risk, config=config, premium_reviewer_available=False)
+            if decision.reviewer is None:
+                self.assertNotEqual(decision.verify, 'premium_review', risk)
+
+    def test_catalog_with_a_string_roles_field_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = json.loads(CONFIG.read_text())
+            first = next(iter(data['model_catalog']))
+            data['model_catalog'][first]['roles'] = 'executor-only'
+            path = Path(directory) / 'policy.json'
+            path.write_text(json.dumps(data))
+            self.assertEqual(router.load_config(path), router.RoutingConfig())
 
 if __name__ == "__main__":
     unittest.main()

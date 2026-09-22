@@ -313,7 +313,8 @@ class Doctor:
             isolation = status.get("os_isolation", "none")
             verified = status.get("isolation_verified") is True
             evidence = status.get("isolation_evidence")
-            evidence_present = isinstance(evidence, str) and (root / evidence).is_file()
+            evidence_problem = self.isolation_evidence_problem(root, evidence, name, isolation)
+            evidence_present = evidence_problem is None
             if status.get("open_execution") is False:
                 print(f"  runtime {name}: disabled; reason={status.get('reason') or 'disabled'}; installed={'yes' if installed else 'no'}")
             else:
@@ -321,7 +322,7 @@ class Doctor:
                       f"os_isolation={isolation}; isolation "
                       f"{'verified by ' + evidence if verified and evidence_present else 'unverified'}")
                 if verified and not evidence_present:
-                    self.warn("RUNTIME", f"{name}: isolation_verified senza record di sonda leggibile",
+                    self.warn("RUNTIME", f"{name}: isolation_verified senza record di sonda valido ({evidence_problem})",
                               "eseguire bin/aos-isolation.py e indicare il record in isolation_evidence")
                 if isolation == "seatbelt" and shutil.which("sandbox-exec") is None:
                     self.warn("RUNTIME", f"{name}: os_isolation=seatbelt ma sandbox-exec assente",
@@ -403,21 +404,63 @@ class Doctor:
         else:
             print("  learning=not_configured; database=unknown")
 
+    @staticmethod
+    def isolation_evidence_problem(root, evidence, runtime, isolation):
+        """None when the probe record proves this runtime's isolation, else why not.
+
+        A file that merely exists proved nothing: any record, of another runtime or
+        with leaks, made the line read "isolation verified".
+        """
+        if not isinstance(evidence, str) or not evidence:
+            return "nessun record indicato"
+        path = root / evidence
+        try:
+            path.resolve().relative_to(root.resolve())
+        except (OSError, ValueError, RuntimeError):
+            return "record fuori dalla root AOS"
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return "record assente o illeggibile"
+        if not isinstance(data, dict):
+            return "record non è un oggetto"
+        if data.get("runtime") != runtime:
+            return f"record di un'altra runtime ({data.get('runtime')})"
+        if data.get("os_isolation") != isolation:
+            return f"record con os_isolation={data.get('os_isolation')}, configurato {isolation}"
+        if data.get("isolated") is not True:
+            return "il record non dichiara isolated=true"
+        if data.get("leaks") != []:
+            return "il record riporta fughe"
+        return None
+
     def hook_status(self):
-        # Read-only schema inspection of host Stop-hook declarations: only whether
-        # a Stop hook is declared, never its command, matcher or any path, and no
-        # configured hook is executed.
+        # Read-only schema inspection of host Stop-hook declarations. The command is
+        # read only to tell AOS's own hooks from third-party ones (gstack, Impeccable)
+        # and is never printed nor executed. AOS ships no Stop hook today: calling a
+        # third-party hook "configurato" read as if AOS's were in place.
         for name, path in (("codex", Path.home() / ".codex/hooks.json"),
                            ("claude", Path.home() / ".claude/settings.json")):
-            configured = False
+            ours = theirs = 0
             try:
                 data = json.loads(path.read_text())
                 hooks = data.get("hooks") if isinstance(data, dict) else None
                 stop = hooks.get("Stop") if isinstance(hooks, dict) else None
-                configured = isinstance(stop, list) and bool(stop)
+                for entry in stop if isinstance(stop, list) else []:
+                    inner = entry.get("hooks") if isinstance(entry, dict) else None
+                    for hook in inner if isinstance(inner, list) else [entry]:
+                        command = hook.get("command") if isinstance(hook, dict) else None
+                        if isinstance(command, str) and "/skills/aos/" in command:
+                            ours += 1
+                        else:
+                            theirs += 1
             except (OSError, ValueError):
-                configured = False
-            print(f"Hook Stop ({name}): {'configurato' if configured else 'non configurato'}")
+                pass
+            if not ours and not theirs:
+                print(f"Hook Stop ({name}): non configurato")
+            else:
+                aos = f"{ours} hook AOS" if ours else "nessun hook AOS"
+                print(f"Hook Stop ({name}): {aos}; {theirs} hook di terzi")
         print("Hook runtime: il protocollo richiede un test live separato per la validazione")
 
     def run(self, codex_root, claude_root):

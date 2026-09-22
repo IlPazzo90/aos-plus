@@ -123,7 +123,12 @@ def main():
                     imports.update(alias.name.split(".")[0] for alias in node.names)
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     imports.add(node.module.split(".")[0])
-            if "pytest" in imports:
+            # Plain pytest style needs no import: bare `def test_x(): assert ...`
+            # functions are what pytest collects, and they were not evidence at all.
+            plain = "unittest" not in imports and any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test")
+                for node in tree.body)
+            if "pytest" in imports or plain:
                 pytest_evidence.append(str(path))
                 from_test_files = True
             if "unittest" in imports:

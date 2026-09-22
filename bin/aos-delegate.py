@@ -234,7 +234,7 @@ def parse_reply(text):
         except json.JSONDecodeError:
             continue
         if event.get("type") == "text":
-            parts.append((event.get("part") or {}).get("text", ""))
+            parts.append((event.get("part") or {}).get("text") or "")
     return "".join(parts)
 
 

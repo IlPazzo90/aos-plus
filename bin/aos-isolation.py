@@ -301,7 +301,11 @@ def main(argv=None):
         repo, targets, values, state = build_fixture(directory, shell=executor.CAPABILITIES[args.runtime]['shell'])
         home_canary = Path(state['home_canary'])
         try:
-            selection = executor.resolve(runtime=args.runtime, model=args.model, probe_root=Path(directory))
+            try:
+                selection = executor.resolve(runtime=args.runtime, model=args.model, probe_root=Path(directory))
+            except ValueError as error:
+                print(f"ERRORE: {error}", file=sys.stderr)
+                return 2
             try:
                 result = executor.run(repo, selection['model_ref'], brief_for(targets), args.timeout, False,
                                       runtime=args.runtime, task_id='isolation-probe',

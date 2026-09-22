@@ -66,11 +66,15 @@ which is a weaker thing than a round — see precondition 2.
 
 | Situation | Action |
 |-----------|--------|
-| Tier ≥ T2 **and** risk ≥ HIGH, before shipping | **Run it.** Announce it, do not ask |
-| Tier ≥ T2 **and** risk ≥ HIGH **and** the red team found nothing | **Run it.** "Nothing found" is precisely the blind-spot case |
-| T3 complete **at risk ≥ MEDIUM**, or an irreversible action is next | Offer it in one line; run it if the user says yes |
+| Tier ≥ T2, any risk, before shipping (the router returns `cross_model_review: true`) | **Run it.** Announce it, do not ask |
+| Tier ≥ T2 **and** the red team found nothing | **Run it.** "Nothing found" is precisely the blind-spot case |
+| T2/T3 and an irreversible action is next | Run it before the action |
 | The user asks to be sure, or doubts the work | Run it |
-| T0, T1, or risk LOW | **No.** Cost with no matching exposure |
+| T0 or T1, any risk | **No.** At HIGH answer the HIGH security and role questions inline (risk-and-tiers.md) |
+
+The reviewer is always the family opposite to the plan's author. At HIGH it is a
+premium model; below HIGH the router may pick a MID model of that family, and the
+capability precondition below still applies: never a reviewer weaker than MID.
 | Content, commercial or administrative work | No — AOS is not driving that work either |
 
 ### Preconditions — check these first, they fail hard

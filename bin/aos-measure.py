@@ -253,6 +253,45 @@ def load_context_budget(path):
     return data
 
 
+def load_pipeline_metrics(path):
+    """Role metrics from an observed pipeline state file, or None without --pipeline."""
+    if path is None:
+        return None
+    try:
+        state = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        raise ValueError("--pipeline deve puntare a un file JSON leggibile") from None
+    if not isinstance(state, dict) or not isinstance(state.get("role_events"), list):
+        raise ValueError("invalid pipeline telemetry")
+    spec = importlib.util.spec_from_file_location("aos_pipeline_metrics", Path(__file__).with_name("aos-pipeline.py"))
+    pipeline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pipeline)
+    return pipeline.metrics(state)
+
+
+def routing_ratios(data):
+    """workload_open_ratio and premium_dependency_ratio from the record's counters.
+
+    The open share compares open and premium execution only. Premium dependency
+    also counts premium planning and review, as orchestration.md documents, so
+    it stays null while either of those is unknown (pass 0 when none was used).
+    Without both execution counters there is no ratio at all.
+    """
+    open_tokens = data.get("open_executor_tokens")
+    premium_exec = data.get("premium_executor_tokens")
+    if open_tokens is None or premium_exec is None:
+        return {"workload_open_ratio": data.get("workload_open_ratio"),
+                "premium_dependency_ratio": data.get("premium_dependency_ratio")}
+    execution = open_tokens + premium_exec
+    planning, review = data.get("planner_tokens"), data.get("premium_review_tokens")
+    dependency = None
+    if planning is not None and review is not None:
+        premium = premium_exec + planning + review
+        dependency = round(premium / (premium + open_tokens), 3) if premium + open_tokens else None
+    return {"workload_open_ratio": round(open_tokens / execution, 3) if execution else None,
+            "premium_dependency_ratio": dependency}
+
+
 def finish(args):
     counters = (args.input_tokens, args.output_tokens, args.cached_input_tokens)
     if any(value is not None for value in counters) and args.metric_source is None:
@@ -261,6 +300,8 @@ def finish(args):
         raise ValueError("--rtk-source obbligatorio con stima RTK")
     if args.cached_input_tokens is not None and args.input_tokens is not None and args.cached_input_tokens > args.input_tokens:
         raise ValueError("cached-input-tokens non può superare input-tokens")
+    pipeline_metrics = load_pipeline_metrics(getattr(args, "pipeline", None))
+    context_budget = load_context_budget(getattr(args, "context_budget", None))
     lock = locked(args.record)
     try:
         data = load_record(args.record)
@@ -283,38 +324,22 @@ def finish(args):
                     provider_metrics={"input_tokens": args.input_tokens, "output_tokens": args.output_tokens,
                                       "cached_input_tokens": args.cached_input_tokens, "source": args.metric_source},
                     rtk_estimate={"saved": args.rtk_saved_estimate, "source": args.rtk_source})
-        routing = data.get("routing", {})
-        for field in ("main_executor_runtime", "main_executor_model", "main_executor_provider"):
+        # Pipeline telemetry first, explicit flags second: a counter the caller
+        # typed on the command line is never overwritten by a null imported from
+        # the pipeline. Ratios are computed once, from the final values.
+        if pipeline_metrics is not None:
+            data.update(pipeline_metrics)
+        for field in ("main_executor_runtime", "main_executor_model", "main_executor_provider",
+                      "routed_by_aos", "manual_model_override", "delegated_open_tasks",
+                      "open_executor_tokens", "premium_executor_tokens", "premium_review_tokens",
+                      "planner_tokens",
+                      "escalation_count", "escalation_reason"):
             value = getattr(args, field, None)
             if value is not None:
                 data[field] = value
-        for field in ("routed_by_aos", "manual_model_override"):
-            value = getattr(args, field, None)
-            if value is not None:
-                data[field] = value
-        for field in ("delegated_open_tasks", "open_executor_tokens", "premium_executor_tokens",
-                      "premium_review_tokens", "escalation_count"):
-            value = getattr(args, field, None)
-            if value is not None:
-                data[field] = value
-        if getattr(args, "escalation_reason", None) is not None:
-            data["escalation_reason"] = args.escalation_reason
-        open_tokens = data.get("open_executor_tokens")
-        premium_tokens = data.get("premium_executor_tokens")
-        total = (open_tokens or 0) + (premium_tokens or 0)
-        if open_tokens is not None and premium_tokens is not None and total:
-            data["workload_open_ratio"] = round((open_tokens or 0) / total, 3)
-            data["premium_dependency_ratio"] = round((premium_tokens or 0) / total, 3)
-        if getattr(args, "pipeline", None) is not None:
-            spec = importlib.util.spec_from_file_location('aos_pipeline_metrics', Path(__file__).with_name('aos-pipeline.py'))
-            pipeline = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(pipeline)
-            state = json.loads(args.pipeline.read_text())
-            if not isinstance(state, dict) or not isinstance(state.get('role_events'), list):
-                raise ValueError('invalid pipeline telemetry')
-            data.update(pipeline.metrics(state))
-        if getattr(args, "context_budget", None) is not None:
-            data["context_budget"] = load_context_budget(args.context_budget)
+        data.update(routing_ratios(data))
+        if context_budget is not None:
+            data["context_budget"] = context_budget
         atomic_write(args.record, data)
     finally:
         lock.unlink()
@@ -365,7 +390,7 @@ def main():
     verdict.add_argument("--verdict", required=True, choices=("accepted", "rejected"))
     for name in ("corrections", "input-tokens", "output-tokens", "cached-input-tokens", "rtk-saved-estimate",
                  "delegated-open-tasks", "open-executor-tokens", "premium-executor-tokens",
-                 "premium-review-tokens", "escalation-count"):
+                 "premium-review-tokens", "planner-tokens", "escalation-count"):
         end.add_argument("--" + name, type=nonnegative)
     for name in ("metric-source", "rtk-source", "main-executor-runtime", "main-executor-model",
                  "main-executor-provider", "escalation-reason"):

@@ -172,7 +172,14 @@ check_link() {
     else say "  MANCANTE: il link non esiste — esegui --host codex --link per crearlo"; fi
     return 1
   fi
-  if [ "$(cd "$TARGET" 2>/dev/null && pwd -P)" != "$(cd "$CLAUDE_ROOT" 2>/dev/null && pwd -P)" ]; then
+  # Both sides must resolve: a dangling link and a missing installation both cd to
+  # nothing, and "" = "" passed the check.
+  local have want
+  have="$(cd "$TARGET" 2>/dev/null && pwd -P)"; want="$(cd "$CLAUDE_ROOT" 2>/dev/null && pwd -P)"
+  if [ -z "$want" ]; then
+    say "  ERRORE: l'installazione $CLAUDE_ROOT non esiste — installa prima quella"; return 1
+  fi
+  if [ "$have" != "$want" ]; then
     say "  ERRORE: il link punta a $(readlink "$TARGET"), non a $CLAUDE_ROOT"; return 1
   fi
   say "  ok   $TARGET -> $CLAUDE_ROOT"
@@ -300,6 +307,16 @@ case "$MODE" in
     fi
     say "Rimuovo $TARGET"
     run "rm -rf '$TARGET'"
+    # The Codex link points here: left behind it dangles. Only links are removed,
+    # and only the ones that point at this installation.
+    CODEX_LINK="$HOME/.agents/skills/aos"
+    if [ -L "$CODEX_LINK" ] && [ "$(readlink "$CODEX_LINK")" = "$TARGET" ]; then
+      if [ -L "$HOME/.agents/skills/skill-library" ] \
+         && [ "$(readlink "$HOME/.agents/skills/skill-library")" = "$CODEX_LINK/catalog/skill-library" ]; then
+        run "rm '$HOME/.agents/skills/skill-library'"
+      fi
+      say "Rimuovo il link Codex $CODEX_LINK"; run "rm '$CODEX_LINK'"
+    fi
     if [ "$DRY" -eq 1 ]; then
       say "Dry run: niente rimosso."
     else

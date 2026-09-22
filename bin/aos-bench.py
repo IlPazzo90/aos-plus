@@ -503,14 +503,20 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
                 "diff_stat": None, "attempt_costs": [a["usage"].get("cost_usd") for a in attempts],
                 "known_costs": [a["usage"].get("cost_known_usd") for a in attempts], "findings": None,
                 "diff_lines": 0, "diff": None, "test_tail": last.get("error"), **identity_fields(last)}
-    def refused_record(first):
-        # No worker ran (dirty worktree, project config, no runtime): escalated,
-        # nothing to test or review, the worktree cleaned as usual.
+    def refused_record(attempts):
+        # The last attempt was refused before a worker ran (dirty worktree, project
+        # config, no runtime): escalated, nothing to test or review. An earlier
+        # attempt that did run keeps its time and cost in the record.
+        last, ran = attempts[-1], attempts[:-1]
         return {"task": task["id"], "model": model, "first_pass": False, "retry_pass": None,
-                "escalated": True, "capped": False, "refused": True, "seconds": first["seconds"],
-                "cost_usd": None, "input_tokens": None, "output_tokens": None, "exit_code": first["exit_code"],
-                "diff_stat": None, "attempt_costs": [None], "known_costs": [None], "findings": None,
-                "diff_lines": 0, "diff": None, "test_tail": str(first.get("error")), **identity_fields(first)}
+                "escalated": True, "capped": False, "refused": True,
+                "seconds": sum(a["seconds"] for a in attempts),
+                "cost_usd": None if not ran or any(a["usage"].get("cost_usd") is None for a in ran)
+                else sum(a["usage"]["cost_usd"] for a in ran),
+                "input_tokens": None, "output_tokens": None, "exit_code": last["exit_code"],
+                "diff_stat": None, "attempt_costs": [a["usage"].get("cost_usd") for a in ran] + [None],
+                "known_costs": [a["usage"].get("cost_known_usd") for a in ran] + [None], "findings": None,
+                "diff_lines": 0, "diff": None, "test_tail": str(last.get("error")), **identity_fields(last)}
     try:
         first = runner(wt, model, brief_for(task))
         state = attempt_state(first)
@@ -518,7 +524,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
             tampered = True
             return tampered_record([first])
         if state == "refused":
-            return refused_record(first)
+            return refused_record([first])
         code, out = tester(wt)
         if not executor_succeeded(first):
             code = code or first.get("exit_code") or 1
@@ -550,7 +556,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
             second = runner(wt, model, brief_for(task, failure=out))
             state = attempt_state(second)
             if state == "refused":   # the delegate refused before a worker ran: refused, not tampered
-                return refused_record(second)
+                return refused_record([first, second])
             if state == "tampered":
                 tampered = True
                 return tampered_record([first, second])
@@ -716,7 +722,9 @@ def main():
                 parser.error(f"runtime non disponibile per open execution: {entry['runtime']}")
         executors = loaded
     if args.cap_usd is not None:
-        uncosted = sorted({e["runtime"] for e in executors if e["runtime"] not in COST_RUNTIMES})
+        # Reference runs (--models without --executors) report no cost either.
+        uncosted = sorted({e["runtime"] for e in executors if e["runtime"] not in COST_RUNTIMES}) \
+            or ([] if COST_RUNTIMES else ["reference"])
         if uncosted:
             parser.error("--cap-usd richiesto ma un runtime non riporta il costo "
                          f"({', '.join(uncosted)}): la spesa resterebbe nulla; togli il tetto e usa i limiti di tempo/step")

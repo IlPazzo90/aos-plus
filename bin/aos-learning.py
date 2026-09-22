@@ -84,8 +84,25 @@ _SCHEMA = (
 RESERVATION_TTL_SECONDS = 3600
 
 
+def _iso(moment):
+    # Fixed microsecond precision: stored timestamps are compared as text, and
+    # isoformat() drops ".000000", which would sort after a same-second value.
+    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def _now():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _iso(datetime.now(timezone.utc))
+
+
+def _moment(now):
+    """`now` as an aware UTC datetime: None, an ISO string or a datetime."""
+    if now is None:
+        return datetime.now(timezone.utc)
+    if isinstance(now, str):
+        now = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now.tzinfo is None or now.utcoffset() is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc)
 
 
 def _connect(path):
@@ -493,10 +510,12 @@ def reserve_budget(database, policy, estimate, task_id, check, premium=False, no
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            now_text = now if isinstance(now, str) else _now()
+            # One clock for the admission check and the reservation's TTL.
+            moment = _moment(now)
+            now_text = _iso(moment)
             records = _outcome_rows(conn.execute("SELECT * FROM outcomes ORDER BY id").fetchall())
             records += _open_reservations(conn, now_text)
-            report = check(policy, records, estimate, premium=premium, task_id=task_id, now=now)
+            report = check(policy, records, estimate, premium=premium, task_id=task_id, now=moment)
             if not isinstance(report, dict) or report.get("allowed") is not True:
                 raise ValueError("budget admission was not explicitly allowed")
             cur = conn.execute("INSERT INTO reservations (task_id, estimate, premium, created_at) VALUES (?, ?, ?, ?)",
@@ -687,7 +706,7 @@ def report(database, project=None, since=None):
             parsed_since = datetime.fromisoformat(since.replace("Z", "+00:00"))
             if parsed_since.tzinfo is None or parsed_since.utcoffset() is None:
                 raise ValueError
-            since = parsed_since.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            since = _iso(parsed_since)
         except (ValueError, TypeError):
             raise ValueError("Invalid ISO UTC timestamp for 'since'")
 

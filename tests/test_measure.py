@@ -46,6 +46,43 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNone(data['estimated_premium_tokens_saved'])
 
 
+    def test_explicit_counters_survive_a_pipeline_with_unknown_tokens(self):
+        self.start()
+        packet = Path(self.temp.name) / 'pipeline.json'
+        packet.write_text(json.dumps(dict(role_events=[dict(role='executor', model='o', tokens=None)])))
+        result = self.run_cli('finish', '--outcome', 'delivered', '--open-executor-tokens', '100',
+                              '--premium-executor-tokens', '300', '--pipeline', str(packet))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertEqual((data['open_executor_tokens'], data['premium_executor_tokens']), (100, 300))
+        self.assertEqual(data['workload_open_ratio'], .25)
+
+    def test_premium_dependency_counts_premium_review(self):
+        self.start()
+        result = self.run_cli('finish', '--outcome', 'delivered', '--open-executor-tokens', '100',
+                              '--premium-executor-tokens', '300', '--premium-review-tokens', '600',
+                              '--planner-tokens', '0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertEqual(data['workload_open_ratio'], .25)
+        self.assertEqual(data['premium_dependency_ratio'], .9)
+
+    def test_unknown_premium_review_keeps_dependency_null(self):
+        self.start()
+        result = self.run_cli('finish', '--outcome', 'delivered', '--open-executor-tokens', '100',
+                              '--premium-executor-tokens', '0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertEqual(data['workload_open_ratio'], 1)
+        self.assertIsNone(data['premium_dependency_ratio'])
+
+    def test_unreadable_pipeline_fails_before_the_lock(self):
+        self.start()
+        result = self.run_cli('finish', '--outcome', 'delivered', '--pipeline', '/nonexistent.json')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(Path(str(self.record) + '.lock').exists())
+        self.assertIsNone(json.loads(self.record.read_text())['finished_at'])
+
     def test_start_records_explicit_identity_and_null_metrics(self):
         data = self.start()
         self.assertEqual(data["schema"], 1)

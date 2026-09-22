@@ -167,6 +167,44 @@ class OpenExecutorTests(unittest.TestCase):
         self.assertIsNone(stream.usage['cost_usd'])
         self.assertEqual(stream.usage['input_tokens'], 10)
 
+    def test_repo_under_a_claude_path_is_refused_before_any_spend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / '.claude' / 'skills' / 'repo'
+            repo.mkdir(parents=True)
+            with patch.object(executor, 'provider_config') as provider:
+                with self.assertRaisesRegex(ValueError, 'denies every write'):
+                    executor.run(repo, 'vercel/deepseek/deepseek-v4-pro-0813', 'task', 10, False)
+                provider.assert_not_called()
+
+    def test_claude_command_pre_approves_the_file_tools(self):
+        command = executor.claude_command(Path('/tmp/repo'), 'test/winner', 'task')
+        self.assertEqual(command[command.index('--allowedTools') + 1], 'Read,Glob,Grep,Edit,Write')
+
+    def test_stream_counts_model_turns_not_content_blocks(self):
+        stream = executor.Stream('claude-code')
+        for block in ('thinking', 'text', 'tool_use'):
+            stream(json.dumps({'type': 'assistant', 'message': {'id': 'm1', 'content': [{'type': block}]}}))
+        stream(json.dumps({'type': 'assistant', 'message': {'id': 'm2', 'content': [{'type': 'text'}]}}))
+        self.assertEqual(stream.usage['steps'], 2)
+
+    def test_stream_survives_null_fields(self):
+        stream = executor.Stream('claude-code')
+        for event in ({'type': 'assistant', 'message': None}, {'type': 'user', 'message': None},
+                      {'type': 'result', 'result': None, 'usage': None}):
+            stream(json.dumps(event))
+        self.assertEqual(stream.reply, '')
+        codex = executor.Stream('codex-cli')
+        codex(json.dumps({'type': 'turn.completed', 'usage': None}))
+        codex(json.dumps({'type': 'item.completed', 'item': None}))
+
+    def test_permission_denial_names_the_tool_and_path(self):
+        stream = executor.Stream('claude-code')
+        stream(json.dumps({'type': 'result', 'result': 'x', 'permission_denials': [
+            {'tool_name': 'Write', 'tool_input': {'file_path': '/r/out.txt'}}]}))
+        self.assertIn('Write /r/out.txt', stream.error)
+        self.assertIn('do not escalate', stream.error)
+
+
 class IsolationTests(unittest.TestCase):
     """Probe bypass is fixture-bound; the seatbelt profile denies before it allows."""
 
@@ -250,6 +288,14 @@ class IsolationProbeTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('aos_isolation', Path(__file__).resolve().parents[1] / 'bin/aos-isolation.py')
         self.probe = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.probe)
+
+    def test_a_bad_model_is_a_usage_error_not_a_traceback(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.probe.main(['--runtime', 'claude-code', '--model', 'nomodel']), 2)
+        self.assertIn('ERRORE', err.getvalue())
 
     def test_an_attempt_is_a_tool_of_the_right_kind_acting_on_a_path_field(self):
         # Round 2 finding: the report's own text named the forbidden paths, and every

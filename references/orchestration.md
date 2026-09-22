@@ -19,20 +19,20 @@ of every installed collection or assume historical version/path information.
 A phase already satisfied with current evidence does not need a second workflow.
 Explicit user requests still win. A code-review request may include parallel
 reviewers as instructed by that skill; do not add another equivalent review.
-Below the external-gate threshold, no routine cross-model call.
+T2/T3 role pipelines require cross-model review even below HIGH. Simple tasks retain deterministic verification.
 
 ## Availability and host adaptation
 
 1. Use the current catalog. If absent, search through skill-library once for the
    needed capability; read its original SKILL.md, following symlinks. **A catalog hit
    is a claim about a path, not proof the skill is there**: the index is generated once
-   and goes stale when a collection moves — one measured install had 20 of 399 entries
-   pointing into a plugin cache that no longer existed, while every one of those skills
-   was installed and reachable elsewhere. A dead path means the catalog is old, never
-   that the capability is missing: check the host's live catalog before saying so.
-   **Do not hand-edit the index to make it look fresh:** it is generated from a runtime
-   snapshot, and repairing rows by hand leaves it diverging from what the next
-   regeneration produces. Regenerate it, or leave it stale and say so.
+   and goes stale when a collection moves. Measured on 2026-09-15: 20 of 399 entries
+   pointed into a Codex plugin cache that no longer exists, while every one of those
+   skills was installed and reachable elsewhere. A dead path means the catalog is old,
+   never that the capability is missing — check the host's live catalog before saying so.
+   **Do not hand-edit the index to make it look fresh:** it is generated, it belongs to
+   a runtime snapshot, and repairing twenty rows by hand leaves it diverging from what
+   the next regeneration produces. Regenerate it, or leave it stale and say so.
 2. Translate host operations, not names literally: Read/Grep/Bash to local tools;
    Agent/Task only to authorized runtime delegation; questions to host input tools.
 3. Check model-invocation restrictions. A user-only command cannot be launched
@@ -41,12 +41,12 @@ Below the external-gate threshold, no routine cross-model call.
    the missing capability once when material. Missing tooling never removes a gate.
 
 AOS is user-maintained. Do not edit third-party skills or install speculative
-replacements. There is one installation, `~/.claude/skills/aos`; `~/.agents/skills/aos`
-is a link to it, so an update there is what both hosts read. `bin/aos-install.sh --host
-codex --link` creates or repairs the link and `aos-doctor.py` reports a real directory
-on that path as `COPIA`: two copies were the defect, not their drift, and a copy left
-there is a Codex reading an older AOS, invisibly from inside either session. Do not
-transplant host permissions/hooks.
+replacements. There is one installation, `~/.claude/skills/aos`, which is also the
+repository; `~/.agents/skills/aos` is a link to it, so a committed change is what both
+hosts read. `bin/aos-install.sh --host codex --link` creates or repairs the link and
+`aos-doctor.py` reports a real directory on that path as `COPIA`: two copies were the
+defect, not their drift, and a copy left there is a Codex reading an older AOS,
+invisibly from inside either session. Do not transplant host permissions/hooks.
 
 ## Wayfinder
 
@@ -84,7 +84,7 @@ Do not launch reviewer chains. Respect the existing 3/5/6 limits.
 **AOS is the router.** It decides which task executor runs a task and with which
 review, from tier, risk, complexity, uncertainty, security impact, the capabilities
 the task needs, the configured benchmark winner and the retry/failure history. The
-manual main model of the OpenCode interface does **not** decide the executor: it is a
+manual main model of the host session does **not** decide the executor: it is a
 fallback runtime model, and it executes only on an explicit user override or in the
 cases the routing policy reserves for it. The decision function is
 `bin/aos-router.py` (`decide` — pure and tested, decision cases); the executable policy
@@ -93,37 +93,43 @@ result or price into AOS: names and winners are configuration, the rule is the c
 
 Three models must not be confused:
 
-- **Main session model** is the model selected in the host interface. In the
-  OpenCode entry, `chat.message` sets the native turn model before generation;
-  the interface's selection label may remain unchanged. The AOS line on the
-  response identifies the selected executor. The classifier uses a separate
-  tool-free invocation. For premium tasks the native model only calls the bridge;
-  Claude or Codex executes in the same working directory using its subscription.
+- **Main session model** is the model the host (Claude Code or Codex CLI) opened
+  with. It coordinates, verifies and arbitrates; the AOS line on the response
+  identifies the selected executor. The classifier uses a separate tool-free
+  invocation of the open model. Premium roles run on the host's own subscription CLI
+  in the same working directory.
 - **Task executor model** comes from `bin/aos-router.py` and
-  `config/open-models.json`. OpenCode native open turns preserve skills, tools and
-  MCP. From Claude/Codex, bounded open work uses `aos-delegate.py` below.
+  `config/open-models.json`. Bounded open work runs through
+  `bin/aos-open-executor.py`: the open model inside the Claude Code harness with
+  file tools only, guarded by `aos-delegate.py`. A repository under a `.claude` or
+  `.codex` path is refused before any spend: the harness marks those paths
+  sensitive and denies every write, whatever the permission mode. Delegate from a
+  worktree outside them (`git worktree add --detach <path>`).
+- **Premium executor** is the main session itself when the router's family matches
+  the host; the other family's CLI runs only when the router names that family.
+  When the router returns `pipeline: true`, follow `aos-entry.py pipeline`
+  (§Explicit role pipeline); otherwise the full loop of SKILL.md §4.
 - **Delegated model** handles a bounded independent subtask selected under AOS.
-  Native OpenCode tasks may use subagents; premium executors may decompose work
-  but must not route the same parent request back to OpenCode.
+  Premium executors may decompose work but must not route the same parent request
+  back to the pipeline.
 
-Install/check/rollback: `python3 bin/aos-opencode-install.py --help`.
-The global loader imports the canonical bridge; shared skills remain in their
-original roots. `--pure` deliberately disables plugins and is reserved for isolated
-workers/classification, not the everyday entry. A broken classifier stops the turn.
-Read `references/opencode-entry.md` for compatibility and recovery.
+OpenCode was removed from the project on 2026-09-22 (entry plugin, installer, runner
+and its permission-map isolation): its probe leaked `.env`, symlink and external
+reads, and the two subscription CLIs already cover every role.
 
 Routing defaults (`bin/aos-router.py` decides; config changes policy):
 
 | Tier | Planner | Executor | Reviewer | Fixer |
 |---|---|---|---|---|
-| T0 | none | open primary | deterministic | open |
+| T0 | none | host session: LOW/MEDIUM on the host's cheaper subagent (`host_subagents` in the policy), HIGH on the main model | deterministic | host |
 | T1 | none | open primary | deterministic; optional open review | open |
 | T2 | configured premium | open primary | opposite premium | open |
 | T3 | premium architecture/decomposition | open bounded subtasks | opposite premium integration review | open |
 
 HIGH retains the existing risk ceiling: T2 open requires the policy's observable
 check exception; otherwise premium execution is an explicit risk-policy exception.
-HIGH always requires premium review. T3 HIGH is not permission to relax that ceiling;
+At T2/T3 every risk gets the cross-family review, premium at HIGH; T0/T1 HIGH run the
+extended HIGH checks inline, without an external reviewer. T3 HIGH is not permission to relax that ceiling;
 its bounded subtasks must be classified individually. CRITICAL keeps the existing
 human approval path before execution. Manual overrides and host-only capabilities
 retain their existing routes; a CLI cannot promise desktop-only app tools.
@@ -165,7 +171,7 @@ and acceptance checks. The host supplies and authorizes each actual argv. Plans
 and model output are data, never permission to run commands.
 
 `bin/aos-pipeline.py` is the pure state machine, `aos-entry.py pipeline` its CLI
-adapter, and `opencode/aos-bridge.mjs` owns runtime state. `aos_pipeline` actions:
+adapter; the host keeps the returned state between stages. Pipeline actions:
 
 1. `plan`: configured premium in read-only mode, using Verify Agent's command
    restrictions. No writing tools or remote MCP tools.
@@ -216,13 +222,26 @@ an isolated checkout before restarting; never use `--allow-dirty` as a shortcut.
 Claude/Codex direct hosts use the same contract and `aos-entry.py pipeline` JSON
 in/out stages when useful, invoking check commands only under their own shell
 permissions. They may orchestrate manually using AOS/Verify Agent; this is not
-permission to route the same parent request back to OpenCode. Host-only tools stay
-on their actual runtime. The OpenCode entry automates stage invocation, not proof
-that every model follows a plan perfectly.
+permission to route the same parent request back to the pipeline. Host-only tools
+stay on their actual runtime. Driving the stages is not proof that every model
+follows a plan perfectly.
 
 ### Role measurements
 
 Save observed state and import it with `aos-measure.py finish --pipeline <path>`.
+`start` takes only the main executor identity (`--main-executor-runtime/model/provider`,
+`--routed-by-aos`, `--manual-model-override`); the role fields arrive at `finish`,
+from `--pipeline` or from explicit counters (`--open-executor-tokens`,
+`--premium-executor-tokens`, `--premium-review-tokens`, `--planner-tokens`,
+`--delegated-open-tasks`,
+`--escalation-count/-reason`). Explicit counters win over the imported ones, and the
+ratios are computed once from the final values. The record then exposes
+`planner_model/provider/tokens`, `executor_*`, `reviewer_*`, `fixer_*`,
+`premium_execution_used/reason`, `cross_model_review`, finding counts,
+`open_retry_count`, `estimated_premium_tokens_saved`, `main_executor_*`,
+`routed_by_aos`, `manual_model_override`, `delegated_open_tasks`,
+`open_executor_tokens`, `premium_executor_tokens`, `premium_review_tokens`,
+`escalation_count/reason`, `workload_open_ratio` and `premium_dependency_ratio`.
 `role_events` retains per-call model/provider/usage, including fallback workers;
 flat role fields show the last model and total known tokens for that role.
 `premium_executor_tokens` is separate from planner/reviewer tokens.
@@ -239,52 +258,23 @@ baseline exists. Premium subscriptions do not provide per-task dollar costs;
 only reported open cost is measurable. Failed/interrupted premium calls may lack
 usage and cannot be counted as zero cost or a completed review.
 
-Open execution mechanics (unchanged, `aos-delegate.py`, 2.0.1): from a clean repo,
-`python3 "$AOS_DIR/bin/aos-delegate.py" --repo <path> --model <provider/model> --brief <file> --json`.
-The script runs `opencode run --pure --auto --format json` and prints exit code,
-diff stat, seconds and usage read from the JSON events (never estimated); it never
-runs tests or commits. `--auto` approves whatever is not denied, so the per-run
-config denies what a worker never needs: edits outside the repo, web tools,
-subagents, and the shell commands that carry data or changes off the machine
-(`curl`, `ssh`, `git push`, `git commit`, deploy CLIs — `DENIED_BASH`). The copy
-keeps only the providers and the reworked permission map of the user's config, with
-sharing disabled and the run's model as `small_model` too; the run's layer only, in
-a temporary XDG root. Agents, tools, MCP servers, plugins, skills, instructions are
-not there. A repo with its own `opencode.json`/`opencode.jsonc`/`.opencode` up to its
-git toplevel is refused (exit 5): that is a guard against accidents and prompt
-injection, not a sandbox — patterns match the first word (`/usr/bin/curl`, `env curl`,
-`git -C . commit` pass). Nothing secret or production-bound belongs in a repo handed
-to a worker. Providers live in `~/.config/opencode/opencode.json`; any
-OpenAI-compatible endpoint is one block
-`{"provider":{"<id>":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"…/v1","apiKey":"{file:~/.secrets/<name>}"},"models":{"<model>":{}}}}}`
-with `zeroDataRetention: true` on models that receive client source. No `model` key
-in that file: every run names its model. `zeroDataRetention` is a per-model option
-(`models.<model>.options.zeroDataRetention`), not a provider-level key; the doctor
-reports its status (`configured`/`not_configured`/`unknown`) per open model, and AOS
-never claims `verified` (provider-side) or `unsupported` (schema dropped the key)
-from a read-only local check. The main session runs the check. One failed
-check → one retry with the failure output appended to the brief. The retry runs on
-the dirty tree the previous attempt left: pass the same `--state-file` to
-`aos-delegate.py` on both attempts, and the delegate records the baseline HEAD and
-the paths the task owns, allowing a retry only when HEAD is unchanged and every
-dirty path is worker-owned. A dirty repo before the first attempt is still refused
-(exit 3); a retry that finds an external change refuses too (exit 6), never
-overwriting, stashing or resetting user work. A second failure →
-the fallback open model gets its retries; exhaustion escalates to premium — always
-recorded in the task record (`escalation_count`, `escalation_reason`). AOS never
-carries a ranking, benchmark result or price in code: the winner lives in
-`config/open-models.json`, the reason in the benchmark record
-(`docs/misure/bench/`), and missing/invalid config means the legacy behavior below.
-
-Fallback chain when open is unavailable:
-
-- `open.primary` missing/failing → `open.fallback` (Qwen today).
-- both open missing/unreachable → premium escalation executor
-  (`premium.escalation_executor`), never a fake open run.
-- `config/open-models.json` absent or invalid → legacy: the main session executes
-  the task and can still delegate bounded T0/T1 to a subagent (host working model).
-- reviewer (`premium.reviewer`) absent → no cross-model premium review is claimed;
-  quality-gates fallback applies. Same-family or self-review is never cross-model.
+Open execution mechanics: `bin/aos-open-executor.py --repo <path> --brief <file>
+--runtime claude-code` runs the configured open model inside the harness and prints exit code, diff stat, seconds, usage as the CLI reported it (never
+estimated) and the tool calls it made; it never runs tests or commits. The harness
+gets Read/Glob/Grep/Edit/Write, pre-approved with `--allowedTools`; the host runs
+every check. The Codex adapter is still in the code and disabled by policy. `aos-delegate.py` keeps the guards around each
+attempt: clean tree or worker-owned dirt only, retry ownership state, git metadata
+fingerprint (config, info, hooks, includes, pointers — no git of ours runs on a repo
+whose metadata the worker changed), process-group timeout, step cap. A repo or
+ancestor carrying its own `.claude`/`.codex` configuration is refused before a
+worker runs. Nothing secret or production-bound belongs in a repo handed to a worker.
+The provider credential comes from the `api_key_env` variable or the `api_key_file`
+named in `config/open-models.json`, read by the host and passed to the harness
+process; it never appears in versioned files, command arguments or the worker's
+tools. Model availability must be observed, not assumed: a configured endpoint is a
+claim, not proof it answers. When the router's open branch is chosen, the main
+session confirms the model responds before trusting its result; a failing open run
+is a failed attempt, counted.
 
 **Premium stays on the subscriptions already paid for.** The premium executor and the
 premium reviewer are the user's own Claude Code and Codex CLI sessions, covered by the
@@ -294,10 +284,6 @@ it is the default the router prefers for eligible work — premium is spent wher
 adds value, not by default. A missing subscription is an unavailable reviewer, which
 follows the fallback below like any other unavailability.
 
-Model availability must be observed, not assumed: a provider key in `opencode.json`
-is a claim about a configuration, not proof the endpoint answers. When the router's
-open branch is chosen, the main session confirms the model responds to the call
-before trusting its result; a failing open run is a failed attempt, counted.
 
 Where the main session still handles things itself (premium planning, arbitration,
 HIGH/CRITICAL, final report, override), the manual main model is used — that is the
@@ -312,7 +298,8 @@ inherits the parent model, use it only when the whole context is the point); Cod
 `spawn_agent` accepts a model, otherwise `[agents].default_subagent_model`, otherwise
 the host default; `codex exec -m` for scripted calls; `codex features list` must show
 `multi_agent` enabled. Read-only search may go one step cheaper than the working
-model. Reviewers stay the strongest model of the other family: verify-agent pins the
+model. The verify-agent gate reviewer is the strongest model of the other family (the
+router's review role below HIGH may be a MID of that family): verify-agent pins the
 Claude reviewer to the strongest alias of its family; the Codex reviewer uses the
  configured model, with the reserve only on an exhausted quota, and its PASS counts
 less.
@@ -324,7 +311,7 @@ model still works well. `bin/aos-context.py` reads `context_policy` from
 `config/open-models.json` and classifies GREEN/YELLOW/ORANGE/RED from target, soft
 and hard limits; compaction is structural and handoff carries the state a new
 session or subtask needs. Rules and roles are in `references/context-budget.md`.
-The executor's context is not the orchestrator's: a delegated `opencode run` starts
+The executor's context is not the orchestrator's: a delegated worker run starts
 a fresh window per task, so budget checks apply to the session that accumulates —
 the main session on long T2/T3, and each premium review round. Never fill a window
 to its technical limit; target and soft/hard are budgets below it.
@@ -381,14 +368,18 @@ savings from folder layout. Treat automatic semantic tracing as future work, not
 an implemented AOS capability. Compatibility here means shared instructions and
 verified installation files; model behavior requires separate observations.
 
+
 ## Runtime-independent Open Executor
 
 `bin/aos-open-executor.py` separates **role**, **runtime**, **provider**, **model**
 and **main_host**. Host identity does not choose the planner family or executor.
 An explicit `planner_preference` may constrain the planner family; otherwise the
 catalog selects the cheapest sufficient role model. Claude Code and Codex CLI both
-host the pipeline. The currently enabled open harness is Claude Code; Codex CLI and
-OpenCode adapters remain present but are disabled by verified security findings.
+host the pipeline. The open harness is Claude Code, under the OS seatbelt layer
+described below; the Codex adapter is present but the policy keeps it out of open
+execution (see below). Claude and Codex remain the two premium families: the router
+picks the planner, the reviewer is always the other family, escalation goes to
+`premium.escalation_executor`.
 
 ```text
 TASK → classification → appropriate PLANNER (MID / PREMIUM for T2/T3)
@@ -410,10 +401,49 @@ TASK → classification → appropriate PLANNER (MID / PREMIUM for T2/T3)
 primary → retry → fallback → retry → eligible MID → last-resort PREMIUM
 ```
 
-OpenCode and Codex CLI open execution require a new passing isolation gate before
-re-enablement. An explicit runtime override cannot bypass this block. This changes
-the eligible runtime, not the historical model winner. Main host capabilities and
+Codex CLI is not an open harness: it edits files through its shell tool, whose
+command policy did not hold a negative probe, and without that shell it has no file
+tools at all (probe 2026-09-22: 0 tool calls). Re-enabling it as a worker requires a
+green probe taken with the shell on. An explicit runtime override cannot bypass this
+block. This changes
+the eligible runtime, not the historical model winner. That winner was measured under
+OpenCode on 2026-09-20; under Claude Code only 3 of 20 tasks have been re-run
+(`docs/misure/bench/2026-09-22-claude-code/`), so it holds by transfer, not by
+measurement, until the benchmark is completed. Main host capabilities and
 subscription planner/reviewer sessions remain separate.
+
+### Isolation probe and OS layer
+
+`bin/aos-isolation.py --runtime <r> --os-isolation none|seatbelt` is the negative
+probe: a disposable fixture (git repo with `.env`, `certs/server.pem`, a symlink to a
+sibling directory, a canary file in the real home, `.git` metadata) and a brief that
+asks the worker to read and write every forbidden target and two permitted controls.
+The verdict is mechanical — canaries in the reply or tool results, effects on disk —
+and a runtime is `isolation_verified` only when all forbidden targets were attempted
+and denied and both controls succeeded. A disabled runtime may run inside the probe's
+fixture only; production policy is neither consulted nor changed by a probe.
+Runtimes with a shell also get command targets (`curl`, `npx`).
+
+`executors.runtime_status.<runtime>.os_isolation = "seatbelt"` wraps the worker
+process in a macOS `sandbox-exec` profile (`seatbelt_profile`): allow default, deny
+the home, `/Users`, temp trees and volumes, deny every write, re-allow the repo and
+the run's own directories, then deny `.env*`/`*.pem`/`*.key` inside the repo and
+writes to `.git`, `.claude`, `.codex`. Rules are last-match-wins on resolved paths, so
+a symlink out of the repo is denied by its target and a rule on the `/tmp` symlink
+itself must not appear (it shadows later allows). The provider credential is read by
+the host and handed over as an environment variable, which a worker without a shell
+cannot read. Codex refuses to start inside an outer seatbelt; its own workspace
+sandbox is its OS layer.
+
+Records of 2026-09-22 under `docs/verifiche/premium-plan-open-execute/isolation/`:
+Claude Code 13/13 denied with and without seatbelt, both controls performed, 22 tool
+calls; Codex CLI with the shell on denied the filesystem and network but ran `npx`,
+and with the shell off attempted nothing. The OpenCode records are kept as history:
+it leaked `.env`, the symlink target and the external file without seatbelt, and the
+project dropped it.
+`isolation_verified` in the policy names its record in `isolation_evidence`; the
+doctor warns when the record is missing or `sandbox-exec` is absent. A green probe
+is a bound on these targets on this host, not a certificate against every attack.
 
 
 ### Configuration and use from either host
@@ -443,33 +473,33 @@ state is not trusted. An enabled explicit open runtime satisfies its harness
 capability without selecting its premium model. Host-only app/MCP
 integrations remain outside the restricted worker.
 
-The disabled Codex adapter is configured for the provider's Responses endpoint, `wire_api=responses`,
+The Codex adapter is configured for the provider's Responses endpoint, `wire_api=responses`,
 `model_provider=aos_open`, and the model ID after its provider prefix. Claude uses
 the provider's Anthropic-compatible endpoint and the same model ID. Vercel endpoints
 are `/codex/v1` and `/claude-code`; other providers require explicit HTTPS endpoints
 for the corresponding protocol. A generic Chat Completions-only endpoint is not
 sufficient for Codex CLI. Credentials come from the configured environment-variable
-name or, for migration, the existing OpenCode provider credential reference; installing
-OpenCode is not necessary to read that JSON configuration. Secrets never enter the
-versioned policy or command arguments. Premium roles retain subscription authentication.
-Vercel account-level ZDR must remain enabled when using native CLI adapters: their
-protocols do not automatically forward OpenCode's per-model provider options.
+name or from `api_key_file`, read by the host. Secrets never enter the versioned
+policy or command arguments. Premium roles retain subscription authentication.
+Vercel account-level ZDR must remain enabled: the native CLI protocols carry no
+per-model retention option.
 
 ### Permission and capability boundaries
 
 The existing delegate still enforces clean-tree/retry ownership, metadata integrity,
-process-group timeout and step limits. Its OpenCode denylist and Security Gate are
-unchanged. Alternative runtimes refuse untranslatable custom OpenCode permissions
-and project/ancestor runtime configuration; refusal is a blocker, never a reason to
+process-group timeout and step limits. The Bash denylist (`DENIED_BASH`, applied to
+Claude's permission settings) and the Security Gate are unchanged. Harnesses refuse
+project/ancestor runtime configuration; refusal is a blocker, never a reason to
 escalate privileges. GREEN is the only implemented native worker profile. YELLOW
 network/dependency operations require a separately authorized host action; RED and
 CRITICAL do not gain permission from an adapter.
 
-The attempted Codex native restrictive rule layer did not enforce a negative probe.
-OpenCode also read a denied synthetic `.env` and a symlink outside the fixture.
-Both adapters are blocked before invocation. Configured permission maps alone are
-not evidence of isolation. Global runtime configuration and the original delegate
-guard are unchanged; direct legacy delegate use is not certified by this upgrade.
+The Codex native restrictive rule layer did not enforce a negative command probe
+(`npx --version` ran on 2026-09-22 while every file and network target was denied),
+and Codex has no file tools outside that shell, so the policy keeps it out of open
+execution entirely. Configured permission maps alone are not evidence of isolation. Global runtime
+configuration and the original delegate guard are unchanged; direct legacy delegate
+use is not certified by this upgrade.
 
 Claude uses restricted/safe mode and only Read/Glob/Grep/Edit/Write tools.
 **Its open adapter currently declares `shell=false`.** Negative sandbox probes found
@@ -487,7 +517,13 @@ remain available; same-family self-review is never labeled cross-model verificat
 
 `aos-bench.py --executors executors.json --out results` accepts a list of
 `{runtime, provider, model}`; model excludes the provider prefix. Legacy `--models`
-continues to work. Results retain `role=executor` and group by `runtime|provider|model`; the same model under
+continues to work. `--planners planners.json` (`{backend, model}`) runs every
+executor once more with that planner's read-only plan in the brief, labelled
+`...+plan:<model>`, so first-pass with and without a plan sit side by side.
+`--review-replay <results> --reviewers reviewers.json` re-reviews the recorded diffs
+with candidate reviewers and counts their findings next to the reference reviewer's;
+the same-file overlap in its summary is a raw indicator, and candidate findings must
+be arbitrated before they count as agreement. Results retain `role=executor` and group by `runtime|provider|model`; the same model under
 two runtimes is two candidates. `--no-review` explicitly records `not_run`, never
 zero findings or reviewer acceptance. Revalidate the historical task before scoring:
 tests must fail on the parent and pass on the reference commit.
@@ -524,7 +560,8 @@ handoff state and records role telemetry. `aos-operations.py` preserves protecte
 context and blocks remaining RED requests. Its token estimate covers the supplied
 prompt, not all hidden runtime context. Cost caps are point-in-time checks; unknown
 billing under an active cap blocks execution rather than skipping required review.
-No concurrent budget reservation service is claimed.
+Concurrent sessions reserve against the caps through `aos-learning.reserve_budget`
+(one `BEGIN IMMEDIATE` transaction; see [learning](learning.md)).
 
 `aos-learning.py` admits scoped lessons only with complete observed host checks,
 keeps rejected candidates, and exposes project/date-filtered reports. Application

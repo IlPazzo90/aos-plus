@@ -23,6 +23,7 @@ no cross-model review (quality-gates fallback applies).
 
 import json
 import math
+import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
@@ -51,9 +52,19 @@ class RoutingConfig:
     t3_premium_planning: bool = True
     t2_medium_deterministic_verify: bool = True
     t2_medium_open_review: bool = True
+    host_subagents: dict = field(default_factory=dict)
 
 
 RESERVED_OPEN = {"T0", "T1"}
+
+
+def _valid_entry(entry):
+    # Shapes choose_model relies on: a string `roles` would match by substring.
+    return (isinstance(entry, dict)
+            and isinstance(entry.get('roles', ()), (list, tuple))
+            and isinstance(entry.get('compatible_runtimes', ()), (list, tuple))
+            and isinstance(entry.get('capability_scores', {}), dict)
+            and isinstance(entry.get('historical', {}), dict))
 
 
 def load_config(path=None):
@@ -90,7 +101,7 @@ def load_config(path=None):
     if type(retries) is not int or retries < 1:
         return empty
     catalog = data.get('model_catalog', {})
-    if not isinstance(catalog, dict) or any(not isinstance(identity, str) or not isinstance(entry, dict)
+    if not isinstance(catalog, dict) or any(not isinstance(identity, str) or not _valid_entry(entry)
                                             for identity, entry in catalog.items()):
         return empty
     model_refs = (premium or {}).get('model_refs', {})
@@ -116,6 +127,7 @@ def load_config(path=None):
         t3_premium_planning=bool((policy or {}).get("t3_premium_planning", True)),
         t2_medium_deterministic_verify=bool((policy or {}).get("t2_medium_deterministic_verify", True)),
         t2_medium_open_review=bool((policy or {}).get("t2_medium_open_review", True)),
+        host_subagents=data.get('host_subagents') if isinstance(data.get('host_subagents'), dict) else {},
     )
 
 
@@ -138,6 +150,7 @@ class Decision:
     manual_model_override: bool = False
     routed_by_aos: bool = False
     verify: str = "targeted"      # targeted | deterministic | open_review | premium_review
+    host_model_class: str = None  # T0 on the host: "cheap" | "mid" subagent, None = main model
     retries: int = 0
     escalation_target: str = None  # model/family to escalate to, when escalation applies
     rationale: tuple = field(default_factory=tuple)
@@ -341,6 +354,17 @@ def _decide(tier, risk, *, config=None, manual_override=False,
                         escalation_target=config.escalation_executor,
                         rationale=('required premium runtime capability',))
 
+    # 2b. T0 stays on the host session: a worker's brief, sandbox and startup cost
+    #     more than the edit. LOW/MEDIUM go to the host's cheaper subagent class
+    #     (config host_subagents.by_risk); HIGH keeps the main session model.
+    if tier == 'T0':
+        by_risk = config.host_subagents.get('by_risk') if isinstance(config.host_subagents.get('by_risk'), dict) else {}
+        klass = by_risk.get(risk) if by_risk.get(risk) in ('cheap', 'mid') else None
+        return Decision(executor='main', host_model_class=klass, routed_by_aos=True,
+                        verify='targeted' if risk in ('LOW', 'MEDIUM') else 'deterministic',
+                        rationale=('T0 on the host session',
+                                   'host subagent: ' + klass if klass else 'main session model'))
+
     # 3. e.g. T3: premium planning/final review, open only on bounded subtasks
     #    (which the orchestrator routes separately). Executor for the plan itself
     #    is premium/main.
@@ -392,15 +416,42 @@ def _decide(tier, risk, *, config=None, manual_override=False,
                     rationale=("not eligible for open", tier, risk))
 
 
-def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kwargs):
-    """Assign roles separately from the existing permission/risk decision."""
+def decide(tier, risk, *, config=None, planner=None, premium_families=None, host=None, **kwargs):
+    """Assign roles separately from the existing permission/risk decision.
+
+    `host` ("claude" | "codex") resolves a T0 host subagent class to the model
+    name configured for that host; without it the class alone is returned.
+    """
     tier, risk = (tier or '').upper(), (risk or '').upper()
     config = config or RoutingConfig()
     decision = _decide(tier, risk, config=config, **kwargs)
+    if decision.host_model_class and host:
+        names = config.host_subagents.get(host)
+        name = names.get(decision.host_model_class) if isinstance(names, dict) else None
+        if isinstance(name, str) and name.strip():
+            decision = replace(decision, model=name.strip(),
+                               provider={'claude': 'anthropic', 'codex': 'openai'}.get(host))
     premium_used = decision.executor == 'premium'
     decision = replace(decision, premium_execution_used=premium_used,
                        premium_execution_reason='; '.join(decision.rationale) if premium_used else None,
                        executor_cost_class=_model_cost_class(config, decision.model))
+    if kwargs.get('manual_override') and tier in ('T2', 'T3') and risk != 'CRITICAL':
+        # Choosing the executor by hand does not waive the review every T2/T3
+        # owes: the reviewer is the family opposite to the host doing the work.
+        # Same availability and budget rules as the pipeline's reviewer; no model,
+        # no promised review.
+        families = ('codex', 'claude') if premium_families is None else tuple(premium_families)
+        if kwargs.get('premium_reviewer_available') is False:
+            families = ()
+        reviewer = {'claude': 'codex', 'codex': 'claude'}.get(host)
+        reviewer_model = _select_model_for_role(
+            config, 'reviewer', reviewer, families, {}, kwargs.get('budget'), tier, risk,
+            kwargs.get('uncertainty'), premium_only=risk == 'HIGH') if reviewer and config.catalog else None
+        if reviewer_model is None:
+            reviewer = None
+        return replace(decision, reviewer=reviewer, reviewer_model=reviewer_model,
+                       cross_model_review=reviewer is not None,
+                       verify='premium_review' if reviewer else 'reported')
     if not config.role_pipeline or kwargs.get('manual_override') or risk == 'CRITICAL':
         return decision
     if not config.catalog:
@@ -411,7 +462,9 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kw
     capability_requirements = _requirements(kwargs.get('capability_requirements'), kwargs.get('uncertainty'), kwargs.get('security_impact'))
     budget = kwargs.get('budget')
     needs_plan = tier in ('T2', 'T3')
-    needs_review = needs_plan or risk == 'HIGH'
+    # The external cross-model review belongs to T2/T3 at every risk (HIGH
+    # included); T0/T1 HIGH get the extended HIGH checks inline instead.
+    needs_review = needs_plan
     planner_model = None
     planner_family = None
     if needs_plan:
@@ -451,7 +504,8 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, **kw
                    reviewer_model=reviewer_model,
                    fixer_model=decision.model if decision.executor == 'open' else None,
                    cross_model_review=needs_plan and planner_family is not None and reviewer_family is not None,
-                   verify='premium_review' if needs_review else 'deterministic',
+                   # Never promise a premium review nobody can perform.
+                   verify='premium_review' if needs_review and reviewer_family else 'deterministic',
                    pipeline=decision.executor == 'open' and needs_plan)
 
 
@@ -459,7 +513,7 @@ def _legacy_role_decision(decision, config, tier, risk, planner, premium_familie
     if not config.role_pipeline or kwargs.get('manual_override') or risk == 'CRITICAL':
         return decision
     needs_plan = tier in ('T2', 'T3')
-    needs_review = needs_plan or risk == 'HIGH'
+    needs_review = needs_plan
     families = ('codex', 'claude') if premium_families is None else tuple(premium_families)
     if kwargs.get('premium_reviewer_available') is False:
         families = ()
@@ -509,34 +563,27 @@ def _open_decision(config, primary_available, fallback_available, failed_attempt
         config, fallback, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
     mid = config.open_mid if mid_available and _eligible_open_model(
         config, config.open_mid, capability_requirements=capability_requirements, runtime=runtime, budget=budget) else None
-    if failed_attempts >= retries * 2:
-        if mid and failed_attempts == retries * 2:
-            return Decision(executor='open', model=mid, provider=_model_provider(mid), routed_by_aos=True,
-                            verify=verify, retries=retries, rationale=(*rationale, 'mid open'))
-        return Decision(executor="premium", verify=verify,
-                        escalation_target=config.escalation_executor,
-                        rationale=(*rationale, "open unavailable or exhausted"))
     if not primary and not usable_fallback and not mid:
         if config.catalog and not any(m in config.catalog for m in (config.open_primary, config.open_fallback) if m):
             # A catalog that names none of the configured open models is a broken
             # policy: block instead of running premium with zero open attempts.
             raise ValueError('configured open models are missing from the model catalog')
-        return Decision(executor="premium", verify=verify,
-                        escalation_target=config.escalation_executor,
-                        rationale=(*rationale, "open unavailable or exhausted"))
-    if failed_attempts >= retries or not primary:
-        if usable_fallback:
-            return Decision(executor="open", model=fallback,
-                            provider=_model_provider(fallback),
-                            routed_by_aos=True, verify=verify, retries=retries,
-                            rationale=(*rationale, "fallback open"))
-        return Decision(executor="premium", verify=verify,
-                        escalation_target=config.escalation_executor,
-                        rationale=(*rationale, "open unavailable or exhausted"))
-    return Decision(executor="open", model=primary,
-                    provider=_model_provider(primary),
-                    routed_by_aos=True, verify=verify, retries=retries,
-                    rationale=rationale)
+    # Each failed-attempt count owns a fixed slot: primary x retries, configured
+    # fallback x retries, one MID — the same budget as aos-pipeline.fail. An
+    # unavailable slot hands its turn to the next available rung, never to an
+    # earlier one. The router is stateless and cannot know whether a MID already
+    # stood in for an unavailable slot: the caller that ran it passes
+    # mid_available=False (CLI --no-open-mid); the pipeline tracks it itself.
+    slots = [(primary, rationale)] * retries \
+        + ([(usable_fallback, (*rationale, "fallback open"))] * retries if fallback else []) \
+        + [(mid, (*rationale, "mid open"))]
+    for model, why in slots[failed_attempts:]:
+        if model:
+            return Decision(executor="open", model=model, provider=_model_provider(model),
+                            routed_by_aos=True, verify=verify, retries=retries, rationale=why)
+    return Decision(executor="premium", verify=verify,
+                    escalation_target=config.escalation_executor,
+                    rationale=(*rationale, "open unavailable or exhausted"))
 
 
 def main(argv=None):
@@ -549,18 +596,30 @@ def main(argv=None):
     parser.add_argument("--manual-override", action="store_true")
     parser.add_argument("--no-open-primary", action="store_true")
     parser.add_argument("--no-open-fallback", action="store_true")
+    parser.add_argument("--no-open-mid", action="store_true",
+                        help="the MID model already ran (or is down): do not offer it again")
     parser.add_argument("--observable-check", action="store_true")
     parser.add_argument("--failed-open-attempts", type=int, default=0)
+    parser.add_argument("--host", choices=["claude", "codex"],
+                        help="resolve a T0 host subagent class to this host's model name")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    config = load_config(args.config)
+    if config == RoutingConfig():
+        # An unusable policy routes everything to main: the most plausible wrong
+        # answer. Say so instead of printing it.
+        print(f"ERRORE: politica di routing non utilizzabile: {args.config}", file=sys.stderr)
+        return 2
     decision = decide(
         args.tier, args.risk,
-        config=load_config(args.config),
+        config=config,
         manual_override=args.manual_override,
         open_primary_available=not args.no_open_primary,
         open_fallback_available=not args.no_open_fallback,
+        mid_available=not args.no_open_mid,
         observable_check=args.observable_check,
         failed_open_attempts=args.failed_open_attempts,
+        host=args.host,
     )
     if args.json:
         print(json.dumps(asdict(decision), indent=2))

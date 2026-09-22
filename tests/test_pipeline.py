@@ -118,6 +118,17 @@ class PipelineTests(unittest.TestCase):
         s = self.p.advance(s, 'executed', {'ok': False, 'evidence': 'test failed'})
         self.assertEqual(s['stage'], 'escalate')
 
+    def test_mid_model_is_tried_without_a_fallback(self):
+        s = self.p.start('T2', 'MEDIUM', 'codex', 'claude', 'open/primary', None, 2, mid='open/mid')
+        s = self.p.advance(s, 'plan', self.plan)
+        for _ in range(2):
+            s = self.p.advance(s, 'executed', {'ok': False, 'evidence': 'test failed'})
+        self.assertEqual((s['stage'], s['model']), ('execute', 'open/mid'))
+
+    def test_fallback_is_not_reported_used_when_none_is_configured(self):
+        state = {'role_events': [{'role': 'executor', 'tokens': 5}], 'fallback': None}
+        self.assertFalse(self.p.metrics(state)['open_fallback_used'])
+
     def test_failure_ladder_records_observed_transitions_without_cost_claims(self):
         s = self.p.start('T2', 'MEDIUM', 'codex', 'claude', 'open/primary', 'open/fallback', 2,
                          mid='open/mid')

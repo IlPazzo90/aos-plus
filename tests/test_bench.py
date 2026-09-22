@@ -132,6 +132,8 @@ class BenchTests(unittest.TestCase):
             self.assertEqual(called, ["tester", "cleanup"])
             self.assertTrue(r["refused"])
             self.assertNotIn("git_tampered", r)
+            # The first attempt ran and is paid for: the record keeps it.
+            self.assertEqual((r["seconds"], r["cost_usd"], r["attempt_costs"]), (1.0, 0.01, [0.01, None]))
 
     def test_a_refusal_and_a_mute_record_are_told_apart(self):
         # A refusal payload (exit 5, no run) is escalated and cleaned as usual; a
@@ -589,6 +591,16 @@ class ExecutorBenchTests(unittest.TestCase):
                     "--out", str(Path(tmp) / "out"), "--cap-usd", "1.0"]
             with mock.patch.object(sys, "argv", argv), self.assertRaises(SystemExit):
                 bench.main()
+
+    def test_cap_usd_is_refused_for_reference_runs_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "tasks.json"
+            tasks.write_text(json.dumps({"tasks": []}))
+            argv = ["aos-bench.py", "--tasks", str(tasks), "--models", "codex",
+                    "--out", str(Path(tmp) / "out"), "--cap-usd", "0.5"]
+            with mock.patch.object(sys, "argv", argv), self.assertRaises(SystemExit) as caught:
+                bench.main()
+            self.assertEqual(caught.exception.code, 2)
 
 
 class RoleBenchTests(unittest.TestCase):

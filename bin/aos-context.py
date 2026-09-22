@@ -24,6 +24,11 @@ FAMILIES = (
     ("deepseek", "deepseek"),
     ("qwen", "qwen"),
     ("claude", "claude"),
+    ("anthropic", "claude"),
+    ("fable", "claude"),
+    ("opus", "claude"),
+    ("sonnet", "claude"),
+    ("haiku", "claude"),
     ("codex", "codex"),
     ("gemini", "gemini"),
     ("gpt", "gpt"),
@@ -247,10 +252,14 @@ def compact_context(items):
     `items` is an iterable of dicts with `id`, `role` and `content` (extra fields
     are preserved on kept items). Keeps every item whose role is not an explicit
     droppable role; drops droppable roles and deduplicates by `id`, keeping the
-    first occurrence. Returns kept/removed items and an estimated token
-    before/after (chars/4, marked estimated).
+    first occurrence. A repeated `id` whose role or content differs raises
+    ValueError: dropping it would silently lose the newer version. Returns
+    kept/removed items and an estimated token before/after (chars/4, marked
+    estimated).
     """
-    kept, removed, seen = [], [], set()
+    if not isinstance(items, (list, tuple)):
+        raise ValueError("items must be a list of context items")
+    kept, removed, seen = [], [], {}
     before = after = 0
     for item in items:
         if not isinstance(item, dict):
@@ -258,11 +267,15 @@ def compact_context(items):
         text = _item_text(item)
         before += len(text) // CHARS_PER_TOKEN
         iid = item.get("id")
+        signature = (item.get("role"), text)
+        if iid is not None and iid in seen and seen[iid] != signature:
+            raise ValueError(
+                "conflicting duplicate item id %r would silently discard data" % (iid,))
         duplicate = iid is not None and iid in seen
+        if iid is not None:
+            seen[iid] = signature
         if not duplicate and normalize_role(item.get("role")) not in DROP_ROLES:
             kept.append(item)
-            if iid is not None:
-                seen.add(iid)
             after += len(text) // CHARS_PER_TOKEN
         else:
             removed.append(item)
@@ -314,22 +327,39 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config" / "open-model
 
 
 def _state_text(result):
+    if result["soft_limit"] is None:
+        return f"{result['model']}: nessuna context policy configurata"
     if result["context_tokens"] is None:
-        return f"{result['model']}: nessun dato di contesto" if result["context_state"] is None \
-            else f"{result['model']}: nessuna context policy configurata"
+        return f"{result['model']}: nessun dato di contesto"
     return (f"{result['model']} {result['context_tokens']} tok "
             f"({result['context_tokens_source']}) -> {result['context_state']} "
             f"[action={result['action']}, mandatory={result['action_mandatory']}]")
 
 
+def _nonnegative(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
+
+
 def main(argv=None):
+    try:
+        return _main(argv)
+    except (ValueError, TypeError) as error:
+        # Bad input on stdin or in a file is a usage error, not a traceback.
+        print(f"ERRORE: {error}", file=sys.stderr)
+        return 1
+
+
+def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, prog="aos-context")
     sub = parser.add_subparsers(dest="command")
     ev = sub.add_parser("state", help="evaluate the context state for a model")
     ev.add_argument("--model", required=True, help="provider/model id as AOS names it")
     ev.add_argument("--config", default=str(DEFAULT_CONFIG), help="path to config/open-models.json")
-    ev.add_argument("--tokens", type=int, default=None, help="measured context tokens")
-    ev.add_argument("--chars", type=int, default=None, help="estimated via character count")
+    ev.add_argument("--tokens", type=_nonnegative, default=None, help="measured context tokens")
+    ev.add_argument("--chars", type=_nonnegative, default=None, help="estimated via character count")
     ev.add_argument("--text-file", default=None, help="estimate from a file's character count")
     ev.add_argument("--json", action="store_true")
     cp = sub.add_parser("compact", help="compact a context item list read as JSON on stdin")
@@ -342,7 +372,7 @@ def main(argv=None):
         text = None
         if args.text_file:
             try:
-                text = Path(args.text_file).read_text()
+                text = Path(args.text_file).read_text(encoding="utf-8", errors="replace")
             except OSError as error:
                 print(f"ERRORE: {error}", file=sys.stderr)
                 return 1

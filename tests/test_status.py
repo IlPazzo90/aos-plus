@@ -175,8 +175,40 @@ class StatusTests(unittest.TestCase):
 
     def test_clear_removes_the_record(self):
         status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "open", "--model", DEEPSEEK])
-        status.main(["clear"])
+        with mock.patch.object(status.fcntl, "flock", wraps=status.fcntl.flock) as flock:
+            status.main(["clear"])
         self.assertFalse((Path(self.directory.name) / "sess-1.json").exists())
+        self.assertTrue(flock.called)
+        self.assertTrue((Path(self.directory.name) / "sess-1.lock").exists())
+
+
+    def test_concurrent_usage_loses_no_tokens(self):
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        procs = [subprocess.Popen([sys.executable, str(SCRIPT), "usage", "--input", "1000"],
+                                  env=env, stdout=subprocess.DEVNULL) for _ in range(12)]
+        for proc in procs:
+            proc.wait()
+        self.assertEqual(self.record()["tokens"]["input"], 12000)
+
+    def test_session_id_that_leaves_the_directory_is_ignored(self):
+        for bad in ("../escaped", "a/b", ".hidden", "x..y"):
+            self.assertEqual(status.session_id(bad), "")
+        status.main(["--session", "../escaped", "set", "--tier", "T1", "--risk", "LOW",
+                     "--executor", "main"])
+        self.assertFalse((Path(self.directory.name).parent / "escaped.json").exists())
+
+    def test_negative_token_count_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            status.main(["usage", "--input", "-5"])
+
+    def test_non_object_json_is_ignored(self):
+        (Path(self.directory.name) / "sess-1.json").write_text("[1, 2]")
+        self.assertEqual(status.load("sess-1"), {})
+        payload = Path(self.directory.name) / "result.json"
+        payload.write_text("[1]")
+        self.assertEqual(status.main(["usage", "--from-result", str(payload)]), 0)
 
 
 class ExecutorHookTests(unittest.TestCase):

@@ -52,6 +52,14 @@ class EntryTests(unittest.TestCase):
             self.assertNotIn(override, command)
         self.assertEqual(self.entry.premium_command('claude')[-2:],
                          ['--permission-mode', 'dontAsk'])
+        claude = self.entry.premium_command('claude')
+        self.assertEqual(claude[claude.index('--allowedTools') + 1], 'Read,Glob,Grep,Edit,Write')
+
+    def test_premium_claude_denial_is_not_a_success(self):
+        stream = ('{"type":"result","subtype":"success","result":"done","usage":{},'
+                  '"permission_denials":[{"tool_name":"Write"}]}')
+        with self.assertRaisesRegex(ValueError, 'denied'):
+            self.entry.premium_reply('claude', stream)
 
     def test_usage_and_error_are_not_confused_with_successful_text(self):
         with self.assertRaises(ValueError):
@@ -69,11 +77,20 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(self.entry.route(info)['verify'], 'needs_approval')
 
     def test_classifier_fallback_is_also_used_for_the_executor(self):
-        info = dict(tier='T0', risk='LOW', domain='general', capabilities=[], reason='simple')
+        info = dict(tier='T1', risk='LOW', domain='general', capabilities=[], reason='simple')
         result = self.entry.route(info, primary_available=False)
         config = self.entry.router.load_config(self.entry.POLICY)
         self.assertEqual(result['model'], config.open_fallback)
         self.assertEqual(result['coordinator_model'], config.open_fallback)
+
+    def test_t0_stays_on_the_host_with_its_configured_subagent(self):
+        info = dict(tier='T0', risk='LOW', domain='general', capabilities=[], reason='typo')
+        policy = json.loads(self.entry.POLICY.read_text())
+        for host, family in (('claude', 'claude'), ('claude-code', 'claude'),
+                             ('codex', 'codex'), ('codex-cli', 'codex')):
+            result = self.entry.route(info, main_host=host)
+            self.assertEqual((result['executor'], result['model']),
+                             ('main', policy['host_subagents'][family]['cheap']), host)
 
     def test_premium_model_names_come_from_policy(self):
         policy = json.loads(self.entry.POLICY.read_text())

@@ -1,5 +1,5 @@
 {
-  "$comment": "AOS model routing and context-budget configuration (2.2.1). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Open models run inside the Claude Code or Codex CLI harness with file tools only; premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill; technical_context_limit values are asserted and should be validated against the provider. Never put secrets here; this file is versioned.",
+  "$comment": "AOS model routing and context-budget configuration (2.6.0). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Open models run inside the Claude Code harness with file tools only (the Codex adapter is disabled by policy); T0 stays on the host session (host_subagents); premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill; technical_context_limit values are asserted and should be validated against the provider. Never put secrets here; this file is versioned.",
   "schema": 1,
   "open": {
     "primary": "vercel/deepseek/deepseek-v4-pro-0813",
@@ -282,6 +282,21 @@
     "reviewer": "claude",
     "escalation_executor": "codex",
     "billing": "subscriptions (Claude Code, Codex CLI); the open executor is the only metered path"
+  },
+  "host_subagents": {
+    "$comment": "T0 stays on the host session. LOW/MEDIUM T0 runs on the host's own cheaper subagent (Claude Agent tool model, Codex spawn_agent model); HIGH T0 stays on the main session model. No external harness, no metered gateway.",
+    "by_risk": {
+      "LOW": "cheap",
+      "MEDIUM": "mid"
+    },
+    "claude": {
+      "cheap": "haiku",
+      "mid": "sonnet"
+    },
+    "codex": {
+      "cheap": "gpt-5.6-luna",
+      "mid": "gpt-5.6-sol"
+    }
   },
   "policy": {
     "open_max_risk": "MEDIUM",

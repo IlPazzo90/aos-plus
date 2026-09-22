@@ -32,7 +32,9 @@ def search(entries, query, limit):
     found = []
     for entry in entries:
         name = entry['name'].casefold()
-        hay = ' '.join((name, entry['description'], entry['path'])).casefold()
+        # Name and description only: every path contains "skills", so matching it
+        # made a query like "skills" return the whole catalog.
+        hay = ' '.join((name, entry['description'])).casefold()
         if all(word in hay for word in words):
             score = 0 if name == query.casefold() else 1 if name.split(':')[-1] == query.casefold() else 2
             found.append((score, not entry.get('preferred', False), name, entry['path'], entry))

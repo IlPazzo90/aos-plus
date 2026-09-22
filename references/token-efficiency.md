@@ -157,7 +157,7 @@ against themselves.
 ```bash
 RECORD="docs/misure/$(date -u +%F)-fix-csv-export.json"
 python3 "$AOS_DIR/bin/aos-measure.py" start --record "$RECORD" \
-  --task "Fix CSV export" --runtime codex --model configured --version 1.16.0
+  --task "Fix CSV export" --runtime codex --model configured --version "$(cat "$AOS_DIR/VERSION")"
 python3 "$AOS_DIR/bin/aos-measure.py" finish --record "$RECORD" \
   --outcome delivered --corrections 1
 # later, once the user has said what they think of it:

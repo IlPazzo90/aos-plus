@@ -70,19 +70,17 @@ echo "--- AOS ---"
 AOS_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
 aos_version="$(tr -d ' \n' < "$AOS_ROOT/VERSION" 2>/dev/null)"
 echo "  versione caricata: ${aos_version:-sconosciuta} ($AOS_ROOT)"
-# OpenCode is the third host and the open-model runtime (2.0.0). Its absence is
-# not an error: it only means delegation to an open model is unavailable here.
-if command -v opencode >/dev/null 2>&1; then
-  echo "  opencode: $(opencode --version 2>/dev/null | head -1 | tr -d '\n')"
-else
-  echo "  opencode: assente (delega a modello open non disponibile)"
-fi
 if [ -n "$host_python" ] && [ -f "$SCRIPT_DIR/aos-doctor.py" ]; then
   # Never let the doctor's exit code become ours: this is orientation, not a gate.
-  doctor_out="$("$host_python" -I "$SCRIPT_DIR/aos-doctor.py" 2>&1 || true)"
-  # Every error code, not only the link ones: a doctor failing on SINTASSI alone used
-  # to leave this line saying "condivisa (link verificato)", which was true and useless.
-  drift="$(printf '%s\n' "$doctor_out" | grep -E '^(COPIA|MANIFEST|MANCANTE|ROUTER|SINTASSI|RIFERIMENTO|PREREQUISITO):' || true)"
+  doctor_out="$("$host_python" -I "$SCRIPT_DIR/aos-doctor.py" 2>&1)"; doctor_rc=$?
+  # The doctor's own verdict, not a list of codes copied here: a code added there
+  # (CONFIG, RUNTIME) left this line saying "condivisa" over a failing doctor.
+  # Error lines are `CODICE: ...`; warnings start with AVVISO, the summary with ERRORE/OK.
+  drift="$(printf '%s\n' "$doctor_out" | grep -E '^[A-Z_]+: ' | grep -vE '^(OK|ERRORE|AVVISO)' || true)"
+  if [ "$doctor_rc" -ne 0 ] && [ -z "$drift" ]; then
+    drift="$(printf '%s\n' "$doctor_out" | grep -E '^ERRORE:' || true)"
+    [ -z "$drift" ] && drift="aos-doctor uscito con codice $doctor_rc"
+  fi
   # Two warnings belong here, at the start of work: the public edition left behind,
   # and a tmp/ nobody counts. The catalog warnings do not; they are a maintenance task.
   printf '%s\n' "$doctor_out" | grep -E '^AVVISO (DISTRIBUZIONE|TMP|BACKUP):' | sed 's/^/  /'
@@ -160,7 +158,8 @@ has docker-compose.yml && add_stack "docker-compose"
 # the profiler declared AOS a Supabase project.
 { [ -d supabase ] || [ -n "$(sgrep --exclude-dir=tests --exclude-dir=test --exclude-dir=__tests__ --include='*.ts' --include='*.py' -e 'supabase' | head -1)" ]; } \
   && add_stack "supabase"
-n8n=$(sgrep --include='*.json' -e '"connections"' | head -3)
+# tmp/ holds scratch copies, not the project's workflows.
+n8n=$(sgrep --exclude-dir=tmp --include='*.json' -e '"connections"' | head -3)
 if [ -n "$n8n" ]; then
   # shellcheck disable=SC2001  # prefisso per riga: sed è più chiaro dell'espansione
   echo "$n8n" | sed 's/^/  n8n workflow?: /'
@@ -196,7 +195,7 @@ has Makefile && grep -E '^[a-zA-Z0-9_-]+:' Makefile 2>/dev/null | head -8 | sed 
 # Un typecheck c'e' sempre, se c'e' TypeScript: si invoca il binario locale.
 # `npx tsc` scarica o risolve altro quando il pacchetto non e' in dipendenza
 # diretta, e fallisce per motivi che non c'entrano con il codice.
-if has tsconfig.json && ! printf '%s' "$npm_scripts" | grep -qw typecheck; then
+if has tsconfig.json && ! printf '%s' "$npm_scripts" | tr ' ' '\n' | grep -qx typecheck; then
   echo "  ./node_modules/.bin/tsc --noEmit   (nessuno script typecheck)"
 fi
 
@@ -206,7 +205,8 @@ fi
 # caso è peggio che dire "non c'è niente": chi legge conclude che non serve
 # verificare, e si inventa un comando.
 test_cmd=""
-if printf '%s' "$npm_scripts" | grep -qw test; then
+# Whole names: -w matched `test:unit`, and `npm run test` does not exist there.
+if printf '%s' "$npm_scripts" | tr ' ' '\n' | grep -qx test; then
   test_cmd="$pm run test"
 fi
 if has Makefile && grep -qE '^test:' Makefile 2>/dev/null; then
@@ -245,6 +245,7 @@ fi
 if [ -z "$test_cmd" ]; then
   campione=$(anyfile_deep '*.test.*'); [ -z "$campione" ] && campione=$(anyfile_deep '*.spec.*')
   [ -z "$campione" ] && campione=$(anydir_deep '__tests__')
+  [ -z "$campione" ] && campione=$(anyfile_deep 'test_*.py')
   if [ -n "$campione" ]; then
     echo "  ci sono file di test ($campione) ma nessuno script che li lanci:"
     echo "    cerca il runner nelle dipendenze prima di inventare un comando"
@@ -340,7 +341,7 @@ fi
 # Here-doc e non pipe: dentro una pipe il `while` gira in una subshell e il
 # `risky=1` non ne esce, quindi sarebbe uscito l'avviso n8n E la riga
 # "nessun segnale automatico".
-WF_JSON=$(sgrep --include='*.json' -e '"connections"' | head -5)
+WF_JSON=$(sgrep --exclude-dir=tmp --include='*.json' -e '"connections"' | head -5)
 while IFS= read -r wf; do
   [ -n "$wf" ] || continue
   if [ -f "$wf" ] && grep -q '"nodes"' "$wf" 2>/dev/null; then

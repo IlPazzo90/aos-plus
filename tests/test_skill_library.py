@@ -45,6 +45,14 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(len(matches), 1)
             self.assertEqual(library.source_path(matches[0]), skill)
 
+    def test_search_ignores_the_file_path(self):
+        entries = [{'name': 'alpha', 'description': 'first', 'path': '/home/u/.claude/skills/alpha/SKILL.md'},
+                   {'name': 'beta', 'description': 'manage skills', 'path': '/home/u/.claude/skills/beta/SKILL.md'}]
+        matches, total = library.search(entries, 'skills', 5)
+        self.assertEqual([m['name'] for m in matches], ['beta'])
+        self.assertEqual(total, 1)
+        self.assertEqual(library.search(entries, 'claude', 5), ([], 0))
+
     def test_no_match_and_missing_file(self):
         self.assertEqual(library.search([], 'missing', 3), ([], 0))
         self.assertIsNone(library.source_path({'path': '/nonexistent/skill/SKILL.md'}))

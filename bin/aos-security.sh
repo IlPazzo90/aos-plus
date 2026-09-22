@@ -68,23 +68,36 @@ cut_value() { sed -E 's/(:[0-9]+:).*/\1 .../'; }
 
 # Scope: what changed. Falls back to the whole tree, and says so, because a
 # silent change of scope is how a check starts lying about what it covered.
+# core.quotePath=false: by default git prints a non-ASCII name as a quoted octal
+# escape ("citt\303\240.js"), `[ -f ]` fails on it and the file was silently skipped.
+gitq() { git -c core.quotePath=false "$@"; }
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   # --relative: without it the diff lists paths from the repository root while the
   # cwd is the directory being scanned, and `bash aos-security.sh bin` reported
   # "0 file" over a bin/ full of changes. ls-files is cwd-relative already.
-  FILES=$( { git diff HEAD --name-only --relative 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep -v '^$' | sort -u)
+  # A repository with no commits has no HEAD: `git diff HEAD` failed in silence and
+  # the staged files fell out of scope. There the index is what changed.
+  if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    DIFF=$(gitq diff HEAD --name-only --relative 2>/dev/null)
+  else
+    DIFF=$(gitq diff --cached --name-only --relative 2>/dev/null)
+  fi
+  FILES=$( { printf '%s\n' "$DIFF"; gitq ls-files --others --exclude-standard 2>/dev/null; } | grep -v '^$' | sort -u)
   SCOPE="modifiche non committate"
   if [ -z "$FILES" ]; then
-    FILES=$(git ls-files); SCOPE="TUTTO il repository (niente di non committato)"
+    FILES=$(gitq ls-files); SCOPE="TUTTO il repository (niente di non committato)"
   fi
 else
   FILES=$(find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
   SCOPE="cartella (non e' un repository git)"
 fi
 
-LIVE=$(printf '%s\n' "$FILES" | while read -r f; do
+# The basename is compared first, in-shell: resolving every path cost two
+# subshells per file, 3.7 s on a 1375-file repository.
+SELF_BASE="${SELF##*/}"
+LIVE=$(printf '%s\n' "$FILES" | while IFS= read -r f; do
   [ -f "$f" ] || continue
-  [ "$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")" = "$SELF" ] && continue
+  if [ "${f##*/}" = "$SELF_BASE" ] && [ "$(cd "$(dirname "$f")" && pwd -P)/$SELF_BASE" = "$SELF" ]; then continue; fi
   printf '%s\n' "$f"
 done)
 COUNT=$(printf '%s\n' "$LIVE" | grep -vc '^$')
@@ -93,20 +106,40 @@ echo "=== AOS SECURITY PASS ==="
 echo "path:   $(pwd)"
 echo "ambito: $SCOPE — $COUNT file"
 
-scan() { [ -z "$LIVE" ] && return 0; printf '%s\n' "$LIVE" | tr '\n' '\0' | xargs -0 grep -nIE "$@" 2>/dev/null; }
+# -H: with a single file in scope grep omits the file name, the redaction below
+# (which keys on `:line:`) found nothing to cut and the secret printed in clear;
+# the filters on .md, lockfiles and .example files lost their key as well.
+scan() { [ -z "$LIVE" ] && return 0; printf '%s\n' "$LIVE" | tr '\n' '\0' | xargs -0 grep -HnIE "$@" 2>/dev/null; }
+# A line without `file:line:` is dropped, never printed: the value must not leak
+# through a shape of output the redaction did not expect.
+redact() { sed -nE 's/(:[0-9]+:).*/\1 <credenziale, valore non stampato>/p'; }
+NON_REALI='\.(md|lock):|(package|pnpm|yarn|bun)-?lock[^:]*:|\.example[:.]|(^|/)(sample|fixtures?)/'
 
 hr "1. Segreti in chiaro"
-# Due famiglie: i formati riconoscibili di per se' (JWT, chiavi OpenAI/GitHub/
-# Google/Slack/AWS) e le assegnazioni a un nome che dichiara cosa contiene —
-# `const databasePassword = "..."`. La seconda mancava del tutto, e copre il caso
-# piu' banale di tutti.
-# -i perche' `databasePassword` non e' `password`: senza, la meta' dei nomi veri
-# sfuggiva per una lettera maiuscola.
-HITS=$(scan -i -e '(eyJ[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}|[A-Za-z_]*(password|passwd|secret|api_?key|auth_?token|access_?token|authorization|bearer)[A-Za-z_]*[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'$][^"'"'"']{7,})' \
-  | grep -vE '\.(md|lock):|(package|pnpm|yarn|bun)-?lock[^:]*:|\.example[:.]|(^|/)(sample|fixtures?)/' \
-  | grep -vE '(process\.env|import\.meta\.env|os\.environ|getenv)' \
-  | sed -E 's/(:[0-9]+:).*/\1 <credenziale, valore non stampato>/' | head -10)
-# Nota sui due filtri qui sopra (fuori dalla continuazione di riga: un commento in
+# Tre famiglie. I formati riconoscibili di per se' (JWT, chiavi OpenAI/Anthropic/
+# Stripe/GitHub/Google/Slack/AWS, chiavi private PEM): valgono ovunque, anche su
+# una riga che nomina l'ambiente — `process.env.KEY || "AKIA..."` e' una chiave vera
+# con un fallback, e il filtro sull'ambiente la nascondeva.
+FORMATI_RE='sk-[A-Za-z0-9_-]{20,}|(sk|rk)_(live|test)_[A-Za-z0-9]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}'
+FORMATI=$(scan -e "(^|[^A-Za-z0-9_-])($FORMATI_RE)" \
+  | grep -vE "$NON_REALI")
+# Le assegnazioni a un nome che dichiara cosa contiene — `const databasePassword =
+# "..."`. -i perche' `databasePassword` non e' `password`. Una passphrase puo' avere
+# spazi; un'etichetta si riconosce dal prefisso del nome (`label_password`:
+# label, placeholder, hint, message, text, title, prompt, error, desc).
+# Qui, e solo qui, si scartano i valori presi dall'ambiente.
+NOMI_SEGRETI=$(scan -i -e '[A-Za-z_]*(password|passwd|secret|api_?key|auth_?token|access_?token|authorization|bearer)[A-Za-z_]*[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'$[:space:]][^"'"'"']{7,}["'"'"']' \
+  | grep -vE "$NON_REALI" \
+  | grep -viE '(label|placeholder|hint|message|msg|text|title|prompt|error|desc)[A-Za-z_]*(password|passwd|secret)' \
+  | grep -vE '(process\.env|import\.meta\.env|os\.environ|getenv)')
+# Nei file .env il valore non ha virgolette: `STRIPE_KEY=abc123...`.
+DOTENV=$(printf '%s\n' "$LIVE" | grep -E '(^|/)\.env($|\.)' | grep -v example)
+ENVHITS=""
+[ -n "$DOTENV" ] && ENVHITS=$(printf '%s\n' "$DOTENV" | tr '\n' '\0' | xargs -0 grep -HniE \
+  '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_]*(password|passwd|secret|key|token)[A-Za-z_]*[[:space:]]*=[[:space:]]*[^"'"'"'$[:space:]#][^[:space:]]{7,}' 2>/dev/null)
+# Oscurato alla fine di tutto: nessun ramo stampa la riga trovata.
+HITS=$(printf '%s\n%s\n%s\n' "$FORMATI" "$NOMI_SEGRETI" "$ENVHITS" | grep -v '^$' | redact | sort -u | head -10)
+# Nota sui filtri qui sopra (fuori dalla continuazione di riga: un commento in
 # mezzo a un `\` la spezza, e la volta scorsa ha disattivato proprio l'oscuramento
 # del valore). Si escludono i file dichiaratamente d'esempio e i valori presi
 # dall'ambiente, NON qualunque riga che contenga la parola "example": bastava un
@@ -114,7 +147,7 @@ HITS=$(scan -i -e '(eyJ[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0
 if [ -n "$HITS" ]; then flag "credenziali in chiaro:"; printf '%s\n' "$HITS" | sed 's/^/      /'
 else ok "nessun formato di credenziale noto"; fi
 
-ENVT=$(git ls-files 2>/dev/null | grep -E '(^|/)\.env($|\.)' | grep -v example | head -5)
+ENVT=$(gitq ls-files 2>/dev/null | grep -E '(^|/)\.env($|\.)' | grep -v example | head -5)
 [ -n "$ENVT" ] && { flag "file .env TRACCIATI da git (finiscono su GitHub):"; printf '%s\n' "$ENVT" | sed 's/^/      /'; }
 
 hr "2. Supabase — la RLS non si deduce, si legge"
@@ -127,7 +160,7 @@ if [ -n "$MIG" ]; then
   # migration era una raffinatezza che su a larger application — 41 `create table`
   # e 41 `enable row level security`, raccolte in una migration dedicata —
   # produceva 27 segnali falsi. Quello che conta e' se la RLS c'e', non dove.
-  TUTTE_MIG=$( { git ls-files 'supabase/migrations/*.sql' 2>/dev/null; } )
+  TUTTE_MIG=$( { gitq ls-files 'supabase/migrations/*.sql' 2>/dev/null; } )
   [ -z "$TUTTE_MIG" ] && TUTTE_MIG="$MIG"
   # Lo schema si conserva: senza, la RLS su `auth.users` veniva attribuita anche a
   # `public.users`. Chi non lo dichiara finisce in `public`, come fa Postgres.
@@ -186,7 +219,27 @@ if [ -n "$MIG" ]; then
   done <<EOF
 $MIG
 EOF
-  migrep() { printf '%s\n' "$MIG" | tr '\n' '\0' | xargs -0 grep -niE "$1" 2>/dev/null | head -5; }
+  # Una istruzione per riga, senza commenti: `-- create policy ... using (true)`
+  # commentata non concede niente, e una policy scritta su tre righe
+  # (`using (` / `true` / `)`) sfuggiva a un grep riga per riga.
+  # Stringhe (fra apici, `E'...'`, dollar-quoted) e commenti si tolgono in un solo
+  # passaggio da sinistra a destra, perche' il grep non scatti su testo che non e'
+  # SQL. Ma un lexer fatto con una regex sbaglia prima o poi (commenti annidati,
+  # identificatori con apici): quindi si stampa solo la testa dell'istruzione, fino
+  # al primo carattere che non puo' stare in un identificatore (`(`, apice, `=`,
+  # `$`...) e al massimo sei parole: `create policy p on t using`. Basta a trovarla
+  # e non arriva mai a un valore, perche' un valore comincia sempre dopo uno di quei
+  # caratteri.
+  migrep() {
+    printf '%s\n' "$MIG" | while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      perl -0777 -pe 's{(\$(\w*)\$.*?\$\2\$)|([Ee]\x27(?:\\.|\x27\x27|[^\x27\\])*\x27|\x27(?:\x27\x27|[^\x27])*\x27)|("(?:""|[^"])*")|(/\*.*?\*/)|(--[^\n]*)}{ defined($1) ? "\$\$\$\$" : defined($3) ? "\x27\x27" : defined($4) ? $4 : "" }ges' "$f" 2>/dev/null \
+        | tr '\n' ' ' | tr ';' '\n' | grep -iE "$1" \
+        | sed -E 's/^[[:space:]]+//; s/[^A-Za-z0-9_." ].*$//' \
+        | awk -v f="$f" '{ n = NF < 6 ? NF : 6; s = $1; for (i = 2; i <= n; i++) s = s " " $i
+                           print f ": " s (NF > 6 ? " ..." : "") }'
+    done | head -5
+  }
   OPEN=$(migrep 'using[[:space:]]*\([[:space:]]*true|with check[[:space:]]*\([[:space:]]*true')
   [ -n "$OPEN" ] && { flag "policy che non filtrano niente (USING true):"; printf '%s\n' "$OPEN" | sed 's/^/      /'; }
   # `TO authenticated, anon` concede lo stesso ad anon: il ruolo va cercato in tutto
@@ -218,7 +271,7 @@ if [ -n "$ROUTES" ]; then
   NR=$(printf '%s\n' "$ROUTES" | wc -l | tr -d ' ')
   # Every route file in the repo, not only the ones in scope: the convention is a
   # property of the project, and a one-route diff would otherwise learn nothing.
-  ALLR=$( { git ls-files 2>/dev/null || printf '%s\n' "$LIVE"; } | grep -E 'app/api/.*route\.(ts|js)$|pages/api/.*\.(ts|js)$')
+  ALLR=$( { gitq ls-files 2>/dev/null || printf '%s\n' "$LIVE"; } | grep -E 'app/api/.*route\.(ts|js)$|pages/api/.*\.(ts|js)$')
   [ -z "$ALLR" ] && ALLR="$ROUTES"
   # A guard must be a CALL, not a word: matching bare 'guard[A-Za-z]*' picked up
   # the Italian 'guardia' and 'guardato' from comments, which would have let an
@@ -371,7 +424,8 @@ else
   ok "nessuna rotta API fra i file in ambito"
 fi
 
-hr "4. Input che diventa percorso, HTML o query"
+hr "4. Input che diventa percorso, HTML, comando o query"
+BEFORE_IN=$SIGNALS
 TRAV=$(scan -e '(readFile|createReadStream|unlink|readdir|sendFile|join)\(.*(params|query|searchParams|req\.body)' | head -5)
 [ -n "$TRAV" ] && { flag "parametro della richiesta dentro un percorso di file (path traversal):"; printf '%s\n' "$TRAV" | cut_value | sed 's/^/      /'; }
 
@@ -380,6 +434,25 @@ XSS=$(scan -e 'dangerousl[y]SetInnerHTML|v-html|\.inner[H]TML[[:space:]]*=' | he
 
 PHPIN=$(scan -e '\$_(GET|POST|REQUEST)\[' | head -5)
 [ -n "$PHPIN" ] && { flag "input PHP grezzo (sanitizza e verifica il nonce):"; printf '%s\n' "$PHPIN" | cut_value | sed 's/^/      /'; }
+
+# Codice eseguito con l'input della richiesta dentro. `.exec(` resta fuori: e'
+# quasi sempre una RegExp, non un processo.
+REQ='(req|request)\.|searchParams|\$_(GET|POST|REQUEST)'
+EXEC=$(scan -e "(^|[^A-Za-z0-9_.])(eval|exec|execSync|new Function)[[:space:]]*\(.*($REQ)" | head -5)
+[ -n "$EXEC" ] && { flag "codice o comando eseguito con l'input della richiesta:"; printf '%s\n' "$EXEC" | cut_value | sed 's/^/      /'; }
+
+# Questi valgono anche senza input visibile sulla riga: l'input arriva da due
+# righe sopra, e la shell o il pickle eseguono qualunque cosa ricevano.
+SHELLX=$(scan -e 'os\.system[[:space:]]*\(|subprocess\.[A-Za-z_]+\(.*shell[[:space:]]*=[[:space:]]*True|pickle\.loads?[[:space:]]*\(' | head -5)
+[ -n "$SHELLX" ] && { flag "shell o deserializzazione che eseguono cio' che ricevono (os.system, shell=True, pickle.loads):"; printf '%s\n' "$SHELLX" | cut_value | sed 's/^/      /'; }
+
+# SQL composto a mano con l'input: template literal / f-string o concatenazione.
+SQLI=$(scan -i -e "(select[[:space:]].*[[:space:]]from|insert[[:space:]]+into|update[[:space:]].*[[:space:]]set|delete[[:space:]]+from)[[:space:]].*(\{[^}]*($REQ)|[\"'\`][[:space:]]*\+[[:space:]]*($REQ))" | head -5)
+[ -n "$SQLI" ] && { flag "query SQL composta con l'input della richiesta (usa parametri):"; printf '%s\n' "$SQLI" | cut_value | sed 's/^/      /'; }
+
+# Una sezione muta si legge come una sezione non eseguita.
+[ "$SIGNALS" -eq "$BEFORE_IN" ] \
+  && ok "nessun percorso, HTML, comando o query costruiti con l'input della richiesta (riga per riga)"
 
 hr "Esito"
 if [ "$SIGNALS" -eq 0 ]; then

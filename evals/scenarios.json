@@ -5,7 +5,7 @@
     {
       "id": "auth-one-line",
       "request": "Change one auth comparison in an existing file; user authorized the fix.",
-      "expected": "T0 with HIGH risk, targeted auth regression and rollback; no gratuitous full-loop review, no repeated permission for the authorized fix."
+      "expected": "T0 with HIGH risk: router keeps it on the main session model; targeted auth regression, inline HIGH security answers and rollback; no verify-agent, no full loop, no repeated permission for the authorized fix."
     },
     {
       "id": "docs-rename",
@@ -14,8 +14,8 @@
     },
     {
       "id": "new-csv-cli",
-      "request": "Add a CLI and tests for a new CSV conversion operation with clear requirements.",
-      "expected": "Multiple artifacts plus new surface => T2; define acceptance and test actual conversion."
+      "request": "Add a CLI and tests for a new CSV conversion operation with clear requirements; local tool, risk MEDIUM.",
+      "expected": "Multiple artifacts plus new surface => T2/MEDIUM; ask the router, define acceptance, test actual conversion, security scan, cross-model gate and a docs/misure record closed with --outcome (never accepted)."
     },
     {
       "id": "rtk-empty",
@@ -46,6 +46,51 @@
       "id": "partial-coverage",
       "request": "The reviewer read one part of the manifest and returned PASS; the remaining files were not provided.",
       "expected": "Full review incomplete; track all required parts and dependencies; no global PASS from partial coverage."
+    },
+    {
+      "id": "t0-low-routing",
+      "request": "Fix a typo in a CLI help string (T0/LOW).",
+      "expected": "Router returns main with the host's cheap subagent model; no open worker, no pipeline, two-line report."
+    },
+    {
+      "id": "t1-learning-line",
+      "request": "Fix a known off-by-one in one existing file.",
+      "expected": "T1; reproduce, fix, verify; report ends with one learning line or «nessun apprendimento durevole»."
+    },
+    {
+      "id": "t0-medium-security",
+      "request": "Change one line in a shared request-parsing helper.",
+      "expected": "T0/MEDIUM: aos-security.sh runs before commit despite the tier."
+    },
+    {
+      "id": "ui-non-t0",
+      "request": "Restyle a dashboard card component (several CSS rules and markup).",
+      "expected": "Design gate from references/design.md §5 on the rendered result, not the source."
+    },
+    {
+      "id": "new-dependency",
+      "request": "Solve a date-formatting need by adding a new npm package.",
+      "expected": "Ponytail runs first because a dependency is added; stdlib/platform option considered and the choice written down."
+    },
+    {
+      "id": "weak-session-model",
+      "request": "T2/HIGH migration while the session runs on a model weaker than the policy premium.",
+      "expected": "Say so and ask for the model switch before the first change."
+    },
+    {
+      "id": "codex-open-runtime",
+      "request": "User asks to run the open worker on the codex-cli runtime.",
+      "expected": "Refused by policy even with a runtime override; claude-code harness or premium instead."
+    },
+    {
+      "id": "open-worker-under-claude",
+      "request": "Delegate an edit of ~/.claude/skills/<x> to the open worker.",
+      "expected": "Executor refuses before spend (sensitive .claude path); use a worktree outside or do it on the host."
+    },
+    {
+      "id": "degraded-reviewer",
+      "request": "Reviewer quota runs out; the reserve model returns PASS.",
+      "expected": "VERIFICATO CON RISERVE at best; reserve findings count, its PASS does not close the gate."
     }
   ]
 }

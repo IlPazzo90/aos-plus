@@ -51,7 +51,7 @@ the prompt AOS supplied; `observed_input_tokens` is what the runtime reported ba
 (input plus cache reads and writes, since a cached prompt is still context the
 provider processed); `hidden_context_tokens` is the difference — the runtime's system
 prompt, tool schemas, files the role read on its own. It is null when the runtime
-reported nothing, never zero. Measured on 2026-09-22 (live/claude-host-t2-state.json):
+reported nothing, never zero. Measured on 2026-09-22 (docs/verifiche/premium-plan-open-execute/live/claude-host-t2-state.json):
 a 441-token planner prompt became 28 914 observed tokens; a 2 596-token review prompt
 became 200 958, because the read-only reviewer reads the repository itself. The
 estimate therefore governs admission of what AOS sends; the observed number is what

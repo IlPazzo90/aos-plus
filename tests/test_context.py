@@ -169,6 +169,37 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result["action"], "none")
         self.assertEqual(result["model_context_policy_source"], "default")
 
+    def test_claude_aliases_resolve_to_claude_class(self):
+        for model in ("anthropic/fable", "fable", "claude-opus-5-5", "anthropic/sonnet", "haiku"):
+            self.assertEqual(ctx.model_class(model), "claude", model)
+        result = ctx.evaluate("anthropic/fable", tokens=150000, config_path=CONFIG)
+        self.assertEqual(result["model_context_policy_source"], "model_class")
+
+    def test_conflicting_duplicate_id_is_refused(self):
+        items = [{"id": 1, "role": "acceptance_criteria", "content": "old"},
+                 {"id": 1, "role": "acceptance_criteria", "content": "NEW"}]
+        with self.assertRaises(ValueError):
+            ctx.compact_context(items)
+        same = [{"id": 1, "role": "task", "content": "x"}, {"id": 1, "role": "task", "content": "x"}]
+        self.assertEqual(len(ctx.compact_context(same)["kept"]), 1)
+
+    def test_cli_reports_bad_input_without_traceback(self):
+        import contextlib, io, sys
+        for stdin in ('{"foo": 1}', '[{"id":1,"role":"a","content":"x"},{"id":1,"role":"a","content":"y"}]'):
+            old = sys.stdin
+            sys.stdin = io.StringIO(stdin)
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(ctx.main(["compact"]), 1)
+            finally:
+                sys.stdin = old
+            self.assertIn("ERRORE", err.getvalue())
+
+    def test_missing_policy_message(self):
+        result = ctx.evaluate("x", tokens=10, config_path="/nonexistent")
+        self.assertIn("nessuna context policy", ctx._state_text(result))
+
 
 if __name__ == "__main__":
     unittest.main()

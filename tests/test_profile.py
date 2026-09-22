@@ -239,6 +239,43 @@ class ProfileTests(unittest.TestCase):
         self.assertNotIn("rischio >= HIGH", output)
         self.assertNotIn("ogni modifica di schema o delete e' CRITICAL", output)
 
+    def test_the_aos_block_trusts_the_doctor_exit_code_not_a_list_of_codes(self):
+        # A doctor failing on a code the profiler did not list (CONFIG, RUNTIME) left
+        # the line saying "condivisa". A fake doctor stands in for the real one.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bin").mkdir()
+            for name in ("aos-profile.sh", "profile-python.py"):
+                (root / "bin" / name).write_text((PROFILE.parent / name).read_text())
+            (root / "bin/aos-doctor.py").write_text(
+                'print("CONFIG: config/open-models.json non valido — correggere")\n'
+                'print("ERRORE: 3 file mantenuti, 1 anomalie")\nraise SystemExit(1)\n')
+            (root / "proj").mkdir()
+            (root / "proj/app.py").write_text("")
+            result = subprocess.run(["/bin/bash", str(root / "bin/aos-profile.sh"), str(root / "proj")],
+                                    text=True, capture_output=True, timeout=15)
+            self.assertIn("ANOMALIE", result.stdout)
+            self.assertIn("CONFIG:", result.stdout)
+            self.assertNotIn("condivisa", result.stdout)
+
+    def test_a_script_named_like_test_is_not_the_test_script(self):
+        # `grep -w test` matched `test:unit`, and `npm run test` does not exist there.
+        output = self.profile({"package.json": json.dumps({"scripts": {"test:unit": "vitest", "typecheck:app": "tsc"}}),
+                               "tsconfig.json": "{}"})
+        self.assertNotIn("npm run test", output)
+        self.assertIn("nessuno script typecheck", output)
+        self.assertIn("NESSUN comando di test", output)
+
+    def test_plain_pytest_functions_are_test_evidence(self):
+        # pytest collects bare `def test_...` without any import.
+        output = self.profile({"tests/test_app.py": "def test_app():\n    assert 1 + 1 == 2\n", "app.py": ""})
+        self.assertIn("-m pytest", output)
+        self.assertNotIn("NESSUN comando di test", output)
+
+    def test_n8n_like_json_under_tmp_is_not_a_workflow(self):
+        output = self.profile({"tmp/scratch.json": json.dumps({"nodes": [], "connections": {}}), "app.py": ""})
+        self.assertNotIn("n8n", output)
+
     def test_n8n_workflow_is_reported_without_asserting_severity(self):
         # Recognizing a workflow file says nothing about whether it is active.
         output = self.profile({"Editorial Flow.json": json.dumps({"nodes": [], "connections": {}})})

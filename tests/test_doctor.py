@@ -443,10 +443,68 @@ class DoctorTests(unittest.TestCase):
         (home / ".claude/settings.json").write_text(json.dumps({"permissions": {"deny": []}}))
         result = self.run_doctor(dict(os.environ, HOME=str(home)))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Hook Stop (codex): configurato", result.stdout)
+        # A third-party Stop hook is not AOS's: "configurato" read as if it were.
+        self.assertIn("Hook Stop (codex): nessun hook AOS; 1 hook di terzi", result.stdout)
+        self.assertNotIn("Hook Stop (codex): configurato", result.stdout)
         self.assertIn("Hook Stop (claude): non configurato", result.stdout)
         self.assertNotIn("SHOULD_NOT_RUN", result.stdout + result.stderr)
         self.assertFalse((self.base / "SHOULD_NOT_RUN").exists())
+
+
+    def test_an_aos_stop_hook_is_told_apart_from_third_party_ones(self):
+        home = self.base / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude/settings.json").write_text(json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": "python3 ~/.claude/skills/aos/bin/stop.py"},
+                       {"type": "command", "command": "~/.claude/skills/gstack/hooks/stop"}]}]}}))
+        result = self.run_doctor(dict(os.environ, HOME=str(home)))
+        self.assertIn("Hook Stop (claude): 1 hook AOS; 1 hook di terzi", result.stdout)
+        self.assertNotIn("gstack", result.stdout)
+
+    def _isolation_case(self, record):
+        shutil.rmtree(self.base / "home", ignore_errors=True)
+        env = self._write_models_config()
+        claude = self.roots[1]
+        cfg_path = claude / "config/open-models.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg["executors"]["runtime_status"]["claude-code"] = {
+            "open_execution": True, "os_isolation": "seatbelt", "isolation_verified": True,
+            "isolation_evidence": "docs/probe.json"}
+        cfg_path.write_text(json.dumps(cfg))
+        (claude / "docs").mkdir(exist_ok=True)
+        (claude / "docs/probe.json").unlink(missing_ok=True)
+        if record is not None:
+            (claude / "docs/probe.json").write_text(record if isinstance(record, str) else json.dumps(record))
+        return self.run_doctor(env).stdout
+
+    def test_isolation_is_verified_only_by_a_matching_clean_probe_record(self):
+        good = {"runtime": "claude-code", "os_isolation": "seatbelt", "isolated": True, "leaks": []}
+        self.assertIn("isolation verified by docs/probe.json", self._isolation_case(good))
+        for label, record in [("other runtime", dict(good, runtime="codex-cli")),
+                              ("other isolation", dict(good, os_isolation="none")),
+                              ("not isolated", dict(good, isolated=False)),
+                              ("leaks", dict(good, leaks=["R1"])),
+                              ("not json", "{}garbage"),
+                              ("missing", None)]:
+            with self.subTest(case=label):
+                out = self._isolation_case(record)
+                self.assertNotIn("isolation verified by", out)
+                self.assertIn("isolation unverified", out)
+                self.assertIn("AVVISO RUNTIME", out)
+
+    def test_isolation_evidence_outside_the_root_does_not_count(self):
+        outside = self.base / "outside.json"
+        outside.write_text(json.dumps({"runtime": "claude-code", "os_isolation": "seatbelt",
+                                       "isolated": True, "leaks": []}))
+        env = self._write_models_config()
+        cfg_path = self.roots[1] / "config/open-models.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg["executors"]["runtime_status"]["claude-code"] = {
+            "open_execution": True, "os_isolation": "seatbelt", "isolation_verified": True,
+            "isolation_evidence": "../../outside.json"}
+        cfg_path.write_text(json.dumps(cfg))
+        out = self.run_doctor(env).stdout
+        self.assertIn("isolation unverified", out)
 
 
 if __name__ == "__main__":

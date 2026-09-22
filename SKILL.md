@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "2.5.2"
+  version: "2.6.0"
 description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -28,7 +28,7 @@ Resolve `AOS_DIR` to the actual loaded skill directory, following symlinks. Keep
 commands in the target project's cwd. Claude: `/aos`; Codex: `$aos`. Use the current
 host catalog and capabilities; never assume Claude tools/hooks exist in Codex.
 
-## 1. Classify
+## 1. Classify and route
 
 Before naming a tier:
 
@@ -57,13 +57,28 @@ Risk independently determines verification, **including T0**:
 
 > `AOS attivo — tier T<n>, rischio <level>.`
 
-Publish it — the host bar shows the session model, not the model AOS routed to:
-`python3 "$AOS_DIR/bin/aos-status.py" set --tier T<n> --risk <level> --executor main|open|premium
-[--model <ref>] [--planner <family>] [--reviewer <family>]`. No session id, no-op; open runs
-add their own tokens and an estimated cost, which is catalog price, never billing.
+Then ask the router — AOS decides the executor, not the session's own model:
 
-Repeat census and announcement only when classification changes. HIGH/CRITICAL or
-unclear autonomy: read `references/risk-and-tiers.md`.
+```bash
+python3 "$AOS_DIR/bin/aos-router.py" --tier T<n> --risk <LEVEL> --host claude|codex [--observable-check] --json
+```
+
+and publish what it returned (the host bar shows the session model, not the routed one):
+`python3 "$AOS_DIR/bin/aos-status.py" set --tier T<n> --risk <level> --executor <executor>
+[--model <model>] [--planner <planner>] [--reviewer <reviewer>]`. No session id, no-op;
+the cost it shows for open runs is catalog price, never billing.
+
+- `main` with a `model`: T0 on the host's cheaper subagent (Claude `Agent` with that
+  model, Codex `spawn_agent`); `main` without one: the session model does it.
+- `open`: a bounded worker through `bin/aos-open-executor.py`; the host runs the checks.
+- `premium`: the session itself when its family matches, otherwise that family's CLI.
+- `pipeline: true`: premium plan, open execution, cross-family review —
+  `references/orchestration.md` §Explicit role pipeline.
+
+Repeat census, announcement and routing only when classification changes.
+HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. If the session
+runs on a weaker model than the policy's premium and the task is T2+ or HIGH+, say
+so and ask for the switch before the first change.
 
 ## 2. Orient and define success
 
@@ -77,10 +92,10 @@ No test suite: load `references/project-profiles.md` for an observable alternati
 **ICM context:** before broad discovery, read the applicable area/project
 `CONTEXT.md` if present (resolve legacy paths), then only the instructions and
 references relevant to this task. AOS owns process/risk/verification; ICM owns
-context and inspectable stage artifacts. Apply the project's adopted ICM standard;
-for project organization or repeatable multi-stage work read
-`references/orchestration.md` §ICM. Missing indexes do not block a simple task or
-justify a bulk migration. A workspace is not a repository or an authorization scope.
+context and inspectable stage artifacts. Project organization or repeatable
+multi-stage work: `references/orchestration.md` §ICM. Missing indexes do not block
+a simple task or justify a bulk migration. A workspace is not a repository or an
+authorization scope.
 
 Before the first change: `tier confermato T<n>: <evidence>` or announce the revision.
 For T2/T3, put a compact contract in the existing plan/task record: **outcome,
@@ -90,10 +105,8 @@ before dependent work; continue independent authorized work.
 
 ## 3. Spend context deliberately
 
-Three different surfaces leak tokens, and each has its own tool. **Caveman** shortens
-what you write to the user, **RTK** shortens what the tools write to you, **ponytail**
-shortens what you write to the repository. The third is the one that gets skipped, and
-it is the only one whose savings are permanent.
+**Caveman** shortens what you write to the user, **RTK** what tools write to you,
+**ponytail** what you write to the repository — the only permanent saving.
 
 - **Caveman:** load once; preserve user level/opt-out, otherwise **lite**. Italian,
   exact errors, negations, uncertainty, numbers and required updates survive.
@@ -102,12 +115,10 @@ it is the only one whose savings are permanent.
   supported filters for noisy discovery/status/test output. Codex calls CLI
   explicitly unless a compatible hook is verified; Claude may already rewrite.
   Never double-prefix, auto-run `rtk init`, or copy hook JSON between hosts.
-- **Ponytail:** the cheapest code is the code not written. Run it **before building at
-  T2/T3, and whenever the answer adds a dependency, a layer of abstraction or a
-  configuration option** — not when the solution "feels" oversized, which is a judgement
-  the author never makes against themselves. It has levels like Caveman (lite, full,
-  ultra) and it owns the decision, not the veto: if it says delete something the task
-  needs, the task wins and the reason is written down.
+- **Ponytail:** run it before building at T2/T3, and whenever the answer adds a
+  dependency, an abstraction or a configuration option. Levels lite/full/ultra. It
+  owns the decision, not the veto: if it cuts something the task needs, the task
+  wins and the reason is written down.
 - **Exact evidence:** use unfiltered reads or `rtk proxy` for instructions, edited
   source, final diffs, protocol JSON and absence/exact-match checks. A filtered
   summary is not proof of absence. Recover error details and preserve exit codes.
@@ -123,64 +134,26 @@ it is the only one whose savings are permanent.
   original SKILL.md and resolve resources at its real source.
 - **Delegation:** no automatic fan-out. Only authorized, independent, bounded work
   whose benefit justifies context/startup cost. Send goal, files, constraints and
-  expected evidence, not full chat. **Model routing: AOS is the router.** It decides
-  the task executor from tier, risk, complexity, uncertainty, security impact,
-  required capabilities, the configured benchmark winner and retry/failure history
-  — the manual main model of the host session is a fallback runtime model, not
-  the default executor. `bin/aos-router.py` `decide()` is the pure, tested decision
-  function; `config/open-models.json` is the executable policy and catalog: provider,
-  runtime compatibility, cost class, capability score, context, price fields and
-  benchmark/history availability live there. Route every role to the cheapest model
-  that meets its declared capability and budget. Execution tries the benchmarked cheap
-  primary, its cheap fallback, an explicitly benchmarked MID candidate, then premium.
-  A missing MID candidate is skipped; no name is promoted in code. `codex-cli` remains
-  a premium host/reviewer but is incompatible as an open worker until its command
-  policy layer passes a native negative probe (2026-09-22: files and network denied,
-  `npx` still ran) and it has no file tools without that shell. Claude Code is the
-  open harness, under the macOS seatbelt layer that `bin/aos-isolation.py` verified
-  target by target; a runtime is enabled only with `isolation_verified` and its probe
-  record in the policy. Codex stays the premium host, planner, reviewer and escalation. Runtime overrides do not bypass blocks. The manual main model executes only on an
-  explicit user override, on CRITICAL/HIGH without an observable check, or where the
-  policy reserves premium (planning, arbitration, final report). For T2/T3 within the open policy,
-  premium produces the plan and cross-family review; open implements and fixes.
-  LOW/MEDIUM work
-  within policy runs on the open benchmark winner. From Claude/Codex, bounded
-  workers use `bin/aos-open-executor.py`: the enabled harness with the configured
-  open model and file tools only; the host runs the checks. A disabled
-  adapter can run only inside the probe's disposable fixture, never in production;
-  re-enable a runtime with a green probe record, not with a connectivity test.
-  The main host never selects the executor model implicitly. Premium entry tasks use the configured Claude/Codex CLI in the
-  same directory. A native task can decompose work under AOS; a premium worker must
-  not route the same task back to the entry. Host-only plugins are not portable
-  merely because a model can read their skill;
-  mechanics in `references/orchestration.md` §Model routing. Model names live in
-  `config/open-models.json`, never in code. If the main session is on a
-  weaker model and the task is T2+ or HIGH+, say so and ask for the switch before the
-  first change. An advisor answers a decision; a worker owns a deliverable; neither
-  replaces verification.
+  expected evidence, not full chat. The router (§1) chooses every executor from
+  `config/open-models.json`, where model names live — never in code. A worker must
+  not route the same task back to the entry; an advisor answers a decision, a worker
+  owns a deliverable, neither replaces verification. Mechanics, runtimes, isolation
+  probes and escalation ladder: `references/orchestration.md` §Model routing.
 - **Continuity:** before compaction, interruption or handoff, update the existing
   task record with decisions, file/state identifiers, checks and next action.
   Separate verified facts from hypotheses. On resume check changed state, then
   continue pending work. No secrets or narrative transcript in memory. Compact at a
   breakpoint you choose — research done, milestone closed, approach abandoned — not
-  mid-implementation and not at the automatic threshold, where the file paths and
-  partial state still in play are what gets dropped.
+  mid-implementation and not at the automatic threshold.
 - **Context budget:** before a long T2/T3 and at checkpoints, evaluate
   `python3 "$AOS_DIR/bin/aos-context.py" state --model <executor> --tokens <n>` and
-  follow `references/context-budget.md`. Stay under target (GREEN); prefer targeted
-  retrieval once past it (YELLOW); compact structurally (ORANGE); and never keep
-  filling past the hard limit — compact or hand off (RED). Compaction drops only
-  resolved/redundant material, never acceptance criteria, open findings or safety
-  constraints.
-- **Installed capability is executable configuration.** A skill, hook or MCP server
-  added from outside ships scripts, may require paid API keys and may send data off
-  the machine. Before relying on a new one, inspect what it executes, what it asks
-  for and where it sends; `references/quality-gates.md` §7 has the check.
+  follow `references/context-budget.md` (GREEN → targeted retrieval past target →
+  structural compaction → never past the hard limit). Compaction never drops
+  acceptance criteria, open findings or safety constraints.
 
 Installation health: `python3 "$AOS_DIR/bin/aos-doctor.py"` (read-only, on demand).
 Setup/cost audit or requested optimization: `references/token-efficiency.md`.
-Do not load that reference merely because Caveman/RTK is active. File size and RTK
-estimates do not measure provider billing, subscription quota or total session cost.
+File size and RTK estimates do not measure provider billing or session cost.
 
 ## 4. Route and execute
 
@@ -196,12 +169,13 @@ Choose one skill per need; domain specialists still apply.
 | Feature/fix warranting behavior tests | `superpowers:test-driven-development` |
 | Requested branch/diff review | `code-review` skill, never launch billed `/code-review ultra` |
 | T2/T3 completion | `superpowers:verification-before-completion` |
-| T2+ AND HIGH+ | `verify-agent`, opposite model family |
+| T2/T3, any risk | `verify-agent`, opposite model family (§5) |
 | Finished branch integration | `superpowers:finishing-a-development-branch` |
 | Before building at T2/T3, or when the answer adds a dependency, an abstraction or an option | `ponytail`; `ponytail-review` on the finished diff, `ponytail-audit` on a repo only when asked |
-| Library, framework or API surface | Context7, never a remembered signature |
-| Prose a person will read | a structure skill **before** drafting (here `testo-umano`, from StoryScope: surface edits leave narrative tells intact); `humanizer` after, for surface tells; the writing/design guideline skills for review |
+| Library, framework or API surface | Context7 where available, otherwise primary docs — never a remembered signature |
+| Prose a person will read | a structure skill **before** drafting (`testo-umano`), `humanizer` after for surface tells |
 | **Anything a person will look at** — page, component, dashboard, deck, banner | `references/design.md`: the UI/UX role, its stages and its gate |
+| New skill, hook or MCP server from outside | inspect what it executes, asks for and sends: `references/quality-gates.md` §7 |
 
 Larger-than-session decision map: suggest user-run `/wayfinder`; do not invoke it.
 Same rule for the design skills carrying `disable-model-invocation: true`
@@ -230,47 +204,35 @@ in `references/design.md` §5 is part of verification: check the rendered result
 it runs — a browser you drive, a simulator, the exported file — not the source.
 
 T2/T3: read `references/quality-gates.md` for red team, applicable roles and DoD.
-**External gate: T2/T3 role pipelines at every risk, and all HIGH work.** Codex main calls Claude Code;
-Claude main calls Codex via `verify-agent/scripts/review.py --caller codex|claude`.
-Reviewer returns findings only, never AOS or another reviewer. Confirm findings
-mechanically. Maximum **6 rounds**; empty, quota-blocked or interrupted is not PASS.
-Both directions require Git for the record; only Codex reviewer requires repo cwd.
-If unavailable, follow the declared fallback in quality-gates, never fake independence.
-Move BRIEF.md and REVIEW-LOG.md from ignored tmp to `docs/verifiche/<slug>/` and commit;
-raw transcripts stay outside Git. Same-family/self-review is not cross-model review.
+**External gate: every T2/T3, at every risk.** T0/T1 HIGH answer the HIGH checks
+inline instead. Codex main calls Claude Code; Claude main calls Codex, via
+`verify-agent/scripts/review.py --caller codex|claude`: the reviewer is the family
+opposite to the work's author, premium at HIGH. Reviewer returns findings only,
+never AOS or another reviewer. Confirm findings mechanically. Maximum **6 rounds**;
+empty, quota-blocked or interrupted is not PASS. Both directions require Git for the
+record; only the Codex reviewer requires a repo cwd. If unavailable, follow the
+declared fallback in quality-gates, never fake independence. Move BRIEF.md and
+REVIEW-LOG.md from ignored tmp to `docs/verifiche/<slug>/` and commit; raw
+transcripts stay outside Git. Same-family/self-review is not cross-model review.
 
-**T2/T3 close with a record, not an impression.** `bin/aos-measure.py start` before the
-first change and `finish` at the end, into `docs/misure/<date>-<slug>.json`, committed
-with the work. `finish --outcome` is `delivered | partial | blocked`: what was handed
-over. `accepted` and `rejected` are the user's words, written later with `judge --verdict`
-once the user has spoken — never by the author at finish; `start` names the earlier records still
-without one, so ask for that line then. Unavailable provider counters stay null;
-never estimate them. No secrets or client identities in `--task`. **This step is not
-conditional on the work feeling worth measuring** — that judgement is the one the record
-exists to replace, and a step phrased as conditional is a step that never runs.
-Routing telemetry: each record exposes who really executed the task
-(`planner_model/provider/tokens`, `executor_model/provider/tokens`,
-`reviewer_model/provider/tokens`, `fixer_model/provider/tokens`,
-`premium_execution_used/reason`, `cross_model_review`, finding counts,
-`open_retry_count`, `estimated_premium_tokens_saved`, `main_executor_runtime/model/provider`, `routed_by_aos`, `manual_model_override`,
-`delegated_open_tasks`, `open_executor_tokens`, `premium_executor_tokens`,
-`premium_review_tokens`, `escalation_count/reason`, `workload_open_ratio`,
-`premium_dependency_ratio`) — set them at start when the router chose (executor
-identity) and at finish with the token counts, so the open/premium split is
-measurable, not asserted.
+**T2/T3 close with a record, not an impression** — unconditionally: the judgement
+"not worth measuring" is what the record replaces. `bin/aos-measure.py start` before
+the first change (with the router's executor identity), `finish` at the end, into
+`docs/misure/<date>-<slug>.json`, committed with the work. `finish --outcome` is
+`delivered | partial | blocked`; `accepted`/`rejected` are the user's words, written
+later with `judge --verdict` — never by the author. `start` names earlier records
+still without a verdict: ask for that line then. Role tokens and ratios come in at
+`finish` (`--pipeline <observed-state.json>` or explicit counters; field list in
+`references/orchestration.md` §Role measurements). Unavailable provider counters
+stay null; never estimate them or infer cost from counts. No secrets or client
+identities in `--task`.
 
 Report outcome, evidence and material limits in Italian; code/comments/commits in
 English. T0: two lines. T1: short, closing with one learning line — the wrong
-assumption or the decisive check, or «nessun apprendimento durevole» — because most
-durable corrections come from T1 work, not from the tasks big enough to have a report.
-T2/T3: `references/output-contract.md`; backlog
-only for real findings (T3 must address it), one next-investment advisory at T3.
-Never claim done from written code alone or weaken checks to save tokens.
+assumption or the decisive check, or «nessun apprendimento durevole».
+T2/T3: `references/output-contract.md`; backlog only for real findings (T3 must
+address it), one next-investment advisory at T3. Never claim done from written code
+alone or weaken checks to save tokens.
 
 No unsolicited dependencies, refactors or new business integrations. Never modify
 third-party skills through symlinks. AOS changes itself only on the user's request.
-
-Role telemetry: `aos-measure.py finish --pipeline <observed-state.json>` imports
-successful role-call usage and finding/retry counts. Missing provider counters
-stay null; estimated savings remain null without a comparable measured baseline.
-Do not infer cost or causal planner quality from counts alone.

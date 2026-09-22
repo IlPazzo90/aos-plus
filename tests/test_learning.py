@@ -802,6 +802,23 @@ class ReservationTests(unittest.TestCase):
         report = L.reserve_budget(self.db, {"daily_budget": 1.0}, 0.9, "task-new", self.check)
         self.assertEqual(report["open_reservations"], 0)
 
+    def test_reservation_accepts_a_datetime_or_string_now_with_the_real_check(self):
+        import importlib.util as iu
+        from datetime import datetime, timezone
+        spec = iu.spec_from_file_location("ops_for_now", pathlib.Path(L.__file__).with_name("aos-operations.py"))
+        ops = iu.module_from_spec(spec)
+        spec.loader.exec_module(ops)
+        for now in ("2026-09-22T10:00:00Z", datetime(2026, 9, 22, 11, tzinfo=timezone.utc)):
+            report = L.reserve_budget(self.db, {"daily_budget": 10.0}, 0.1, "task-now", ops.budget_check, now=now)
+            self.assertIn("reservation_id", report)
+
+    def test_timestamps_keep_microseconds_so_text_order_is_time_order(self):
+        from datetime import datetime, timezone
+        self.assertEqual(L._iso(datetime(2026, 9, 22, 18, 52, 5, tzinfo=timezone.utc)),
+                         "2026-09-22T18:52:05.000000Z")
+        self.assertLess(L._iso(datetime(2026, 9, 22, 18, 52, 5, tzinfo=timezone.utc)),
+                        L._iso(datetime(2026, 9, 22, 18, 52, 5, 625163, tzinfo=timezone.utc)))
+
     def test_concurrent_processes_admit_exactly_one(self):
         import subprocess
         import sys

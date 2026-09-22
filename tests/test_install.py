@@ -145,5 +145,35 @@ class InstallTests(unittest.TestCase):
             self.assertNotEqual(self.install(home, "--host", "codex").returncode, 0, "verify must fail without the link")
 
 
+    def test_a_dangling_codex_link_with_no_installation_fails_verification(self):
+        # Both `cd` failed and "" = "" passed the link check.
+        with tempfile.TemporaryDirectory() as home:
+            codex = Path(home) / ".agents/skills/aos"
+            codex.parent.mkdir(parents=True)
+            codex.symlink_to(Path(home) / ".claude/skills/aos")
+            result = self.install(home, "--host", "codex")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("ok   " + str(codex), result.stdout)
+
+    def test_uninstalling_the_claude_host_removes_the_codex_link_that_pointed_at_it(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.assertEqual(self.install(home, "--host", "claude", "--from", str(ROOT)).returncode, 0)
+            self.assertEqual(self.install(home, "--host", "codex", "--link").returncode, 0)
+            result = self.install(home, "--host", "claude", "--uninstall")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            skills = Path(home) / ".agents/skills"
+            self.assertFalse((skills / "aos").is_symlink(), "dangling Codex link left behind")
+            self.assertFalse((skills / "skill-library").is_symlink(), "dangling Codex router left behind")
+
+    def test_uninstalling_the_claude_host_never_touches_a_real_codex_directory(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.assertEqual(self.install(home, "--host", "claude", "--from", str(ROOT)).returncode, 0)
+            codex = Path(home) / ".agents/skills/aos"
+            codex.mkdir(parents=True)
+            (codex / "sentinel").write_text("keep\n")
+            self.assertEqual(self.install(home, "--host", "claude", "--uninstall").returncode, 0)
+            self.assertEqual((codex / "sentinel").read_text(), "keep\n")
+
+
 if __name__ == "__main__":
     unittest.main()

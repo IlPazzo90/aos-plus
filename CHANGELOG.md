@@ -1,5 +1,110 @@
 # Changelog
 
+## 2.6.0 — audit completo: 40 bug corretti, un T0 non passa più dal worker — 2026-09-22
+
+**La causa scritta nella 2.5.2 era sbagliata.** Il worker open non poteva scrivere
+perché il repository stava sotto `~/.claude/skills/`: Claude Code considera «sensitive
+file» ogni percorso con un segmento `.claude` e nega la scrittura in qualunque modalità
+di permesso. Lo scrub dell'ambiente forza sì `--permission-mode default`, ma con la
+lista `allow` delle `--settings` le Edit passano (provato contro un server Anthropic
+finto, nessuna chiamata a pagamento). Ora `aos-open-executor.py` rifiuta un repository
+sotto `.claude/` o `.codex/` prima di spendere un token e suggerisce un worktree
+esterno; il messaggio di negazione nomina strumento e percorso invece di un generico
+«permission denied». `--allowedTools` resta aggiunto: non era la causa, ma è quello
+che lo scrub chiede.
+
+**Il ripiego premium su Claude non scriveva niente e dichiarava successo.**
+`aos-entry.py` lanciava `claude -p --permission-mode dontAsk` senza strumenti
+pre-approvati: ogni Write negata, `subtype: success`, escalation registrata come
+riuscita. Ora passa `--allowedTools Read,Glob,Grep,Edit,Write` e una
+`permission_denials` non vuota è un errore.
+
+**Il routing.**
+- Un T0 resta sulla sessione host: LOW sul subagent economico, MEDIUM su quello
+  intermedio, HIGH sul modello principale. I nomi stanno nella nuova sezione
+  `host_subagents` di `config/open-models.json` (Claude `haiku`/`sonnet`, Codex
+  `gpt-5.6-luna`/`gpt-5.6-sol`); `aos-router.py --host claude|codex` li risolve.
+  Prima un refuso passava da brief, seatbelt e worker esterno.
+- La review cross-model vale per ogni T2/T3 a qualsiasi rischio e per nessun T0/T1:
+  a T0/T1 HIGH i controlli HIGH si fanno in linea. SKILL.md, quality-gates.md, il
+  router e gli scenari dicevano tre cose diverse.
+- Il router non promette più `premium_review` quando nessun revisore è disponibile.
+- La scala open è primary, fallback, MID, premium e non torna mai indietro: con il
+  fallback spento i tentativi 2 e 3 andavano al premium e il 4 di nuovo al MID. Ogni
+  tentativo ha il suo posto fisso, un gradino spento cede il turno al successivo, e il
+  MID ha un solo posto come nella pipeline (`aos-pipeline.py`), che lo saltava del
+  tutto quando mancava il fallback. Il router non ha stato: chi ha già fatto girare il
+  MID al posto di un gradino spento lo dice con `--no-open-mid`.
+- `--config` inesistente o inutilizzabile è un errore (exit 2), non un `executor=main`
+  silenzioso.
+- Un override manuale dell'esecutore a T2/T3 non toglie più la review: il revisore
+  è la famiglia opposta all'host (`--host`), scelto con le stesse regole di budget e
+  disponibilità della pipeline; senza un modello disponibile nessuna review è promessa.
+
+**SKILL.md da 18,8 a 15,3 KB**, caricato a ogni task. Il comando del router, che
+mancava del tutto, ora è in §1 con il significato di ogni esito; l'elenco dei campi di
+telemetria, la storia delle sonde e i dettagli dei runtime sono passati in
+`references/orchestration.md`. Nessuna regola con effetto è stata tolta. Nell'edizione
+pubblica `orchestration.md` e `aos-profile.sh` descrivevano ancora OpenCode: ora sono
+allineati al codice.
+
+**Sicurezza (`aos-security.sh`).**
+- Con un solo file in ambito `grep` non stampa il nome del file, l'oscuramento non
+  trovava `:riga:` e **il segreto usciva in chiaro**. Ora `grep -H`, e una riga senza
+  forma `file:riga:` viene scartata, mai stampata.
+- File con nomi non ASCII saltati (git li quota); file in stage saltati in un
+  repository senza commit.
+- Chiavi non riconosciute: `sk-proj-…`, `sk-ant-api03-…`, Stripe `sk_live_`, PEM,
+  valori senza virgolette nei `.env`; `process.env.KEY || "AKIA…"` era nascosto dal
+  filtro sull'ambiente.
+- La sezione 4 non cercava `eval`/`exec` con input della richiesta, `os.system`,
+  `shell=True`, `pickle.loads`, SQL composto a mano; ora sì, e dice «ok» quando è pulita.
+- Le migration si leggono senza commenti né stringhe SQL e con le policy su più righe
+  unite. Delle policy segnalate si stampa solo la testa, fino al primo carattere che
+  non può stare in un identificatore e al massimo sei parole (`create policy p on t
+  using`): cinque round di review hanno trovato cinque modi di far uscire un valore
+  dal testo stampato (`$$…$$`, `--` dentro la stringa, `E'…'`, identificatori con
+  apici, commenti annidati senza spazi), e un lexer a regex ne avrà sempre un altro.
+
+**Il resto, per file.**
+- `aos-status.py`: 20 `usage` in parallelo registravano 12.000 token su 20.000 (niente
+  lock, un solo `.tmp` condiviso); `clear` cancellava il file di lock senza prenderlo;
+  `--session ../x` scriveva fuori dalla cartella; token negativi accettati.
+- `aos-measure.py`: `finish --pipeline` sovrascriveva con `null` i contatori passati a
+  mano; `premium_dependency_ratio` non contava review e planning come documentato (ora
+  resta nullo finché uno dei due è ignoto; nuovo `--planner-tokens`);
+  un `--pipeline` illeggibile falliva dopo aver preso il lock.
+- `aos-context.py`: `anthropic/fable`, `sonnet`, `opus` cadevano nei limiti di
+  default invece della classe `claude`; un id duplicato con contenuto diverso scartava
+  la versione nuova, anche di un criterio di accettazione; traceback su input errato.
+- `aos-open-executor.py`: gli step contavano i blocchi di contenuto, non i turni
+  (thinking + testo + tool = 3 step); campi `null` negli eventi facevano crollare la
+  run dopo averla pagata.
+- `aos-pipeline.py`: il MID non veniva mai provato senza fallback;
+  `open_fallback_used` vero quando nessun fallback era configurato.
+- `aos-bench.py`: `--cap-usd` accettato sui run di riferimento e mai applicato; un
+  rifiuto al secondo tentativo cancellava tempo e costo del primo.
+- `aos-learning.py`: `reserve_budget(now=…)` falliva con una stringa e con un
+  datetime usava due orologi diversi; `report --since` perdeva le righe dello stesso
+  secondo (timestamp ora sempre a microsecondi).
+- `aos-doctor.py`: «isolation verified» bastava che il file esistesse, ora legge il
+  record; gli hook Stop di gstack e Impeccable erano contati come hook AOS.
+- `aos-profile.sh`: diceva sana un'installazione con il doctor in errore; `test:unit`
+  valeva come script `test`; n8n trovato dentro `tmp/`. `profile-python.py` ignorava i
+  test pytest senza `import pytest`.
+- `aos-install.sh`: un link Codex rotto passava come «ok». `skill-library.py`: la
+  ricerca confrontava anche i percorsi, e `skills` trovava tutto.
+- `aos-isolation.py`, `aos-entry.py`: traceback su modello sbagliato; il file del
+  report restava orfano in `/tmp`.
+
+Lasciato com'è per scelta: una prenotazione di budget con stima ignota blocca
+l'ammissione per un'ora (è il comportamento fail-closed voluto, con il suo test);
+il ripiego premium su Codex eredita la sandbox di `~/.codex/config.toml`.
+
+Verifiche: 18 moduli, da 460 a 516 test verdi più 3 saltati su Python 3.9;
+`aos-doctor.py` 0 anomalie; scan di sicurezza provato su un repository con segreti
+piantati. Gate esterno con Codex, verbale in `docs/verifiche/aos-2-6-0-audit/`.
+
 ## 2.5.2 — la barra dice quando il routing è stato ignorato — 2026-09-22
 
 `aos-status.py` pubblicava quello che il chiamante dichiarava, `aos-router.py`

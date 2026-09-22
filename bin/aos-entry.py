@@ -6,6 +6,7 @@ from dataclasses import asdict
 import importlib.util
 import json
 import math
+import contextlib
 import os
 from pathlib import Path
 import signal
@@ -116,7 +117,9 @@ def route(info, primary_available=True, main_host=None, executor_runtime=None, p
                                     capability_requirements=planner_info,
                                     budget=info_budget,
                                     uncertainty=info_uncertainty,
-                                    security_impact=info_security_impact))
+                                    security_impact=info_security_impact,
+                                    host={'claude': 'claude', 'claude-code': 'claude', 'codex': 'codex',
+                                          'codex-cli': 'codex'}.get(main_host)))
     decision['coordinator_model'] = config.open_primary if primary_available else config.open_fallback
     decision['backend'] = config.escalation_executor or 'codex'
     if 'claude_runtime' in info['capabilities']:
@@ -234,8 +237,10 @@ def premium_command(backend, model=None):
     if backend == 'codex':
         return ['codex', 'exec', '--json', '--skip-git-repo-check', '-m', cli_model, '-']
     if backend == 'claude':
+        # dontAsk denies whatever is not pre-approved: without the file tools the
+        # premium executor could not write and still reported success.
         return ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--model', cli_model,
-                '--permission-mode', 'dontAsk']
+                '--allowedTools', 'Read,Glob,Grep,Edit,Write', '--permission-mode', 'dontAsk']
     raise ValueError('unsupported premium backend')
 
 
@@ -252,17 +257,19 @@ def premium_reply(backend, stream):
         if kind in ('error', 'turn.failed') or event.get('is_error'):
             raise ValueError('premium executor reported an error; inspect its local trace')
         if backend == 'codex':
-            item = event.get('item', {})
+            item = event.get('item') or {}
             if kind == 'item.completed' and item.get('type') == 'agent_message':
-                reply.append(item.get('text', ''))
+                reply.append(item.get('text') or '')
             if kind == 'turn.completed':
                 complete, usage = True, event.get('usage')
         else:
             if kind == 'system' and event.get('subtype') == 'init':
                 model = event.get('model')
             if kind == 'result':
+                if event.get('permission_denials'):
+                    raise ValueError('premium executor was denied a tool; its edits did not happen')
                 complete, usage = event.get('subtype') == 'success', event.get('usage')
-                reply.append(event.get('result', ''))
+                reply.append(event.get('result') or '')
     text = '\n'.join(reply).strip()
     if not complete or not text:
         raise ValueError('premium executor did not complete a nonempty response')
@@ -281,8 +288,15 @@ def execute(backend, text, directory, *, readonly=False, model=None):
         prompt = text
     env = dict(os.environ, PWD=str(directory))
     env.pop('CLAUDECODE', None)
-    with tempfile.NamedTemporaryFile(prefix='aos-role-report-') as report:
-        command = readonly_command(backend, Path(report.name), model=model) if readonly else premium_command(backend, model=model)
+    # The report path must outlive command construction: the CLI writes it later,
+    # and it is removed once the process is done.
+    handle, report = tempfile.mkstemp(prefix='aos-role-report-')
+    os.close(handle)
+    try:
+        command = readonly_command(backend, Path(report), model=model) if readonly else premium_command(backend, model=model)
+    except BaseException:
+        os.unlink(report)
+        raise
     process = subprocess.Popen(command, cwd=directory, env=env,
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, start_new_session=True)
@@ -305,6 +319,8 @@ def execute(backend, text, directory, *, readonly=False, model=None):
     finally:
         delegate.kill_group(process)
         signal.signal(signal.SIGTERM, previous)
+        with contextlib.suppress(OSError):
+            os.unlink(report)
 
 
 def readonly_command(backend, report, model=None):
