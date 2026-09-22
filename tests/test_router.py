@@ -353,9 +353,6 @@ class RouterTests(unittest.TestCase):
         self.assertIsNone(router.choose_model(config, 'executor', runtime='opencode'))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CatalogIntegrityTests(unittest.TestCase):
     def test_catalog_without_the_configured_open_models_blocks(self):
@@ -404,3 +401,6 @@ class CommandLineDefaultTests(unittest.TestCase):
             decision = self.run_cli('--tier', 'T1', '--risk', 'LOW', '--config', str(unusable), '--json')
         self.assertEqual(decision['executor'], 'main')
         self.assertIn('not eligible for open', decision['rationale'])
+
+if __name__ == "__main__":
+    unittest.main()
