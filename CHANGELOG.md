@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.5.0 — il routing si vede nella barra di stato — 2026-09-22
+
+`decide()` è una funzione pura e l'executor open riporta token, non denaro: fuori
+dalla conversazione nessuno sapeva su quale modello stesse girando il task. Nuovo
+`bin/aos-status.py`: `set` pubblica tier, rischio e catena planner→executor→reviewer
+in un record per sessione, `usage` somma i token che il worker open ha bruciato
+davvero. La chiave è l'identificativo di sessione dell'host, quindi due sessioni sullo
+stesso repository non si sovrascrivono; senza identificativo ogni comando è un no-op.
+
+Il costo è una **stima** dai prezzi di `config/open-models.json`, mai la fattura:
+l'harness nativa non riporta il billing del gateway (`aos-open-executor.py` rifiuta
+`--max-cost` per questo). La stima applica il moltiplicatore `peak_pricing` in base
+all'ora UTC e prezza i token di cache con `input_cache_read`. Executor premium: nessuna
+cifra, sta nell'abbonamento.
+
+`aos-open-executor.py` pubblica i token solo dalla sua `main()`, non da `run()`: una
+sessione di benchmark o un chiamante di libreria non sporcano la barra dell'utente.
+La pubblicazione non può far fallire una delega — errore ingoiato per disegno, con
+due test che lo provano (directory non scrivibile, sessione assente).
+
+Verifiche: 19 test nuovi in `tests/test_status.py` (prezzi off-peak e peak, finestra a
+cavallo di mezzanotte, cache più economica dell'input fresco, modello fuori catalogo
+senza cifra, record corrotto, record scaduto, accumulo fra run, riclassificazione che
+non azzera i token); i test dell'open executor verdi dopo la modifica.
+
 ## 2.4.0 — un solo harness open, verificato con una sonda d'attacco — 2026-09-22
 
 Cinque gate di rilascio su sette chiusi; i due di benchmark non eseguiti per scelta,

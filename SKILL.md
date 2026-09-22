@@ -57,6 +57,11 @@ Risk independently determines verification, **including T0**:
 
 > `AOS attivo — tier T<n>, rischio <level>.`
 
+Publish it — the host bar shows the session model, not the model AOS routed to:
+`python3 "$AOS_DIR/bin/aos-status.py" set --tier T<n> --risk <level> --executor main|open|premium
+[--model <ref>] [--planner <family>] [--reviewer <family>]`. No session id, no-op; open runs
+add their own tokens and an estimated cost, which is catalog price, never billing.
+
 Repeat census and announcement only when classification changes. HIGH/CRITICAL or
 unclear autonomy: read `references/risk-and-tiers.md`.
 

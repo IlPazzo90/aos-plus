@@ -71,6 +71,7 @@ bin/aos-pipeline.py
 bin/aos-open-executor.py
 bin/aos-isolation.py
 bin/aos-router.py
+bin/aos-status.py
 bin/aos-security.sh
 bin/aos-install.sh
 bin/skill-library.py
@@ -95,7 +96,8 @@ tests/test_measure.py
 tests/test_profile.py
 tests/test_router.py
 tests/test_security.py
-tests/test_skill_library.py"
+tests/test_skill_library.py
+tests/test_status.py"
 
 install_router() {
   local link

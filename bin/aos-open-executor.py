@@ -454,6 +454,22 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
     return result
 
 
+def publish_status(model_ref, result):
+    """Report the tokens this run burned to the host status bar. Cosmetic only:
+    a status-bar failure never fails a delegation, and a benchmark or a library
+    caller never publishes, because only this CLI runs inside the user's session."""
+    session = os.environ.get('CLAUDE_CODE_SESSION_ID')
+    if not session:
+        return
+    try:
+        status_spec = importlib.util.spec_from_file_location('aos_status', ROOT / 'bin/aos-status.py')
+        status = importlib.util.module_from_spec(status_spec)
+        status_spec.loader.exec_module(status)
+        status.add_usage(session, model_ref, status.tokens_from_result(result), status.DEFAULT_TTL_SECONDS)
+    except Exception:  # noqa: BLE001 - the delegation result matters, the bar does not
+        pass
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--repo', required=True)
@@ -469,6 +485,7 @@ def main():
         selection = resolve(slot=args.slot, runtime=args.runtime, model=args.model)
         result = run(args.repo, selection['model_ref'], Path(args.brief).read_text(), args.timeout, False,
                      runtime=selection['runtime'], state_file=args.state_file, task_id=args.task_id)
+        publish_status(selection['model_ref'], result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return int(result['exit_code'] != 0 or bool(result['error']))
     except SystemExit as refusal:
