@@ -591,10 +591,6 @@ class ExecutorBenchTests(unittest.TestCase):
                 bench.main()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RoleBenchTests(unittest.TestCase):
     """Planner and reviewer candidates: the plan is data in the brief, findings are counted."""
 
@@ -655,3 +651,7 @@ class RoleBenchTests(unittest.TestCase):
         self.assertTrue(failed["error"])
         table = bench.replay_summary([out, failed])
         self.assertIn("| openai/gpt-5.6-sol | 1/2 | 1 | 1/0/1 | 2/0/0 | 1/1 |", table)
+
+
+if __name__ == "__main__":
+    unittest.main()

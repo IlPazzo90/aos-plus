@@ -739,10 +739,6 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(report["candidates"], 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReservationTests(unittest.TestCase):
     """Budget holds are atomic across sessions: one BEGIN IMMEDIATE per admission."""
 
@@ -824,3 +820,7 @@ class ReservationTests(unittest.TestCase):
                                   stdout=subprocess.PIPE, text=True) for name in ("s1", "s2")]
         outputs = [p.communicate(timeout=60)[0].strip() for p in procs]
         self.assertEqual(sorted(o.split()[0] for o in outputs), ["ADMITTED", "REFUSED"], outputs)
+
+
+if __name__ == "__main__":
+    unittest.main()

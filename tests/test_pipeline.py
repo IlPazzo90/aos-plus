@@ -196,8 +196,6 @@ class PipelineTests(unittest.TestCase):
         s = self.p.advance(s, 'plan', self.plan)
         self.assertEqual(self.verified(s)['stage'], 'blocked')
 
-if __name__ == '__main__': unittest.main()
-
 
 class ReviewContractTests(unittest.TestCase):
     def test_attacked_must_be_a_nonempty_list_of_strings(self):
@@ -210,3 +208,7 @@ class ReviewContractTests(unittest.TestCase):
         state = pipeline.start('T2', 'MEDIUM', 'claude', 'codex', 'p', 'f', 2)
         state['stage'] = 'review'
         self.assertEqual(pipeline.advance(state, 'reviewed', {'attacked': ['tests'], 'findings': []})['stage'], 'pass')
+
+
+if __name__ == "__main__":
+    unittest.main()
