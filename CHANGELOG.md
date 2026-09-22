@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.5.1 — il router da riga di comando leggeva la politica giusta — 2026-09-22
+
+`bin/aos-router.py --tier T1 --risk LOW` rispondeva `executor=main`, «not eligible
+for open», per ogni tier e ogni rischio: `--config` aveva default `None` e
+`load_config(None)` restituisce una config vuota, che il router interpreta come
+«nessun modello open configurato». Il percorso di produzione era sano
+(`aos-entry.py` passa `config/open-models.json`), ma chi verificava il routing da
+riga di comando leggeva una decisione di routing dove c'era solo un file mancante.
+
+Ora il default è `DEFAULT_CONFIG`, risolto dal file dello script e non dal cwd, così
+la risposta è la stessa da qualsiasi directory. `--config` esplicito continua a
+vincere, anche quando punta a una politica inutilizzabile.
+
+Verifiche: 3 test nuovi in `tests/test_router.py` (default senza argomenti, default
+da una directory estranea, `--config` esplicito che vince); 18 moduli verdi uno per
+uno; `aos-doctor.py` senza anomalie.
+
 ## 2.5.0 — il routing si vede nella barra di stato — 2026-09-22
 
 `decide()` è una funzione pura e l'executor open riporta token, non denaro: fuori

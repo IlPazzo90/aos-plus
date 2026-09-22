@@ -24,6 +24,12 @@ no cross-model review (quality-gates fallback applies).
 import json
 import math
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
+
+# The versioned policy that ships with the skill. The CLI defaults to it because
+# "no config" answers "main" for every tier and risk, which is the most plausible
+# wrong answer there is: it reads like a routing decision instead of a missing file.
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config/open-models.json"
 
 
 @dataclass(frozen=True)
@@ -538,7 +544,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, prog="aos-router")
     parser.add_argument("--tier", required=True, choices=["T0", "T1", "T2", "T3"])
     parser.add_argument("--risk", required=True, choices=["LOW", "MEDIUM", "HIGH", "CRITICAL"])
-    parser.add_argument("--config", default=None, help="path to config/open-models.json")
+    parser.add_argument("--config", default=DEFAULT_CONFIG,
+                        help="path to config/open-models.json (default: the skill's own policy)")
     parser.add_argument("--manual-override", action="store_true")
     parser.add_argument("--no-open-primary", action="store_true")
     parser.add_argument("--no-open-fallback", action="store_true")

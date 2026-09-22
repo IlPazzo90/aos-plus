@@ -5,8 +5,11 @@ AOS precedence over the manual session model, explicit override wins, fallbacks
 when open providers are unavailable, HIGH policy review, T3 planning, CRITICAL
 approval and telemetry-exposed executor identity.
 """
+import contextlib
 import importlib.util
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -362,3 +365,42 @@ class CatalogIntegrityTests(unittest.TestCase):
         config.catalog.pop(config.open_fallback, None)
         with self.assertRaisesRegex(ValueError, 'missing from the model catalog'):
             router.decide('T1', 'LOW', config=config)
+
+
+class CommandLineDefaultTests(unittest.TestCase):
+    """The CLI answers about the shipped policy, not about an empty config.
+
+    Without a config every tier and risk answers "main", which reads like a
+    routing decision rather than a missing file, so the default has to be the
+    policy the skill ships with, resolved from the script and not from cwd.
+    """
+
+    def run_cli(self, *argv):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(router.main(list(argv)), 0)
+        return json.loads(buffer.getvalue())
+
+    def test_the_cli_routes_to_the_open_model_without_being_told_where_the_policy_is(self):
+        decision = self.run_cli('--tier', 'T1', '--risk', 'LOW', '--json')
+        self.assertEqual(decision['executor'], 'open')
+        self.assertEqual(decision['model'], json.loads(CONFIG.read_text())['open']['primary'])
+        self.assertTrue(decision['routed_by_aos'])
+
+    def test_the_default_policy_is_found_from_an_unrelated_working_directory(self):
+        origin = os.getcwd()
+        with tempfile.TemporaryDirectory() as elsewhere:
+            os.chdir(elsewhere)
+            try:
+                decision = self.run_cli('--tier', 'T2', '--risk', 'MEDIUM', '--json')
+            finally:
+                os.chdir(origin)
+        self.assertEqual(decision['executor'], 'open')
+
+    def test_an_explicit_config_still_wins_over_the_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unusable = Path(directory) / 'policy.json'
+            unusable.write_text(json.dumps({'schema': 2}))
+            decision = self.run_cli('--tier', 'T1', '--risk', 'LOW', '--config', str(unusable), '--json')
+        self.assertEqual(decision['executor'], 'main')
+        self.assertIn('not eligible for open', decision['rationale'])
