@@ -105,7 +105,7 @@ class PrepareContextTests(unittest.TestCase):
             "primary": "m-a", "fallback": "m-b", "mid": "m-c", "attempts": 2,
             "open_retry_count": 1, "review_rounds": 2, "role_models": {"e": "m"},
             "verification": {"v": 1}, "fix_findings": ["f1"], "main_host": "h",
-            "executor_runtime": "opencode", "classification": "CHEAP",
+            "executor_runtime": "claude-code", "classification": "CHEAP",
             "escalation_events": [{
                 "previous_failure": "unit failed", "previous_model": "cheap-a",
                 "selected_next_model": "cheap-b", "target": "open_executor",
@@ -344,7 +344,7 @@ class SummarizeRuntimeTests(unittest.TestCase):
                 "anthropic/fable": {"cost_class": "PREMIUM"},
             },
             "executors": {
-                "default_runtime": "opencode",
+                "default_runtime": "claude-code",
                 "runtime_status": {
                     "codex-cli": {"open_execution": False,
                                   "reason": "Native restrictive rule loading is unverified"}
@@ -354,14 +354,14 @@ class SummarizeRuntimeTests(unittest.TestCase):
         }
 
     def test_reports_disabled_reason(self):
-        result = ops.summarize_runtime(self.config, ["opencode"])
+        result = ops.summarize_runtime(self.config, ["claude-code"])
         self.assertFalse(result["runtimes"]["codex-cli"]["open_execution"])
         self.assertEqual(result["runtimes"]["codex-cli"]["disabled_reason"],
                          "Native restrictive rule loading is unverified")
-        self.assertEqual(result["runtimes"]["opencode"]["available"], True)
+        self.assertEqual(result["runtimes"]["claude-code"]["available"], True)
 
     def test_reports_winner_and_classes(self):
-        result = ops.summarize_runtime(self.config, ["opencode"])
+        result = ops.summarize_runtime(self.config, ["claude-code"])
         self.assertEqual(result["winner"]["model"],
                          "vercel/deepseek/deepseek-v4-pro-0813")
         self.assertEqual(result["winner"]["cost_class"], "CHEAP")
@@ -369,13 +369,13 @@ class SummarizeRuntimeTests(unittest.TestCase):
         self.assertIn("anthropic/fable", result["classes"]["PREMIUM"])
 
     def test_context_and_learning_status(self):
-        result = ops.summarize_runtime(self.config, ["opencode"])
+        result = ops.summarize_runtime(self.config, ["claude-code"])
         self.assertTrue(result["context"]["configured"])
         self.assertTrue(result["learning"]["benchmark_winner"])
 
     # No credential keys leak into the summary.
     def test_no_credential_reads(self):
-        result = ops.summarize_runtime(self.config, ["opencode"])
+        result = ops.summarize_runtime(self.config, ["claude-code"])
         text = json.dumps(result)
         self.assertNotIn("key", text)
         self.assertNotIn("secret", text)

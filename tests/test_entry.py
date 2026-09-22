@@ -98,16 +98,14 @@ class EntryTests(unittest.TestCase):
         result = self.entry.route(info, executor_runtime='claude-code')
         self.assertEqual(result['executor'], 'open')
 
-    def test_classification_uses_resolved_runtime_without_opencode_fallback(self):
+    def test_classification_uses_the_resolved_harness(self):
         reply = json.dumps(dict(tier='T1', risk='LOW', domain='general', capabilities=[], reason='bounded'))
         with patch.object(self.entry.open_executor, 'resolve', return_value={'runtime': 'claude-code'}), \
              patch.object(self.entry.open_executor, 'infer', return_value={
-                 'exit_code': 0, 'reply': reply, 'usage': {}, 'runtime': 'claude-code'}
-             ) as infer, patch.object(self.entry.delegate, 'run_config') as run_config:
+                 'exit_code': 0, 'reply': reply, 'usage': {}, 'runtime': 'claude-code'}) as infer:
             result = self.entry.classify('write one local file')
         self.assertEqual(result['classifier'][0]['runtime'], 'claude-code')
         self.assertEqual(infer.call_args.kwargs['runtime'], 'claude-code')
-        run_config.assert_not_called()
 
     def test_role_usage_keeps_actual_cost_separate_from_catalog_estimate(self):
         state = dict(main_host='codex-cli', tier='T2', risk='MEDIUM', failures=1,
@@ -151,27 +149,35 @@ class EntryTests(unittest.TestCase):
     def test_budget_uses_global_outcomes_and_requires_explicit_allow(self):
         state = {'budget': {'daily_budget': 1}, 'learning_database': '/tmp/aos-ledger.sqlite3',
                  'project': '/project', 'task_id': 'task'}
-        with patch.object(self.entry.learning, 'list_outcomes', return_value=[{'project': '/other'}]) as outcomes, \
-             patch.object(self.entry.operations, 'budget_check', return_value={'allowed': True}) as check:
+        with patch.object(self.entry.learning, 'reserve_budget', return_value={'allowed': True, 'reservation_id': 7}) as reserve:
             self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
-        outcomes.assert_called_once_with('/tmp/aos-ledger.sqlite3')
-        self.assertEqual(check.call_args.args[1], [{'project': '/other'}])
-        with patch.object(self.entry.learning, 'list_outcomes', return_value=[]), \
-             patch.object(self.entry.operations, 'budget_check', return_value={'allowed': False}):
+        self.assertEqual(reserve.call_args.args[0], '/tmp/aos-ledger.sqlite3')
+        self.assertEqual(reserve.call_args.args[3], 'task')
+        self.assertIs(reserve.call_args.args[4], self.entry.operations.budget_check)
+        self.assertEqual(state['budget_events'][0]['reservation_id'], 7)
+        # The hold travels with the next role event and reaches the ledger with its outcome.
+        self.entry.role_usage(state, 'executor', 'open', {'usage': {}, 'model': 'vercel/deepseek/deepseek-v4-pro-0813'})
+        self.assertEqual(state['role_events'][-1]['reservation_id'], 7)
+        self.assertNotIn('pending_reservation', state)
+        with patch.object(self.entry.learning, 'record_outcome') as record:
+            state.update(learning_enabled=True, tier='T1', risk='LOW', project='/p')
+            self.entry._record_event(state, state['role_events'][-1], True)
+        self.assertEqual(record.call_args.args[1]['reservation_id'], 7)
+        with patch.object(self.entry.learning, 'reserve_budget', return_value={'allowed': False}):
             with self.assertRaisesRegex(ValueError, 'explicitly allowed'):
                 self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
 
     def test_budget_without_applicable_cap_skips_ledger_and_disabled_learning_fails_closed_when_capped(self):
         state = {'learning_enabled': False, 'learning_database': '/tmp/aos-ledger.sqlite3',
                  'budget': {}, 'task_id': 'task'}
-        with patch.object(self.entry.learning, 'list_outcomes') as outcomes:
+        with patch.object(self.entry.learning, 'reserve_budget') as reserve:
             self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
-        outcomes.assert_not_called()
+        reserve.assert_not_called()
         state['budget'] = {'daily_budget': 1}
-        with patch.object(self.entry.learning, 'list_outcomes') as outcomes, \
+        with patch.object(self.entry.learning, 'reserve_budget') as reserve, \
                 self.assertRaisesRegex(ValueError, 'requires accounting'):
             self.entry._budget(state, 'vercel/deepseek/deepseek-v4-pro-0813')
-        outcomes.assert_not_called()
+        reserve.assert_not_called()
 
     def test_role_model_mismatch_fails_instead_of_silent_premium_substitution(self):
         state = {'role_models': {'planner': 'anthropic/fable'}}
@@ -207,7 +213,7 @@ class EntryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'planner model does not satisfy'):
                 self.entry.pipeline_step(None, 'start', {
                     'classification': classification, 'budget': budget, 'text': 'bounded task',
-                    'learning_enabled': False,
+                    'main_host': 'claude-code', 'learning_enabled': False,
                 }, directory)
         self.assertIsNot(observed['info'], classification)
         self.assertEqual(observed['info']['budget'], budget)
@@ -236,6 +242,50 @@ class EntryTests(unittest.TestCase):
                     patch.object(self.entry.operations, 'budget_check', return_value={'allowed': True}) as check:
                 self.entry._budget(state, 'anthropic/fable', premium=True)
             self.assertTrue(check.called)
+
+    def test_role_usage_attaches_runtime_reported_context_to_prompt_estimate(self):
+        state = {'context_events': [{'role': 'planner', 'context_tokens': 100},
+                                    {'role': 'executor', 'context_tokens': 200}]}
+        self.entry.role_usage(state, 'planner', 'claude',
+                              {'usage': {'input_tokens': 6, 'cache_read_input_tokens': 4000,
+                                         'cache_creation_input_tokens': 594, 'output_tokens': 10}, 'model': 'anthropic/fable'})
+        planner = state['context_events'][0]
+        # Cached prompt tokens are context the provider processed: 6 + 4000 + 594.
+        self.assertEqual((planner['observed_input_tokens'], planner['hidden_context_tokens']), (4600, 4500))
+        self.assertEqual(planner['measurement_scope'], 'prompt_plus_runtime_reported')
+        # An unreported counter stays null, never zero; the other role's event is untouched.
+        self.entry.role_usage(state, 'executor', 'open', {'usage': {}, 'model': 'vercel/deepseek/deepseek-v4-pro-0813'})
+        executor = state['context_events'][1]
+        self.assertEqual((executor['observed_input_tokens'], executor['hidden_context_tokens']), (None, None))
+        self.assertEqual(executor['measurement_scope'], 'prompt_only')
+
+    def test_json_reply_takes_the_object_alone_and_reports_the_tail_otherwise(self):
+        self.assertEqual(self.entry.json_reply({'reply': '```json\n{"a": 1}\n```'}), {'a': 1})
+        self.assertEqual(self.entry.json_reply({'reply': '  {"a": 1}\n'}), {'a': 1})
+        with self.assertRaisesRegex(ValueError, 'wraps the JSON object in prose'):
+            self.entry.json_reply({'reply': 'Here is my review:\n{"findings": []}\nDone.'})
+        with self.assertRaisesRegex(ValueError, 'not a JSON object: I could not read the diff'):
+            self.entry.json_reply({'reply': 'I could not read the diff'})
+        with self.assertRaisesRegex(ValueError, 'JSON object'):
+            self.entry.json_reply({'reply': '[1, 2]'})
+
+    def test_unknown_catalog_reference_blocks_instead_of_reaching_the_cli(self):
+        with self.assertRaisesRegex(ValueError, 'missing from catalog'):
+            self.entry._role_model({'role_models': {'planner': 'anthropic/not-in-catalog'}}, 'planner', 'claude')
+
+    def test_json_reply_rejects_any_prose_around_the_object(self):
+        # Round 2 finding: a short sentence passed the 200-character bound, and
+        # "I could not review the diff … Example only: {…}" fitted inside it.
+        for reply in ('Review unavailable: the diff could not be read, so this is only an illustration. '
+                      'Example only: {"attacked":["example"],"findings":[]}',
+                      'I could not review the diff because reads were denied. Example only:\n'
+                      '{"attacked":["not performed: reads denied"],"findings":[]}',
+                      'Done. {"attacked":["tests"],"findings":[]}'):
+            with self.assertRaisesRegex(ValueError, 'wraps the JSON object in prose'):
+                self.entry.json_reply({'reply': reply})
+        # A fenced object with nothing else around it is still the object.
+        self.assertEqual(self.entry.json_reply({'reply': '```json\n{"attacked":["tests"],"findings":[]}\n```'}),
+                         {'attacked': ['tests'], 'findings': []})
 
     def test_recorded_observation_keeps_retry_and_context_fields(self):
         state = {'learning_enabled': True, 'learning_database': '/tmp/aos-ledger.sqlite3',

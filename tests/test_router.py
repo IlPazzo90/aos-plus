@@ -352,3 +352,13 @@ class RouterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CatalogIntegrityTests(unittest.TestCase):
+    def test_catalog_without_the_configured_open_models_blocks(self):
+        import copy
+        config = copy.deepcopy(router.load_config(CONFIG))
+        config.catalog.pop(config.open_primary, None)
+        config.catalog.pop(config.open_fallback, None)
+        with self.assertRaisesRegex(ValueError, 'missing from the model catalog'):
+            router.decide('T1', 'LOW', config=config)

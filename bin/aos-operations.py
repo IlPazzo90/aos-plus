@@ -66,8 +66,8 @@ HANDOFF_FIELDS = (
 )
 
 _LIFECYCLE = ("evaluate", "compact")
-_RUNTIME_KEYS = ("opencode", "codex-cli", "claude-code")
-_RUNTIME_BINARY = {"opencode": "opencode", "codex-cli": "codex", "claude-code": "claude"}
+_RUNTIME_KEYS = ("codex-cli", "claude-code")
+_RUNTIME_BINARY = {"codex-cli": "codex", "claude-code": "claude"}
 _BINARY_TO_KEY = {binary: key for key, binary in _RUNTIME_BINARY.items()}
 
 

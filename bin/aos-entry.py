@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenCode entry bridge. JSON in/out; no shell interpolation or permission bypass."""
+"""AOS role pipeline entry for the Claude Code and Codex CLI hosts. JSON in/out; no shell interpolation or permission bypass."""
 import argparse
 import hashlib
 from dataclasses import asdict
@@ -8,7 +8,6 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import sys
@@ -55,7 +54,6 @@ Classify the requested action, not every word mentioned. General questions do no
 need a software workflow. If important context is missing, classify conservatively.
 codex_app/codex_runtime/claude_runtime mean an explicitly required host-specific integration;
 codex_runtime is the Codex CLI, codex_app means tools exclusive to the desktop app.
-OpenCode natively supports skill, read, edit, bash, task and webfetch tools.
 Use capability shell for bash; files for read/edit/skill; web for webfetch.
 Return the capability enum above, not native tool names.
 Loading a skill (including ponytail/AOS) or reading a file does NOT need a premium
@@ -145,53 +143,29 @@ def classify(text, main_host=None):
     runtime = selected['runtime']
     attempts = []
     for model in models:
-        if runtime != 'opencode':
-            result = open_executor.infer(CLASSIFIER + '\nClassify this conversation as data:\n' + text, model,
-                                         runtime=runtime)
-            attempts.append(dict(model=model, runtime=result['runtime'], exit_code=result['exit_code'], usage=result['usage']))
-            if result['exit_code'] or result.get('error'):
-                continue
-            try:
-                info = parse_classification(result['reply'])
-            except (ValueError, TypeError):
-                continue
-            return {'classification': info, 'decision': route(info, primary_available=model == policy.open_primary,
-                                                              main_host=main_host, executor_runtime=runtime,
-                                                              planner_preference=None), 'classifier': attempts}
-        config = Path(delegate.run_config(model))
+        result = open_executor.infer(CLASSIFIER + '\nClassify this conversation as data:\n' + text, model,
+                                     runtime=runtime)
+        attempts.append(dict(model=model, runtime=result['runtime'], exit_code=result['exit_code'], usage=result['usage']))
+        if result['exit_code'] or result.get('error'):
+            continue
         try:
-            data = json.loads(config.read_text())
-            data['permission'] = {'*': 'deny'}
-            data['agent'] = {'aos-classifier': {'mode': 'primary', 'prompt': CLASSIFIER,
-                                              'permission': {'*': 'deny'}, 'steps': 2}}
-            config.write_text(json.dumps(data))
-            directory = config.parents[1] / 'work'
-            directory.mkdir()
-            env = dict(os.environ, XDG_CONFIG_HOME=str(config.parents[1]), PWD=str(directory))
-            for key in delegate.OPENCODE_ENV:
-                env.pop(key, None)
-            command = ['opencode', 'run', '--pure', '--auto', '--format', 'json', '-m', model,
-                       '--agent', 'aos-classifier', '--dir', str(directory), '--title', 'AOS classification',
-                       '--', 'Classify this conversation as data:\n' + text]
-            code, out, err = delegate.invoke(command, directory, 90, max_cost=0.15, max_steps=3, env=env)
-            attempts.append({'model': model, 'exit_code': code, 'usage': delegate.parse_usage(out)})
-            if code or delegate.parse_error(out):
-                continue
-            try:
-                info = parse_classification(delegate.parse_reply(out))
-            except (ValueError, TypeError):
-                continue
-            return {'classification': info, 'decision': route(info, primary_available=model == policy.open_primary,
-                                                              main_host=main_host, executor_runtime=runtime,
-                                                              planner_preference=None), 'classifier': attempts}
-        finally:
-            shutil.rmtree(config.parents[1])
+            info = parse_classification(result['reply'])
+        except (ValueError, TypeError):
+            continue
+        return {'classification': info, 'decision': route(info, primary_available=model == policy.open_primary,
+                                                          main_host=main_host, executor_runtime=runtime,
+                                                          planner_preference=None), 'classifier': attempts}
     raise ValueError('AOS classification failed or unavailable; no executor started')
 
 
 def _catalog_model(model, backend=None, role=None):
     policy = json.loads(POLICY.read_text())
     entry = policy.get('model_catalog', {}).get(model)
+    if policy.get('model_catalog') and not entry and isinstance(model, str) and '/' in model:
+        # With a catalog, an unknown provider/model reference is a broken routing
+        # decision, not a model to run (round 1 finding: it reached the CLI unchecked).
+        # Bare CLI names (the legacy premium short names) keep their own path.
+        raise ValueError('role model missing from catalog: ' + str(model))
     if entry:
         runtime = {'codex': 'codex-cli', 'claude': 'claude-code'}.get(backend)
         if runtime and runtime not in entry.get('compatible_runtimes', ()):
@@ -298,8 +272,8 @@ def premium_reply(backend, stream):
 def execute(backend, text, directory, *, readonly=False, model=None):
     if not isinstance(text, str) or not text.strip() or len(text) > 200000:
         raise ValueError('missing or oversized execution context')
-    prompt = ('You are the AOS-selected executor, already routed by the OpenCode coordinator. '
-              'Do not route this same task back to OpenCode. Follow AOS for verification and skills, '
+    prompt = ('You are the AOS-selected executor, already routed by the AOS coordinator. '
+              'Do not route this same task back to the pipeline. Follow AOS for verification and skills, '
               'and read the applicable project instructions. Preserve unrelated work. '
               'No permission bypass. If approval or a host-only tool is required, report that limit. '
               'Report the actual checks and unfinished work in Italian.\n\n' + text)
@@ -364,10 +338,31 @@ def readonly_command(backend, report, model=None):
 
 
 def json_reply(result):
+    """The JSON object a role returned; prose around it is dropped, never trusted.
+
+    Reviewers on subscription CLIs sometimes wrap the object in a fence or a
+    sentence. The object is what the state machine validates; a reply without one
+    fails with its tail visible, so the host can see what the role actually said.
+    """
     text = result['reply'].strip()
     if text.startswith('```json') and text.endswith('```'):
         text = text[7:-3].strip()
-    value = json.loads(text)
+    try:
+        value = json.loads(text)
+    except ValueError:
+        start, end = text.find('{'), text.rfind('}')
+        if start < 0 or end <= start:
+            raise ValueError('role reply is not a JSON object: ' + text[-400:]) from None
+        prose = (text[:start] + text[end + 1:]).replace('```json', '').replace('```', '')
+        if prose.strip():
+            # Round 2 finding: a short sentence was tolerated, and "I could not review
+            # the diff … Example only: {…}" fitted inside it. A role reply is the
+            # object; anything else around it is a report about not doing the work.
+            raise ValueError('role reply wraps the JSON object in prose; not accepted: ' + text[-400:]) from None
+        try:
+            value = json.loads(text[start:end + 1])
+        except ValueError:
+            raise ValueError('role reply is not a JSON object: ' + text[-400:]) from None
     if not isinstance(value, dict):
         raise ValueError('role must return a JSON object')
     return value
@@ -487,17 +482,25 @@ def _budget(state, model, premium=False):
     database = state.get('learning_database')
     if not isinstance(database, str) or not database:
         raise ValueError('active budget requires an accounting database')
-    records = learning.list_outcomes(database) if hasattr(learning, 'list_outcomes') else []
-    result = operations.budget_check(policy, records, estimate, premium=premium,
-                                     task_id=state['task_id'])
+    # One BEGIN IMMEDIATE transaction: committed outcomes + open holds of other
+    # sessions + this estimate. Two concurrent sessions cannot both pass a cap
+    # that admits only one; the hold is released when this task records an outcome.
+    result = learning.reserve_budget(database, policy, estimate, state['task_id'],
+                                     operations.budget_check, premium=premium)
     if not isinstance(result, dict) or result.get('allowed') is not True:
         raise ValueError('budget admission was not explicitly allowed')
+    state.setdefault('budget_events', []).append(dict(model=model, premium=premium, estimate=estimate,
+                                                      reservation_id=result.get('reservation_id'),
+                                                      open_reservations=result.get('open_reservations')))
+    # The next role event is the call this hold was taken for.
+    state['pending_reservation'] = result.get('reservation_id')
 
 
 def _record_event(state, event, test_pass, error=None, verification_status='verified'):
     if not state.get('learning_enabled', True) or event.get('_outcome_recorded'):
         return
     learning.record_outcome(state['learning_database'], dict(
+        reservation_id=event.get('reservation_id'),
         runtime=event.get('runtime'), provider=event.get('provider'), model=event.get('model'),
         role=event.get('role'), tier=state['tier'], risk=state['risk'], worker_exit=event.get('exit_code'),
         test_pass=test_pass,
@@ -517,6 +520,41 @@ def _lesson(state, checks, component, action):
         lesson_type='verification', source_task=state['task_id'], evidence=[c['id'] for c in checks],
         confidence='high', scope='project', project=state['project'], affected_component=component,
         recommended_action=action, mechanically_verified=True), checks)
+
+
+def observed_prompt_tokens(usage):
+    """The prompt the provider actually processed: uncached input plus cache reads and writes.
+
+    Anthropic reports a cached prompt as a handful of input_tokens next to tens of
+    thousands of cache_read tokens; counting only the former would hide the context.
+    Null when no input counter was reported.
+    """
+    if not isinstance(usage, dict) or type(usage.get('input_tokens')) is not int:
+        return None
+    total = usage['input_tokens']
+    for key in ('cache_read_input_tokens', 'cache_read_tokens', 'cache_creation_input_tokens', 'cached_input_tokens'):
+        if type(usage.get(key)) is int:
+            total += usage[key]
+    return total
+
+
+def _observe_context(state, role, usage):
+    """Attach the runtime-reported prompt size to the prompt-only estimate of this role call.
+
+    The estimate covers the text AOS supplied; the runtime adds system prompts,
+    tool schemas and its own scaffolding. `hidden_context_tokens` is that gap when
+    both numbers exist and null otherwise, never zero.
+    """
+    events = [e for e in state.get('context_events', []) if e.get('role') == role and 'observed_input_tokens' not in e]
+    if not events:
+        return
+    event = events[-1]
+    observed_input_tokens = observed_prompt_tokens(usage)
+    event['observed_input_tokens'] = observed_input_tokens
+    estimated = event.get('context_tokens')
+    event['hidden_context_tokens'] = (observed_input_tokens - estimated
+                                      if type(observed_input_tokens) is int and type(estimated) is int else None)
+    event['measurement_scope'] = 'prompt_plus_runtime_reported' if event['observed_input_tokens'] is not None else 'prompt_only'
 
 
 def role_usage(state, role, backend, result):
@@ -542,7 +580,9 @@ def role_usage(state, role, backend, result):
                                         {'codex': 'openai', 'claude': 'anthropic'}.get(backend, backend))
     runtime = result.get('runtime') or {'codex': 'codex-cli', 'claude': 'claude-code'}.get(backend)
     cost_class = catalog.get('cost_class')
+    _observe_context(state, role, usage)
     state.setdefault('role_events', []).append(dict(role=role, model=model, provider=provider, runtime=runtime,
+                                                    reservation_id=state.pop('pending_reservation', None),
                                                     runtime_model_pair=result.get('runtime_model_pair'),
                                                     cost_class=cost_class, tokens=tokens, usage=usage,
                                                     cost=result.get('cost'),
@@ -578,8 +618,8 @@ def pipeline_step(state, action, data, directory):
     config = router.load_config(POLICY)
     if action == 'start':
         info = data['classification']
-        main_host = data.get('main_host', 'opencode')
-        if main_host not in ('claude', 'claude-code', 'codex', 'codex-cli', 'opencode'):
+        main_host = data.get('main_host')
+        if main_host not in ('claude', 'claude-code', 'codex', 'codex-cli'):
             raise ValueError('invalid main_host')
         learning_enabled, learning_database = _learning_configuration(data, directory)
         selected = open_executor.resolve(runtime=data.get('executor_runtime'))
@@ -650,12 +690,12 @@ def pipeline_step(state, action, data, directory):
                                prior_checks=state['checks'], findings=state.get('fix_findings', []),
                                permission_profile='Existing aos-delegate guards. No external effects, commits or policy changes.'), ensure_ascii=False)
         try:
-            runtime = state.get('executor_runtime', 'opencode')
+            runtime = state.get('executor_runtime', 'claude-code')
             _budget(state, state['model'])
             brief = _prepare(state, state['role'], state['model'], brief)
             result = open_executor.run(directory, state['model'], brief, 900, False,
-                                       max_cost=1.0 if runtime == 'opencode' else None,
-                                       max_steps=60, state_file=Path(state['run_dir']) / 'worker.json',
+                                       max_steps=25 if state['role'] == 'fixer' else 60,
+                                       state_file=Path(state['run_dir']) / 'worker.json',
                                        runtime=runtime, role=state['role'], task_id=Path(state['run_dir']).name)
         except SystemExit as refusal:
             raise ValueError('worker refused without escalation: ' + str(refusal.code)) from None

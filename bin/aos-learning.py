@@ -69,8 +69,19 @@ _SCHEMA = (
     " rollback_identifier TEXT NOT NULL,"
     " created_at TEXT NOT NULL"
     ");"
+    "CREATE TABLE IF NOT EXISTS reservations ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " task_id TEXT NOT NULL,"
+    " estimate REAL,"
+    " premium INTEGER NOT NULL,"
+    " created_at TEXT NOT NULL,"
+    " settled_at TEXT"
+    ");"
     "CREATE INDEX IF NOT EXISTS idx_lessons_dedup ON lessons (source_task, affected_component, evidence);"
 )
+# A reservation that no outcome ever settled (crashed session) stops counting
+# against concurrent sessions after this many seconds.
+RESERVATION_TTL_SECONDS = 3600
 
 
 def _now():
@@ -434,6 +445,14 @@ def record_outcome(database, event):
                  cost, input_tokens, output_tokens,
                  event.get("task_id"), event.get("project"), retry, event.get("main_host"), event.get("uncertainty"), verification_status, _now()),
             )
+            # The outcome carries the measured cost of exactly one reserved call: release
+            # that hold only. Sibling holds of the same task stay until their own outcome.
+            reservation_id = event.get("reservation_id")
+            if reservation_id is not None:
+                if isinstance(reservation_id, bool) or not isinstance(reservation_id, int):
+                    raise ValueError("reservation_id must be an integer")
+                conn.execute("UPDATE reservations SET settled_at = ? WHERE id = ? AND settled_at IS NULL",
+                             (_now(), reservation_id))
             conn.execute("COMMIT")
             return {"outcome_id": cur.lastrowid, "success": bool(success)}
         except Exception:
@@ -441,6 +460,67 @@ def record_outcome(database, event):
             raise
     finally:
         conn.close()
+
+
+def _open_reservations(conn, now_text):
+    """Unsettled, unexpired holds of every session, shaped like outcome records."""
+    rows = conn.execute("SELECT id, task_id, estimate, premium, created_at FROM reservations"
+                        " WHERE settled_at IS NULL ORDER BY id").fetchall()
+    now = datetime.fromisoformat(now_text.replace("Z", "+00:00"))
+    live = []
+    for r in rows:
+        created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+        if (now - created).total_seconds() > RESERVATION_TTL_SECONDS:
+            continue
+        live.append({"reservation_id": r["id"], "task_id": r["task_id"], "cost": r["estimate"],
+                     "premium": bool(r["premium"]), "cost_class": "PREMIUM" if r["premium"] else None,
+                     "created_at": r["created_at"]})
+    return live
+
+
+def reserve_budget(database, policy, estimate, task_id, check, premium=False, now=None):
+    """Admit `estimate` against the caps and hold it, atomically across sessions.
+
+    `check` is the pure budget function (operations.budget_check): it sees the
+    committed outcomes plus every open reservation of other sessions, inside one
+    BEGIN IMMEDIATE transaction, so two concurrent sessions cannot both pass a cap
+    that admits only one. Returns the check report plus `reservation_id`.
+    """
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("reservation requires a task_id")
+    conn = _connect(database)
+    try:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now_text = now if isinstance(now, str) else _now()
+            records = _outcome_rows(conn.execute("SELECT * FROM outcomes ORDER BY id").fetchall())
+            records += _open_reservations(conn, now_text)
+            report = check(policy, records, estimate, premium=premium, task_id=task_id, now=now)
+            if not isinstance(report, dict) or report.get("allowed") is not True:
+                raise ValueError("budget admission was not explicitly allowed")
+            cur = conn.execute("INSERT INTO reservations (task_id, estimate, premium, created_at) VALUES (?, ?, ?, ?)",
+                               (task_id, None if estimate is None else float(estimate), 1 if premium else 0, now_text))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    return dict(report, reservation_id=cur.lastrowid, open_reservations=len([r for r in records if "reservation_id" in r]))
+
+
+def _outcome_rows(rows):
+    return [{
+        "id": r["id"], "runtime": r["runtime"], "provider": r["provider"],
+        "model": r["model"], "role": r["role"], "tier": r["tier"], "risk": r["risk"],
+        "success": bool(r["success"]), "worker_exit": r["worker_exit"],
+        "test_pass": r["test_pass"], "error": r["error"], "cost_class": r["cost_class"],
+        "cost": r["cost"], "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
+        "task_id": r["task_id"], "project": r["project"], "retry": r["retry"],
+        "main_host": r["main_host"], "uncertainty": r["uncertainty"], "verification_status": r["verification_status"],
+        "created_at": r["created_at"],
+    } for r in rows]
 
 
 def list_outcomes(database, project=None):
@@ -461,17 +541,7 @@ def list_outcomes(database, project=None):
                                 (project,)).fetchall()
     finally:
         conn.close()
-
-    return [{
-        "id": r["id"], "runtime": r["runtime"], "provider": r["provider"],
-        "model": r["model"], "role": r["role"], "tier": r["tier"], "risk": r["risk"],
-        "success": bool(r["success"]), "worker_exit": r["worker_exit"],
-        "test_pass": r["test_pass"], "error": r["error"], "cost_class": r["cost_class"],
-        "cost": r["cost"], "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
-        "task_id": r["task_id"], "project": r["project"], "retry": r["retry"],
-        "main_host": r["main_host"], "uncertainty": r["uncertainty"], "verification_status": r["verification_status"],
-        "created_at": r["created_at"],
-    } for r in rows]
+    return _outcome_rows(rows)
 
 
 def routing_advice(database, project, runtime, role, tier, risk,

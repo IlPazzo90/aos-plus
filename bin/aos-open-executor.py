@@ -20,15 +20,18 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('aos_open_delegate', ROOT / 'bin/aos-delegate.py')
 delegate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(delegate)
-RUNTIMES = {'opencode': 'opencode', 'codex-cli': 'codex', 'claude-code': 'claude'}
-OPEN_EXECUTION_RUNTIMES = ('opencode', 'claude-code')
-# 2026-09-22: the installed Codex CLI did not enforce the generated private
-# deny-rule layer. Keep the host usable, but refuse it as an open worker until a
-# real negative native-policy probe proves the restrictive contract.
-CODEX_RUNTIME_BLOCK = 'Codex CLI open execution is disabled: restrictive rule loading is unverified'
+RUNTIMES = {'claude-code': 'claude', 'codex-cli': 'codex'}
+OPEN_EXECUTION_RUNTIMES = ('claude-code', 'codex-cli')
+# Claude Code is the open harness: file tools only, no shell, the host runs every
+# check. The Codex adapter stays here but the policy keeps it out of open execution:
+# Codex edits through its shell tool, and that tool's command policy did not hold a
+# negative probe (2026-09-22: `npx` ran while files and network were denied), while
+# disabling the shell leaves it with no file tools at all. Codex remains the premium
+# host, planner, reviewer and escalation; re-enabling it as a worker needs a green
+# probe taken with the shell on.
 CAPABILITIES = {name: dict(read_repo=True, write_repo=True, shell=name == 'codex-cli',
                          structured_output=True, provider_override=True, model_override=True,
-                         sandbox=name != 'opencode', network=False, subagent=False,
+                         sandbox=True, network=False, subagent=False,
                          timeout=True, usage_reporting=True, json_output=True, tool_calling=True)
                 for name in RUNTIMES}
 
@@ -46,7 +49,7 @@ def runtime_block(config, runtime):
     return None
 
 
-def resolve(config=None, slot='primary', runtime=None, model=None, provider=None, required_capabilities=()):
+def resolve(config=None, slot='primary', runtime=None, model=None, provider=None, required_capabilities=(), probe_root=None):
     config = policy() if config is None else config
     settings = config.get('executors', {})
     identity = model or config.get('open', {}).get(slot)
@@ -55,21 +58,27 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
     prefix, model_id = identity.split('/', 1)
     provider = provider or prefix
     if runtime is None:
-        ordered = [settings.get('default_runtime', 'opencode')] + settings.get('runtime_order', list(RUNTIMES))
+        ordered = [settings.get('default_runtime', 'claude-code')] + settings.get('runtime_order', list(RUNTIMES))
         runtime = next((r for r in ordered if r in OPEN_EXECUTION_RUNTIMES and shutil.which(RUNTIMES[r])
                         and not runtime_block(config, r)
                         and all(CAPABILITIES[r].get(c) for c in required_capabilities)), None)
-        if runtime is None and 'codex-cli' in ordered and shutil.which(RUNTIMES['codex-cli']):
-            raise ValueError(CODEX_RUNTIME_BLOCK)
     if runtime not in RUNTIMES:
         raise ValueError('no compatible open runtime installed or invalid runtime')
-    blocked = runtime_block(config, runtime)
-    if blocked:
-        raise ValueError(f'{runtime} open execution is disabled: {blocked}')
-    if runtime == 'codex-cli':
-        raise ValueError(CODEX_RUNTIME_BLOCK)
-    entry = config.get('model_catalog', {}).get(identity) if isinstance(config.get('model_catalog', {}), dict) else None
-    if isinstance(entry, dict) and runtime not in entry.get('compatible_runtimes', ()):
+    if probe_root is None:
+        # The isolation probe (aos-isolation.py) is the only caller allowed to run a
+        # disabled runtime, and only inside its own disposable fixture.
+        blocked = runtime_block(config, runtime)
+        if blocked:
+            raise ValueError(f'{runtime} open execution is disabled: {blocked}')
+    catalog = config.get('model_catalog') if isinstance(config.get('model_catalog'), dict) else None
+    entry = catalog.get(identity) if catalog else None
+    if catalog and entry is None and probe_root is None:
+        # Round 2 finding: the router blocked unknown models, this path did not, so
+        # `--model vercel/missing` reached the harness. With a catalog, an unknown
+        # reference is a broken routing decision, not a model to run.
+        raise ValueError('open model missing from catalog: ' + identity)
+    if isinstance(entry, dict) and runtime not in entry.get('compatible_runtimes', ()) and probe_root is None:
+        # The probe tests a runtime the catalog may have dropped after a failed probe.
         raise ValueError('selected model is not compatible with the requested runtime')
     if any(not CAPABILITIES[runtime].get(c) for c in required_capabilities):
         raise ValueError('open runtime lacks a required capability')
@@ -80,14 +89,11 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
 
 
 @lru_cache(maxsize=None)
-def check_runtime(runtime):
-    blocked = runtime_block(policy(), runtime)
-    if blocked:
-        raise ValueError(f'{runtime} open execution is disabled: {blocked}')
-    if runtime == 'opencode':
-        return
-    if runtime == 'codex-cli':
-        raise ValueError(CODEX_RUNTIME_BLOCK)
+def check_runtime(runtime, probe=False):
+    if not probe:
+        blocked = runtime_block(policy(), runtime)
+        if blocked:
+            raise ValueError(f'{runtime} open execution is disabled: {blocked}')
     completed = subprocess.run([RUNTIMES[runtime], '--version'], text=True, capture_output=True, timeout=10)
     match = re.search(r'(\d+)\.(\d+)\.(\d+)', completed.stdout)
     minimum = {'codex-cli': (0, 155, 1), 'claude-code': (2, 1, 278)}[runtime]
@@ -105,11 +111,13 @@ def provider_config(provider, runtime):
         raise ValueError('provider needs an HTTPS endpoint for this runtime')
     key_name = configured.get('api_key_env', 'AOS_OPEN_API_KEY')
     key = os.environ.get(key_name)
-    if not key and configured.get('opencode_credentials'):
-        key = delegate.user_config().get('provider', {}).get(provider, {}).get('options', {}).get('apiKey')
-        if isinstance(key, str):
-            key = delegate.expand_env(key)
-            key = re.sub(r'\{file:([^{}]+)\}', lambda m: Path(m[1]).expanduser().read_text().strip(), key)
+    key_file = configured.get('api_key_file')
+    if not key and isinstance(key_file, str) and key_file.strip():
+        # The host reads the credential file; the worker process receives the value
+        # through its environment and a worker without a shell cannot read it back.
+        path = Path(key_file).expanduser()
+        if path.is_file():
+            key = path.read_text().strip()
     if not isinstance(key, str) or not key.strip() or '{' in key:
         raise ValueError('open provider credential unavailable')
     return endpoint, key
@@ -142,42 +150,15 @@ def codex_command(repo, model, brief, endpoint):
     cmd = ['codex', 'exec', '--ignore-user-config', '--ephemeral', '--json', '-C', str(repo), '-m', model]
     for key, value in values.items():
         cmd += ['-c', key + '=' + toml(value)]
+    # Codex delivers apply_patch through the shell tool: disabling it leaves the
+    # worker with no file tools (probe 2026-09-22: 0 tool calls). The command policy
+    # this relies on is exactly what the policy blocks until a probe proves it.
     cmd += ['--enable', 'skip_host_skill_discovery']
     for feature in ('apps', 'plugins', 'hooks', 'multi_agent', 'browser_use', 'browser_use_external',
                     'computer_use', 'image_generation', 'in_app_browser', 'in_app_local_automation',
                     'remote_control', 'skill_search', 'skill_mcp_dependency_install', 'view_image', 'shell_snapshot'):
         cmd += ['--disable', feature]
     return cmd + ['--', brief]
-
-
-def codex_rules(roots=None):
-    """Narrow inherited approvals: native allow rules can bypass the sandbox.
-
-    Never evaluate Starlark or expose user rule arguments inside the workspace.
-    Dynamic policy cannot be safely translated and blocks this adapter.
-    """
-    patterns = [shlex.split(x.split('*')[0].rstrip()) for x in delegate.DENIED_BASH]
-    patterns.append(['npx'])
-    roots = roots if roots is not None else [Path.home() / '.codex/rules', Path('/etc/codex/rules')]
-    for root in roots:
-        for path in sorted(Path(root).glob('*.rules')):
-            try:
-                tree = ast.parse(path.read_text())
-                for node in tree.body:
-                    if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                            and isinstance(node.value.func, ast.Name) and node.value.func.id == 'prefix_rule'):
-                        raise ValueError('unsupported policy expression')
-                    values = {k.arg: ast.literal_eval(k.value) for k in node.value.keywords}
-                    if node.value.args or 'pattern' not in values:
-                        raise ValueError('unsupported policy arguments')
-                    if values.get('decision', 'allow') == 'allow':
-                        pattern = values['pattern']
-                        if not isinstance(pattern, list) or not pattern:
-                            raise ValueError('invalid policy pattern')
-                        patterns.append(pattern)
-            except (OSError, SyntaxError, ValueError, TypeError):
-                raise ValueError('inherited Codex rules cannot be safely restricted') from None
-    return '\n'.join('prefix_rule(pattern=' + json.dumps(p) + ', decision="forbidden")' for p in patterns)
 
 
 def claude_command(repo, model, brief, runtime_tmp=None):
@@ -210,79 +191,70 @@ def claude_command(repo, model, brief, runtime_tmp=None):
             '--effort', 'low', '--model', model, '--settings', json.dumps(settings), '--', brief]
 
 
-# The only environment an open OpenCode worker inherits: nothing that could carry a
-# credential or reopen a layer the run has already closed. Provider authentication is
-# in the task-scoped config, never a secret environment tool.
-OPENCODE_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
-# A denylist has no closure, but the read tool is one bounded surface: deny secrets
-# and the directories that hold repository/editor metadata, while read/edit/write
-# stay permitted inside the repo. Ours go in last so a user's stricter read still wins.
-OPENCODE_READ_DENY = ("**/.env*", "**/*.pem", "**/*.key",
-                      ".git/**", "**/.git/**", ".claude/**", "**/.claude/**",
-                      ".codex/**", "**/.codex/**")
+def os_isolation_for(config, runtime):
+    """Configured OS-level isolation for a runtime: 'seatbelt' or 'none'."""
+    status = config.get('executors', {}).get('runtime_status', {}).get(runtime, {})
+    value = status.get('os_isolation', 'none') if isinstance(status, dict) else 'none'
+    if value not in ('none', 'seatbelt'):
+        raise ValueError('unsupported os_isolation: ' + str(value))
+    return value
 
 
-def opencode_env(config_root, repo):
-    env = {key: os.environ[key] for key in OPENCODE_ENV_KEYS if key in os.environ}
-    env['XDG_CONFIG_HOME'] = str(config_root)
-    env['PWD'] = str(repo)
-    return env
+PROBE_MARKER = '.aos-isolation-probe'
 
 
-def inherited_tool_rules(permission, tool):
-    """Resolve matching OpenCode rules in their original insertion order."""
-    rules = {}
-    for pattern, value in permission.items():
-        if not isinstance(pattern, str) or not fnmatchcase(tool, pattern):
-            continue
-        if isinstance(value, str):
-            rules = {'*': value}
-        elif isinstance(value, dict):
-            rules.update((key, decision) for key, decision in value.items()
-                         if isinstance(key, str) and isinstance(decision, str))
-    return rules or {'*': 'allow'}
+def probe_fixture(root):
+    """The disposable fixture root the isolation probe created, or a refusal.
 
-
-def restrict_tool(permission, tool, deny_patterns):
-    """Append adapter denials without widening preceding user rules."""
-    rules = inherited_tool_rules(permission, tool)
-    for pattern in deny_patterns:
-        # Assignment retains an existing key's position, so pop it first: these
-        # restrictions must be the final matching rules.
-        rules.pop(pattern, None)
-        rules[pattern] = 'deny'
-    return rules
-
-
-def restrict_opencode(config):
-    """Restrictions appended to the task-only config, deny rules last, nothing replaced.
-
-    The bash allow+deny patterns carried by delegate.run_config are not isolation:
-    arbitrary python in the shell bypasses them. The whole bash tool is denied and the
-    worker is left with file tools inside the repo.
+    Only a directory under the temporary tree that carries the probe's marker file
+    counts: `/` or a project directory can never unlock a disabled runtime.
     """
-    permission = config.get('permission')
-    if not isinstance(permission, dict):
-        permission = {'*': 'deny'}
-    def append_rule(name, value):
-        permission.pop(name, None)
-        permission[name] = value
+    root = Path(root).resolve()
+    temp = Path(tempfile.gettempdir()).resolve()
+    if temp not in root.parents or not (root / PROBE_MARKER).is_file():
+        raise ValueError('probe_root is not a fixture created by the isolation probe')
+    return root
 
-    append_rule('bash', 'deny')
-    for key in ('webfetch', 'websearch', 'task', 'external_directory', 'codesearch'):
-        append_rule(key, 'deny')
-    read_rules = restrict_tool(permission, 'read', OPENCODE_READ_DENY)
-    edit_deny_patterns = OPENCODE_READ_DENY + ('.git/**', '.claude/**', '.codex/**')
-    edit_rules = {tool: restrict_tool(permission, tool, edit_deny_patterns)
-                  for tool in ('edit', 'write', 'patch')}
-    append_rule('read', read_rules)
-    for tool, rules in edit_rules.items():
-        append_rule(tool, rules)
-    append_rule('lsp', 'deny')
-    config['permission'] = permission
-    config['formatter'] = False
-    config['lsp'] = False
-    return config
+
+def _sb_path(path):
+    return json.dumps(str(Path(path).resolve()))
+
+
+def seatbelt_profile(repo, read_write=(), read_only=()):
+    """macOS sandbox profile: last matching rule wins, so broad denies come first.
+
+    Everything outside the user's home and temporary trees stays readable (the
+    toolchain lives there); the home, every temp tree and every volume are denied;
+    then the repo and the run's own directories are re-allowed; then the secrets
+    inside the repo and the repository/runtime metadata are denied again. Symlinks
+    resolve to their target before evaluation, so a link out of the repo is denied.
+    """
+    repo = Path(repo).resolve()
+    escaped = re.escape(str(repo))
+    lines = ['(version 1)', '(allow default)',
+             '(deny file-read* file-write* (subpath ' + _sb_path(Path.home()) + '))',
+             # Resolved names only: a rule on the `/tmp` symlink itself shadows every
+             # later allow below `/private/tmp` on this macOS.
+             '(deny file-read* file-write* (subpath "/Users") (subpath "/private/var/folders")'
+             ' (subpath "/private/tmp") (subpath "/Volumes"))',
+             # `(subpath "/")` cannot be re-allowed below it on this macOS; the regex can.
+             '(deny file-write* (regex "^/"))',
+             '(allow file-write* (subpath "/dev"))']
+    for path in read_only:
+        lines.append('(allow file-read* (subpath ' + _sb_path(path) + '))')
+    for path in (repo, *read_write):
+        lines.append('(allow file-read* file-write* (subpath ' + _sb_path(path) + '))')
+    lines.append('(deny file-read* file-write* (regex "^' + escaped + '/(.*/)?\\.env") (regex "^' + escaped
+                 + '/.*\\.pem$") (regex "^' + escaped + '/.*\\.key$"))')
+    lines.append('(deny file-write* (subpath ' + _sb_path(repo / '.git') + ') (subpath ' + _sb_path(repo / '.claude')
+                 + ') (subpath ' + _sb_path(repo / '.codex') + '))')
+    return '\n'.join(lines) + '\n'
+
+
+def seatbelt_wrap(cmd, profile):
+    if not shutil.which('sandbox-exec'):
+        raise ValueError('seatbelt isolation requested but sandbox-exec is unavailable on this host')
+    return ['sandbox-exec', '-p', profile] + list(cmd)
 
 
 class Stream:
@@ -293,6 +265,7 @@ class Stream:
         self.reply = ''
         self.error = None
         self.tool_results = []
+        self.tool_calls = []
 
     def __call__(self, line):
         try:
@@ -310,6 +283,9 @@ class Stream:
                 step = item.get('type') in ('command_execution', 'file_change', 'mcp_tool_call')
                 if item.get('type') == 'command_execution':
                     self.tool_results.append({k: item.get(k) for k in ('command', 'exit_code', 'aggregated_output')})
+                    self.tool_calls.append({'tool': 'shell', 'input': {'command': item.get('command')}})
+                if item.get('type') == 'file_change':
+                    self.tool_calls.append({'tool': 'file_change', 'input': {'changes': item.get('changes')}})
                 if item.get('type') == 'agent_message':
                     self.reply = item.get('text', '')
             if kind == 'turn.completed':
@@ -327,6 +303,9 @@ class Stream:
                                                   'output': part.get('content')})
             if event.get('type') == 'assistant':
                 step = True
+                for part in event.get('message', {}).get('content', []):
+                    if isinstance(part, dict) and part.get('type') == 'tool_use':
+                        self.tool_calls.append({'tool': part.get('name'), 'input': part.get('input')})
             if event.get('type') == 'result':
                 usage = event.get('usage', {})
                 self.usage.update(input_tokens=usage.get('input_tokens'), output_tokens=usage.get('output_tokens'),
@@ -355,11 +334,9 @@ class Stream:
 
 
 def infer(prompt, model, runtime=None):
-    """No-repository, no-write open inference for classification without OpenCode."""
+    """No-repository, no-write open inference (classification) on an enabled harness."""
     identity = resolve(model=model, runtime=runtime)
     runtime = identity['runtime']
-    if runtime == 'opencode':
-        raise ValueError('OpenCode classification uses the existing guarded classifier')
     check_runtime(runtime)
     endpoint, key = provider_config(identity['provider'], runtime)
     stream = Stream(runtime)
@@ -371,8 +348,7 @@ def infer(prompt, model, runtime=None):
             readonly = codex_permissions(repo)
             readonly['extends'] = ':read-only'
             readonly['filesystem'][':workspace_roots']['.'] = 'read'
-            cmd[-2:-2] = ['--skip-git-repo-check', '--disable', 'shell_tool',
-                          '-c', 'permissions.aos-open=' + toml(readonly)]
+            cmd[-2:-2] = ['--skip-git-repo-check', '-c', 'permissions.aos-open=' + toml(readonly)]
             env['AOS_OPEN_API_KEY'] = key
         else:
             cmd = claude_command(repo, identity['model'], prompt)
@@ -385,92 +361,65 @@ def infer(prompt, model, runtime=None):
 
 def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
         state_file=None, runtime=None, provider=None, role='executor', task_id=None,
-        permission_profile='GREEN'):
+        permission_profile='GREEN', probe_root=None, os_isolation=None):
     if role not in ('executor', 'fixer'):
         raise ValueError('write-capable open execution is reserved for executor/fixer roles')
     if permission_profile != 'GREEN':
         raise ValueError('only GREEN open execution is implemented; no automatic privilege increase')
-    identity = resolve(model=model, runtime=runtime, provider=provider)
-    runtime = identity['runtime']
     repo = Path(repo).resolve()
+    if probe_root is not None:
+        probe_root = probe_fixture(probe_root)
+        if probe_root not in repo.parents:
+            raise ValueError('a probe may only run inside its own disposable fixture')
+    elif os_isolation is not None:
+        # Production always applies the policy's isolation; only a probe may vary it.
+        raise ValueError('os_isolation can be chosen only by the isolation probe')
+    identity = resolve(model=model, runtime=runtime, provider=provider, probe_root=probe_root)
+    runtime = identity['runtime']
     if not shutil.which(RUNTIMES[runtime]):
         raise ValueError('requested open runtime unavailable')
-    stream = None
-    runner = None
-    if runtime != 'opencode':
-        if max_cost is not None:
-            raise ValueError('runtime does not report gateway cost; use explicit time/step bounds')
-        custom = set(delegate.user_config().get('permission', {})) - {'aos_critical'}
-        if custom:
-            raise ValueError('custom OpenCode permissions need an explicit equivalent profile before changing runtime')
-        check_runtime(runtime)
-        endpoint, key = provider_config(identity['provider'], runtime)
-        # No project runtime configuration can merge after the task guard.
-        for base in (repo, *repo.parents):
-            if base == Path.home():
-                break
-            if any((base / name).exists() for name in ('.codex', '.claude')):
-                raise ValueError('project/ancestor runtime configuration requires isolation before delegation')
-        stream = Stream(runtime)
+    configured_isolation = os_isolation_for(policy(), runtime)
+    isolation = os_isolation if os_isolation is not None else configured_isolation
+    if isolation not in ('none', 'seatbelt'):
+        raise ValueError('unsupported os_isolation: ' + str(isolation))
+    if isolation == 'seatbelt' and runtime == 'codex-cli':
+        # Codex refuses to start inside an outer seatbelt (probe 2026-09-22: exit 1 in
+        # 6 s, "Operation not permitted"); its own workspace sandbox is its OS layer.
+        raise ValueError('seatbelt isolation is not supported for codex-cli')
+    if max_cost is not None:
+        raise ValueError('native harnesses do not report gateway cost; use explicit time/step bounds')
+    check_runtime(runtime, probe=probe_root is not None)
+    endpoint, key = provider_config(identity['provider'], runtime)
+    # No project runtime configuration can merge after the task guard.
+    for base in (repo, *repo.parents):
+        if base == Path.home():
+            break
+        if any((base / name).exists() for name in ('.codex', '.claude')):
+            raise ValueError('project/ancestor runtime configuration requires isolation before delegation')
+    stream = Stream(runtime)
 
-        def runner(workdir, unused_model, prompt, seconds, cost, steps):
-            env = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL') if k in os.environ}
-            rules = None
-            runtime_tmp = None
-            rules_tmp = None
-            try:
-                if runtime == 'codex-cli':
-                    rules = workdir / '.codex/rules'
-                    rules.mkdir(parents=True, exist_ok=False)
-                    (rules.parent / 'config.toml').write_text('# AOS task-scoped rule layer.\n')
-                    # Native deny rules retain user/managed rules. Wildcard commands
-                    # narrow to their command prefix rather than weakening a deny.
-                    # Rule arguments may contain private paths or credentials.
-                    # The harness reads this external file; workspace tools cannot.
-                    rules_tmp = tempfile.TemporaryDirectory(prefix='aos-private-rules-')
-                    private_rules = Path(rules_tmp.name) / 'aos-open.rules'
-                    private_rules.write_text(codex_rules())
-                    private_rules.chmod(0o600)
-                    (rules / 'aos-open.rules').symlink_to(private_rules)
-                    env['AOS_OPEN_API_KEY'] = key
-                    cmd = codex_command(workdir, identity['model'], prompt, endpoint)
-                else:
-                    runtime_tmp = tempfile.TemporaryDirectory(prefix='aos-claude-runtime-')
-                    env.update(ANTHROPIC_AUTH_TOKEN=key, ANTHROPIC_API_KEY='', ANTHROPIC_BASE_URL=endpoint,
-                               CLAUDE_CODE_TMPDIR=runtime_tmp.name, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB='1')
-                    cmd = claude_command(workdir, identity['model'], prompt, Path(runtime_tmp.name).resolve())
-                code, _, err = delegate.invoke(cmd, workdir, seconds, None, steps, env, event_adapter=stream)
-                return code, stream.normalized().replace(key, '[REDACTED]'), err.replace(key, '[REDACTED]')
-            finally:
-                if runtime_tmp:
-                    runtime_tmp.cleanup()
-                if rules:
-                    (rules / 'aos-open.rules').unlink(missing_ok=True)
-                    rules.rmdir()
-                    (rules.parent / 'config.toml').unlink()
-                    rules.parent.rmdir()
-                if rules_tmp:
-                    rules_tmp.cleanup()
+    def runner(workdir, unused_model, prompt, seconds, cost, steps):
+        env = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL') if k in os.environ}
+        runtime_tmp = None
+        try:
+            if runtime == 'codex-cli':
+                env['AOS_OPEN_API_KEY'] = key
+                cmd = codex_command(workdir, identity['model'], prompt, endpoint)
+            else:
+                runtime_tmp = tempfile.TemporaryDirectory(prefix='aos-claude-runtime-')
+                env.update(ANTHROPIC_AUTH_TOKEN=key, ANTHROPIC_API_KEY='', ANTHROPIC_BASE_URL=endpoint,
+                           CLAUDE_CODE_TMPDIR=runtime_tmp.name, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB='1')
+                cmd = claude_command(workdir, identity['model'], prompt, Path(runtime_tmp.name).resolve())
+                if isolation == 'seatbelt':
+                    env['TMPDIR'] = runtime_tmp.name
+                    cmd = seatbelt_wrap(cmd, seatbelt_profile(
+                        workdir, read_write=[runtime_tmp.name], read_only=[]))
+            code, _, err = delegate.invoke(cmd, workdir, seconds, None, steps, env, event_adapter=stream)
+            return code, stream.normalized().replace(key, '[REDACTED]'), err.replace(key, '[REDACTED]')
+        finally:
+            if runtime_tmp:
+                runtime_tmp.cleanup()
 
-    else:
-        # OpenCode: the guard is not the shell denylist (arbitrary python bypasses it)
-        # but file-tools-only isolation. The task-only config run_config builds is read,
-        # restricted in place, and served via the run's own XDG root; the process gets
-        # none of the inherited environment beyond the five safe keys.
-        def runner(workdir, model, prompt, seconds, cost, steps):
-            config_path = Path(delegate.run_config(model))
-            try:
-                config = json.loads(config_path.read_text())
-                config = restrict_opencode(config)
-                config_path.write_text(json.dumps(config))
-                env = opencode_env(config_path.parents[1], workdir)
-                prompt = ('FILE TOOLS ONLY. Do not use shell, skills, or test commands; '
-                          'the host runs tests. Do not alter tests or policy.\n\n' + prompt)
-                code, out, err = delegate.invoke(delegate.command(model, prompt, workdir),
-                                                 str(workdir), seconds, cost, steps, env)
-                return code, out, err
-            finally:
-                shutil.rmtree(config_path.parents[1], ignore_errors=True)
 
     result = delegate.run(repo, identity['model_ref'], brief, timeout, allow_dirty,
                           max_cost=max_cost, max_steps=max_steps, state_file=state_file, runner=runner)
@@ -479,12 +428,16 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
                   executor_model=identity['model'], task_id=task_id,
                   runtime_model_pair=identity['runtime_model_pair'], permission_profile=permission_profile,
                   cost_class=catalog.get('cost_class'), file_tools_isolation=True,
-                  isolation_level='file_tools_policy', isolation_verified=False,
+                  isolation_level='file_tools_policy+seatbelt' if isolation == 'seatbelt' else 'file_tools_policy',
+                  os_isolation=isolation,
+                  isolation_verified=(probe_root is None and isolation == configured_isolation
+                                      and bool(policy().get('executors', {}).get('runtime_status', {})
+                                               .get(runtime, {}).get('isolation_verified'))),
                   result=result.get('reply', ''), files_changed=sorted(delegate.dirty_paths(repo) or [])
                   if not result.get('git_meta_changed') else None, tests=[])
-    if stream:
-        result['usage'] = stream.usage
-        result['tool_results'] = json.loads(json.dumps(stream.tool_results[-20:]).replace(key, '[REDACTED]'))
+    result['usage'] = stream.usage
+    result['tool_results'] = json.loads(json.dumps(stream.tool_results[-20:]).replace(key, '[REDACTED]'))
+    result['tool_calls'] = json.loads(json.dumps(stream.tool_calls[-60:]).replace(key, '[REDACTED]'))
     result['cost'] = result['usage'].get('cost_usd')
     return result
 

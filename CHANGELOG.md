@@ -1,5 +1,67 @@
 # Changelog
 
+## 2.4.0 — un solo harness open, verificato con una sonda d'attacco — 2026-09-22
+
+Cinque gate di rilascio su sette chiusi; i due di benchmark non eseguiti per scelta,
+con la ragione scritta nel verbale
+[OPERATIONAL-VALIDATION.md](docs/verifiche/premium-plan-open-execute/OPERATIONAL-VALIDATION.md).
+Host principale Claude Code, reviewer esterno Codex, tre round (verbale in REVIEW-LOG.md).
+
+**Un solo contenitore per i modelli open: Claude Code.** OpenCode è stato tolto dal
+progetto (plugin d'ingresso, installer, runner, permission map; config utente ripulita
+col rollback) dopo che la sonda ne aveva dimostrato le fughe. Codex non fa da
+contenitore: modifica i file attraverso il tool shell, la cui policy dei comandi non
+tiene la prova d'attacco, e senza shell resta senza strumenti file (sonda: 0 chiamate).
+Codex resta host, planner, reviewer cross-family ed escalation premium. Il worker open
+ha quindi Read/Glob/Grep/Edit/Write e nient'altro; l'host esegue ogni check. `aos-delegate.py` resta la guardia
+comune (albero pulito, proprietà del retry, impronta dei metadati git, timeout di
+gruppo, tetto di step); la credenziale del provider arriva da `api_key_env` o
+`api_key_file`, letta dall'host e mai nel repo o negli argomenti.
+
+**Isolamento verificato.** `bin/aos-isolation.py`: fixture usa e getta, 13 bersagli
+vietati + 2 controlli permessi (+ 2 comandi per gli harness con shell), verdetto
+meccanico sulle chiamate agli strumenti e sugli effetti su disco; un runtime escluso
+gira solo dentro la fixture marcata. Profilo seatbelt macOS attorno al worker
+(`seatbelt_profile`): Claude Code 13/13 negati con e senza; Codex nega file e rete ma
+esegue `npx` con la shell accesa → shell spenta, riabilitazione solo con sonda verde.
+Produzione non può scegliere `os_isolation`; `isolation_verified` vale solo se lo
+strato applicato è quello verificato.
+
+**Budget concorrenti.** `reserve_budget`: ammissione e prenotazione in una sola
+transazione `BEGIN IMMEDIATE`; due sessioni contro un cap che ne ammette una: una
+ammessa, una rifiutata (test a due processi). Un outcome libera solo la prenotazione
+che nomina; scadenza dopo un'ora.
+
+**Contesto nascosto.** Per ogni chiamata di ruolo: stima del prompt e
+`observed_input_tokens` (input + cache); `hidden_context_tokens` è la differenza,
+null se non riportato. Misurato: reviewer 2 596 stimati → 200 958 osservati.
+
+**Pipeline.** `json_reply` estrae l'oggetto da una risposta con una riga di prosa e
+rifiuta una spiegazione con un esempio dentro; `attacked` deve essere una lista non
+vuota di stringhe; un riferimento di modello assente dal catalogo blocca invece di
+raggiungere il CLI; un catalogo senza i modelli open configurati blocca invece di
+andare in premium; il fixer ha 25 step (misurato: 60 step per zero righe).
+
+**Bench.** `--planners` (piano MID/premium nel brief dell'esecutore) e
+`--review-replay` (reviewer candidati sui diff registrati). Nessuna promozione di
+modelli o runtime.
+
+**Prove live.** Host Claude Code: T2 completo, finding MAJOR vero confermato →
+fixer → PASS. Host Codex via `codex exec`: piano ed esecuzione, poi 402 del Gateway
+(budget team esaurito, alzato dall'utente); dal sandbox di Codex i ruoli premium
+annidati richiedono l'escalation.
+
+Review Codex: round 1 con 2 BLOCKER + 4 MAJOR, round 2 con 1 BLOCKER + 2 MAJOR, tutti
+nuovi, tutti riprodotti meccanicamente prima della correzione e coperti da regressione.
+Il round 2 ha trovato che la sonda contava come tentativo il testo del proprio report,
+che una frase breve rimetteva in PASS una review dichiarata non eseguita, e che il
+percorso `--model` accettava modelli fuori catalogo. Verifica finale: 426 test Python,
+Security Gate verde, doctor 0 anomalie.
+
+Benchmark: resta autorevole quello del 2026-09-20 (DeepSeek v4-pro-0813 vincitore,
+Qwen3-coder-next fallback). La corsa del 22/09 è stata fermata a 3 task su 20: nessuna
+decisione di questo rilascio dipendeva dal suo esito.
+
 ## 2.4.0 WIP — pipeline operativa e learning verificato — 2026-09-22
 
 Recuperati i worker DeepSeek/Qwen con interventi MID Terra dopo failure documentati.

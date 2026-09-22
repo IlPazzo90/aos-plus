@@ -56,7 +56,7 @@ class RuntimeTests(unittest.TestCase):
 
     def begin(self, tier='T2', text='write app', planner_preference=None):
         self.state = entry.pipeline_step(None, 'start',
-            dict(classification=dict(tier=tier, risk='MEDIUM', capabilities=[]), text=text,
+            dict(classification=dict(tier=tier, risk='MEDIUM', capabilities=[]), text=text, main_host='claude-code',
                  learning_database=str(self.learning_db), planner_preference=planner_preference),
             self.repo)
         self.addCleanup(shutil.rmtree, self.state['run_dir'])
@@ -359,7 +359,7 @@ class RuntimeTests(unittest.TestCase):
         with patch.object(entry.open_executor, 'resolve', return_value=selection), \
              patch.object(entry.learning, 'routing_advice', return_value=advice, create=True):
             state = entry.pipeline_step(None, 'start', dict(
-                classification=dict(tier='T2', risk='MEDIUM', capabilities=[]), text='write app',
+                classification=dict(tier='T2', risk='MEDIUM', capabilities=[]), text='write app', main_host='claude-code',
                 executor_runtime='claude-code', learning_database=str(self.learning_db)), self.repo)
         self.addCleanup(shutil.rmtree, state['run_dir'])
         self.assertEqual(state['model'], self.config.open_fallback)
@@ -367,7 +367,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_t1_uses_host_plan_without_premium_planner(self):
         state = entry.pipeline_step(None, 'start', dict(
-            classification=dict(tier='T1', risk='MEDIUM', capabilities=[]), text='write app',
+            classification=dict(tier='T1', risk='MEDIUM', capabilities=[]), text='write app', main_host='claude-code',
             plan=self.plan, learning_database=str(self.learning_db)), self.repo)
         self.assertEqual(state['stage'], 'execute')
         with patch.object(entry.open_executor, 'run', side_effect=self.worker):

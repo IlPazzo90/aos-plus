@@ -1,5 +1,5 @@
 {
-  "$comment": "AOS model routing and context-budget configuration (2.2.1). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill; technical_context_limit values are asserted and should be validated against the provider. Never put secrets here; this file is versioned.",
+  "$comment": "AOS model routing and context-budget configuration (2.2.1). Absent or invalid keys fall back to the legacy behavior: the main session executes; the benchmark winner comes from the user's global instructions when this file is missing. Open models run inside the Claude Code or Codex CLI harness with file tools only; premium runs on the subscriptions already paid for Claude Code and Codex CLI, never a separate metered API key. Context-policy limits are operating budgets, not technical limits to fill; technical_context_limit values are asserted and should be validated against the provider. Never put secrets here; this file is versioned.",
   "schema": 1,
   "open": {
     "primary": "vercel/deepseek/deepseek-v4-pro-0813",
@@ -10,7 +10,6 @@
     "vercel/deepseek/deepseek-v4-pro-0813": {
       "provider": "vercel",
       "compatible_runtimes": [
-        "opencode",
         "claude-code"
       ],
       "cost_class": "CHEAP",
@@ -74,7 +73,6 @@
     "vercel/alibaba/qwen3-coder-next": {
       "provider": "vercel",
       "compatible_runtimes": [
-        "opencode",
         "claude-code"
       ],
       "cost_class": "CHEAP",
@@ -420,29 +418,27 @@
   "executors": {
     "default_runtime": "claude-code",
     "runtime_order": [
-      "claude-code",
-      "opencode",
-      "codex-cli"
+      "claude-code"
     ],
     "runtime_status": {
-      "codex-cli": {
-        "open_execution": false,
-        "reason": "Native restrictive rule loading is unverified; do not route an open worker here."
-      },
-      "opencode": {
-        "open_execution": false,
-        "file_tools": true,
-        "isolation_verified": false,
-        "reason": "Live negative probe read a denied .env and an external symlink; requires verified isolation before re-enabling."
-      },
       "claude-code": {
         "open_execution": true,
         "file_tools": true,
+        "os_isolation": "seatbelt",
+        "isolation_verified": true,
+        "isolation_evidence": "docs/verifiche/premium-plan-open-execute/isolation/claude-code-seatbelt.json",
+        "reason": "File tools only, no Bash; the host runs checks. Probe 2026-09-22: 13/13 forbidden targets denied with and without seatbelt; seatbelt kept as OS layer."
+      },
+      "codex-cli": {
+        "open_execution": false,
+        "file_tools": false,
+        "os_isolation": "none",
         "isolation_verified": false,
-        "reason": "File tools only; host runs checks. Live probes do not certify full OS isolation."
+        "isolation_evidence": "docs/verifiche/premium-plan-open-execute/isolation/codex-cli-none.json",
+        "reason": "Not an open harness: Codex edits files through its shell tool, and that tool's command policy did not hold a negative probe (2026-09-22: files and network denied, npx ran). Without the shell it has no file tools at all (probe: 0 tool calls). Codex remains the premium host, planner, reviewer and escalation. Re-enable only with a green probe taken with the shell on."
       }
     },
-    "source": "Runtime availability is constrained by live security probes; model benchmark ranking unchanged.",
+    "source": "Claude Code is the only open harness; it runs the catalogued open models through the provider endpoint. Runtime eligibility follows the live probes in docs/verifiche/premium-plan-open-execute/isolation/. Model benchmark ranking unchanged.",
     "permission_profile": "GREEN"
   },
   "providers": {
@@ -450,7 +446,7 @@
       "responses_url": "https://ai-gateway.vercel.sh/codex/v1",
       "anthropic_url": "https://ai-gateway.vercel.sh/claude-code",
       "api_key_env": "AOS_OPEN_API_KEY",
-      "opencode_credentials": true
+      "api_key_file": "~/.secrets/vercel-ai-gateway"
     }
   },
   "budgets": {

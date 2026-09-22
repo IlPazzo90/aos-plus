@@ -1,6 +1,6 @@
 """AOS model router: decide who executes a task, which model, and with which verify.
 
-AOS is the router, not the manual OpenCode main model. This module is a pure
+AOS is the router, not the manual main model of the host. This module is a pure
 decision function: given the task classification, the available config and the
 model availability, it returns the routing decision. It never talks to a provider,
 never runs a command and never reads secrets.
@@ -9,8 +9,8 @@ Model availability and the main model come from the caller (the host session),
 so this module stays hermetic and testable.
 
 Distinctions, documented in references/orchestration.md:
-- main session model: the model the host opened with. The OpenCode entry plugin
-  can select each native turn's model; Claude/Codex use separate open runs.
+- main session model: the model the host opened with. Claude/Codex run the
+  open model in a separate bounded worker, never in the main session.
   Premium execution uses the configured CLI, not a premium metered API.
 - task executor model: chosen by AOS from tier/risk/uncertainty/security impact,
   capability needs, the benchmark winner config and retry/failure history.
@@ -511,6 +511,10 @@ def _open_decision(config, primary_available, fallback_available, failed_attempt
                         escalation_target=config.escalation_executor,
                         rationale=(*rationale, "open unavailable or exhausted"))
     if not primary and not usable_fallback and not mid:
+        if config.catalog and not any(m in config.catalog for m in (config.open_primary, config.open_fallback) if m):
+            # A catalog that names none of the configured open models is a broken
+            # policy: block instead of running premium with zero open attempts.
+            raise ValueError('configured open models are missing from the model catalog')
         return Decision(executor="premium", verify=verify,
                         escalation_target=config.escalation_executor,
                         rationale=(*rationale, "open unavailable or exhausted"))

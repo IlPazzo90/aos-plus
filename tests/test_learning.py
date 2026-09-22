@@ -741,3 +741,86 @@ class LearningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReservationTests(unittest.TestCase):
+    """Budget holds are atomic across sessions: one BEGIN IMMEDIATE per admission."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db = pathlib.Path(self.temp.name) / "learn.db"
+
+    @staticmethod
+    def check(policy, records, estimate, premium=False, task_id=None, now=None):
+        total = sum(r["cost"] for r in records) + estimate
+        if total > policy["daily_budget"]:
+            raise ValueError("daily_budget exceeded")
+        return {"allowed": True, "total": total}
+
+    def test_reservation_counts_for_other_sessions_until_settled(self):
+        policy = {"daily_budget": 1.0}
+        first = L.reserve_budget(self.db, policy, 0.6, "task-a", self.check)
+        self.assertEqual(first["open_reservations"], 0)
+        with self.assertRaisesRegex(ValueError, "daily_budget exceeded"):
+            L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
+        # An outcome without a reservation id settles nothing (round 1 finding: one
+        # outcome used to release every hold of the task).
+        L.record_outcome(self.db, {"task_id": "task-a", "worker_exit": 0, "test_pass": True, "cost": 0.1})
+        with self.assertRaisesRegex(ValueError, "daily_budget exceeded"):
+            L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
+        # The outcome that names the hold releases exactly that one; its measured cost replaces it.
+        L.record_outcome(self.db, {"task_id": "task-a", "worker_exit": 0, "test_pass": True, "cost": 0.1,
+                                   "reservation_id": first["reservation_id"]})
+        second = L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
+        self.assertEqual(second["open_reservations"], 0)
+        self.assertAlmostEqual(second["total"], 0.8)
+
+    def test_sibling_holds_of_the_same_task_survive_one_outcome(self):
+        policy = {"daily_budget": 1.0}
+        a1 = L.reserve_budget(self.db, policy, 0.4, "task-a", self.check)
+        L.reserve_budget(self.db, policy, 0.4, "task-a", self.check)
+        L.record_outcome(self.db, {"task_id": "task-a", "worker_exit": 0, "test_pass": True, "cost": 0.4,
+                                   "reservation_id": a1["reservation_id"]})
+        # Committed 0.4 + the sibling hold 0.4 + 0.6 requested = 1.4 > 1.0
+        with self.assertRaisesRegex(ValueError, "daily_budget exceeded"):
+            L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
+        with self.assertRaisesRegex(ValueError, "reservation_id must be an integer"):
+            L.record_outcome(self.db, {"task_id": "t", "worker_exit": 0, "reservation_id": "7"})
+
+    def test_unknown_estimate_admitted_by_check_is_held_as_unknown(self):
+        first = L.reserve_budget(self.db, {"daily_budget": 1.0}, None,
+                                 "task-a", lambda *a, **k: {"allowed": True})
+        self.assertIsNotNone(first["reservation_id"])
+        seen = {}
+
+        def check(policy, records, estimate, **kwargs):
+            seen["records"] = records
+            return {"allowed": True}
+        L.reserve_budget(self.db, {}, 0.0, "task-b", check)
+        self.assertEqual([r["cost"] for r in seen["records"] if "reservation_id" in r], [None])
+
+    def test_expired_reservation_stops_counting(self):
+        old = "2000-01-01T00:00:00Z"
+        L.reserve_budget(self.db, {"daily_budget": 1.0}, 0.9, "task-old", self.check, now=old)
+        report = L.reserve_budget(self.db, {"daily_budget": 1.0}, 0.9, "task-new", self.check)
+        self.assertEqual(report["open_reservations"], 0)
+
+    def test_concurrent_processes_admit_exactly_one(self):
+        import subprocess
+        import sys
+        script = (
+            "import importlib.util, sys, time\n"
+            "spec = importlib.util.spec_from_file_location('l', sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "def check(policy, records, estimate, premium=False, task_id=None, now=None):\n"
+            "    time.sleep(0.5)\n"  # widen the race window inside the transaction
+            "    total = sum(r['cost'] for r in records) + estimate\n"
+            "    if total > 1.0: raise ValueError('exceeded')\n"
+            "    return {'allowed': True}\n"
+            "try:\n"
+            "    m.reserve_budget(sys.argv[2], {}, 0.7, sys.argv[3], check); print('ADMITTED')\n"
+            "except ValueError as e: print('REFUSED', e)\n")
+        procs = [subprocess.Popen([sys.executable, "-c", script, str(SCRIPT), str(self.db), name],
+                                  stdout=subprocess.PIPE, text=True) for name in ("s1", "s2")]
+        outputs = [p.communicate(timeout=60)[0].strip() for p in procs]
+        self.assertEqual(sorted(o.split()[0] for o in outputs), ["ADMITTED", "REFUSED"], outputs)

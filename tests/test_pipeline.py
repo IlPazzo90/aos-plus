@@ -197,3 +197,16 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.verified(s)['stage'], 'blocked')
 
 if __name__ == '__main__': unittest.main()
+
+
+class ReviewContractTests(unittest.TestCase):
+    def test_attacked_must_be_a_nonempty_list_of_strings(self):
+        pipeline = load('aos-pipeline')
+        for attacked in (True, [], [''], 'x', [1]):
+            state = pipeline.start('T2', 'MEDIUM', 'claude', 'codex', 'p', 'f', 2)
+            state['stage'] = 'review'
+            with self.assertRaisesRegex(ValueError, 'nonempty attacked list'):
+                pipeline.advance(state, 'reviewed', {'attacked': attacked, 'findings': []})
+        state = pipeline.start('T2', 'MEDIUM', 'claude', 'codex', 'p', 'f', 2)
+        state['stage'] = 'review'
+        self.assertEqual(pipeline.advance(state, 'reviewed', {'attacked': ['tests'], 'findings': []})['stage'], 'pass')

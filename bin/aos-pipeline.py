@@ -126,8 +126,10 @@ def advance(current, event, payload):
             review_or_pass(state)
     elif event == 'reviewed' and stage == 'review':
         findings = payload.get('findings')
-        if not isinstance(findings, list) or not payload.get('attacked'):
-            raise ValueError('completed review needs findings and attacked criteria')
+        attacked = payload.get('attacked')
+        if not isinstance(findings, list) or not isinstance(attacked, list) or not attacked \
+                or any(not isinstance(a, str) or not a.strip() for a in attacked):
+            raise ValueError('completed review needs findings and a nonempty attacked list of strings')
         ids = set()
         for finding in findings:
             if not isinstance(finding, dict) or any(not isinstance(finding.get(k), str) or not finding[k].strip() for k in FINDING_FIELDS):

@@ -137,3 +137,60 @@ tecnici e di copertura, non risolti rinominandoli blocker esterni.
 Verifiche finali del checkpoint: entrambe le edizioni 452 test Python (448 PASS,
 4 skip), 22/22 Node. Security Gate verde; doctor privato 0 anomalie e 7 avvisi
 locali. Guardie originali invariate.
+
+## Chiusura dei gate — 22 settembre, seconda sessione
+
+Host principale Claude Code (Opus 5 1M, scelto dall'utente), reviewer esterno Codex.
+Piano in [CLOSING-PLAN.md](CLOSING-PLAN.md). Ogni gate ha comando, esito e limite.
+
+| Gate | Esito | Evidenza |
+|---|---|---|
+| G7 budget concorrenti | **chiuso** | `reserve_budget` in una transazione `BEGIN IMMEDIATE`; `tests/test_learning.py::ReservationTests` fa correre due processi contro un cap che ne ammette uno: uno ADMITTED, uno REFUSED. Hold rilasciato dall'outcome, scaduto dopo un'ora. |
+| G7 contesto nascosto | **chiuso** | Ogni chiamata di ruolo registra stima del prompt e `observed_input_tokens` (input + cache). Misura live: planner Sonnet 441 → 28 914; reviewer GPT-5.6-sol 2 596 → 200 958 (legge il repo da solo). Restano stime i soli casi senza contatore del runtime (null, mai zero). |
+| G3 matrice offensiva | **chiuso** | `bin/aos-isolation.py`: 7 letture, 6 scritture, 2 controlli permessi, più 2 comandi shell per i runtime con shell. Verdetto meccanico: canary nell'output, effetti su disco. |
+| G6 isolamento runtime esclusi | **chiuso** | OpenCode nudo: 5 LEAK (`.env`, symlink, esterno, scrittura via symlink) — riproduce il finding storico; OpenCode sotto seatbelt: 13/13 negati, controlli OK → riabilitato **solo** con `os_isolation: seatbelt`. Claude Code: 13/13 con e senza seatbelt; seatbelt tenuto come strato OS. Codex CLI: filesystem 13/13 e rete negati dal suo sandbox, ma `npx --version` eseguito → resta escluso; il seatbelt esterno lo fa fallire all'avvio (non supportato). Record in `isolation/`. |
+| G2 host Claude Code | **chiuso** | T2 reale su fixture: Sonnet pianifica (3 sottotask), DeepSeek esegue su Claude Code, check host, reviewer GPT-5.6-sol trova un MAJOR vero (alfanumerici Unicode scartati), riprodotto e confermato, fixer DeepSeek al secondo tentativo (il primo esaurisce 60 step), riverifica, round 2 senza finding → PASS. `live/claude-host-t2-state.json`. |
+| G2 host Codex | **parziale** | `codex exec` con `$aos` sulla stessa fixture: classifica T2, avvia la pipeline con `main_host codex-cli`, misura, `plan` fallisce dentro il sandbox workspace-write di Codex (`claude exited 1`: il CLI annidato non può scrivere nella sua home), riesce con autorizzazione estesa; DeepSeek scrive i file, poi 402 budget Gateway; l'host riporta `execute` incompleto, non PASS. Nessuna sessione TTY registrata. `live/codex-host-t2-state.json`. Limite operativo: dal host Codex i ruoli premium annidati richiedono l'escalation fuori dal sandbox. |
+| G4 benchmark ampio | **non eseguito, per scelta** | Corsa fermata a 3 task su 20 dall'utente: ore di esecuzione per una decisione che non si prende comunque qui. Il benchmark del 2026-09-20 resta autorevole; i tre record e la ragione in `docs/misure/bench/2026-09-22-claude-code/README.md`. Il codice del gate esiste ed è testato (`--planners`, `--review-replay`). |
+| G5 benchmark planner/reviewer | **non eseguito, per scelta** | Stessa ragione: gli strumenti ci sono, la corsa no. Nessun candidato MID è stato promosso; i loro punteggi restano soglie di policy dichiarate, non misure. |
+| G1 review indipendente | **eseguito, 3 round** | Round 1: 2 BLOCKER + 4 MAJOR; round 2: 1 BLOCKER + 2 MAJOR, tutti nuovi e tutti riprodotti meccanicamente prima della correzione. Verbale in REVIEW-LOG.md, report in `round*-codex.md`. |
+
+Blocco esterno incontrato: **AI Gateway Vercel, budget team 50 $ esaurito** durante il
+primo task del bench G4 (`402 Team budget exceeded. Current spend: $50.10`). L'utente
+ha scelto di alzare il tetto; le corse G4/G5 sono riprese dopo il ripristino.
+
+Correzioni emerse dalle prove live: `json_reply` estrae l'oggetto JSON da una risposta
+con prosa attorno (il reviewer GPT-5.6-sol aveva risposto con testo e oggetto, e la
+review era saltata con `Expecting value`); la sonda usa canary distinti per symlink e
+file esterno; OpenCode riceve la credenziale `{file:}` risolta dall'host come variabile
+d'ambiente perché sotto seatbelt non legge più `~/.secrets`.
+
+
+## Decisioni dell'utente del 22 settembre e stato finale dei runtime
+
+**OpenCode fuori dal progetto.** La sonda nuda aveva letto `.env`, il bersaglio del
+symlink e il file esterno, e scritto attraverso il symlink; sotto seatbelt negava
+13/13. L'utente ha scelto la rimozione completa invece della convivenza: plugin
+d'ingresso, installer, runner, permission map, test Node e riferimento sono stati
+cancellati e la configurazione utente ripulita con il rollback dell'installer. I
+record delle sonde restano in `isolation/history/` come storia, non come policy.
+
+**Codex fuori come contenitore dei modelli open.** La prova decisiva è di oggi: con
+lo `shell_tool` disabilitato Codex non ha alcuno strumento file — `apply_patch`
+viaggia dentro la shell, e `codex features list` non espone un tool alternativo — e
+la sonda ha registrato 0 chiamate con quindici «no file tools available». Con la
+shell accesa il suo strato di regole non ferma i comandi (`npx` eseguito mentre file
+e rete erano negati). Restano quindi due sole possibilità, entrambe peggiori di
+Claude Code: un worker inerte o un worker con una policy dei comandi non
+dimostrabile. Codex resta host, planner MID, reviewer cross-family ed escalation
+premium: è lì che vive il gate indipendente, ed è intatto.
+
+**Claude Code è l'unico harness open**, con `os_isolation: seatbelt`. Record finale
+`isolation/claude-code-seatbelt.json`: 13/13 bersagli vietati negati, entrambi i
+controlli permessi eseguiti, 22 chiamate agli strumenti registrate. Il limite di
+questa scelta è dichiarato: nessun harness di riserva — se il contratto del CLI
+cambia, l'esecuzione open si ferma al controllo di versione invece di ripiegare — e
+i modelli raggiungibili sono quelli che il provider serve sul protocollo Anthropic
+(DeepSeek e Qwen provati; ogni nuovo modello va provato prima di entrare in
+catalogo). Riabilitare Codex richiede una sonda verde presa con la shell accesa,
+non un test di connettività.

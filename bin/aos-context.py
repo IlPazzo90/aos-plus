@@ -3,7 +3,7 @@
 and compact or hand off before a model's window degrades the work.
 
 Provider/model aware, configurable, never hardcoded. Real usage comes from the
-caller (opencode step_finish events); text/chars estimates are marked estimated.
+caller (runtime-reported usage); text/chars estimates are marked estimated.
 Compaction is structural, not a free-text summary: critical items always survive,
 and a role this manager does not recognize is kept, never dropped — reducing
 context must not weaken any guardrail. The technical context limit is a ceiling

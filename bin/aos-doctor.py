@@ -230,55 +230,11 @@ class Doctor:
             self.warn("VERSIONE", f"SKILL.md metadata.version={match.group(1)} != VERSION={version}",
                       "allineare il frontmatter di SKILL.md a VERSION")
 
-    def _opencode_config(self):
-        # The user's OpenCode config merged from its global files, or {} when
-        # unreadable. Plain JSON only: a JSONC file with comments reads as
-        # unreadable here (the delegate handles JSONC for the run; the doctor only
-        # needs the model flags). Shallow merge is enough: providers are top-level.
-        xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-        config_dir = Path(xdg) / "opencode"
-        merged = {}
-        for name in ("config.json", "opencode.json", "opencode.jsonc"):
-            try:
-                loaded = json.loads((config_dir / name).read_text())
-            except (OSError, ValueError):
-                continue
-            if isinstance(loaded, dict):
-                merged.update(loaded)
-        return merged
-
-    def _zero_retention(self, user, model):
-        # configured | not_configured | unknown for a model's zeroDataRetention flag.
-        # The model id is provider/model; the config keys models by the part after
-        # the provider prefix. No secret value is ever read or printed.
-        if not isinstance(user, dict) or not user:
-            return "unknown"
-        providers = user.get("provider")
-        if not isinstance(providers, dict):
-            return "unknown"
-        provider_id, _, model_key = model.partition("/")
-        block = providers.get(provider_id)
-        if not isinstance(block, dict):
-            return "unknown"
-        models = block.get("models")
-        if not isinstance(models, dict):
-            return "unknown"
-        entry = models.get(model_key)
-        if not isinstance(entry, dict):
-            return "unknown"
-        options = entry.get("options")
-        if not isinstance(options, dict):
-            return "not_configured"
-        return "configured" if options.get("zeroDataRetention") is True else "not_configured"
-
     def provider_privacy(self, root):
-        # Read the user's OpenCode config and report zeroDataRetention per open
-        # model. AOS can only read configuration, never the provider's server-side
-        # behavior: `configured` means the flag is true in the user's config,
-        # `not_configured` the model exists without it, `unknown` the config is
-        # unreadable or the model is not found. `verified` (provider-side) and
-        # `unsupported` (the schema dropped the key) are out of reach of a
-        # read-only local check and are never fabricated.
+        # Report the privacy posture the catalog declares per open model. AOS reads
+        # configuration only, never the provider's server-side behaviour:
+        # `provider_reported_zdr` is what the Gateway model listing said, and
+        # `privacy_status` is the operator's note; neither is a verification.
         try:
             raw = (root / "config/open-models.json").read_text()
         except OSError:
@@ -294,13 +250,18 @@ class Doctor:
         models = [m for m in (open_.get("primary"), open_.get("fallback")) if isinstance(m, str) and m.strip()]
         if not models:
             return
-        user = self._opencode_config()
-        statuses = {m: self._zero_retention(user, m) for m in models}
+        catalog = routing.get("model_catalog")
+        catalog = catalog if isinstance(catalog, dict) else {}
+        statuses = {}
+        for model in models:
+            entry = catalog.get(model)
+            zdr = entry.get("provider_reported_zdr") if isinstance(entry, dict) else None
+            statuses[model] = zdr if isinstance(zdr, str) and zdr.strip() else "unknown"
         print("Privacy provider: " + "; ".join(f"{m} zero_data_retention={statuses[m]}" for m in models))
         for model, status in statuses.items():
-            if status in ("not_configured", "unknown"):
-                self.warn("PRIVACY", f"{model}: zero_data_retention={status}",
-                          "impostare zeroDataRetention: true sul modello, o verificare l'account del provider")
+            if status == "unknown":
+                self.warn("PRIVACY", f"{model}: provider_reported_zdr assente dal catalogo",
+                          "registrare provider_reported_zdr dal listino del provider o verificare l'account")
 
     def operational_status(self, root):
         # Read-only report of the routing/operational policy. Only
@@ -345,14 +306,26 @@ class Doctor:
         runtime_status = executors.get("runtime_status")
         runtime_status = runtime_status if isinstance(runtime_status, dict) else {}
         viable = []
-        for name, binary in (("opencode", "opencode"), ("claude-code", "claude"), ("codex-cli", "codex")):
+        for name, binary in (("claude-code", "claude"), ("codex-cli", "codex")):
             status = runtime_status.get(name)
             status = status if isinstance(status, dict) else {}
             installed = shutil.which(binary) is not None
+            isolation = status.get("os_isolation", "none")
+            verified = status.get("isolation_verified") is True
+            evidence = status.get("isolation_evidence")
+            evidence_present = isinstance(evidence, str) and (root / evidence).is_file()
             if status.get("open_execution") is False:
                 print(f"  runtime {name}: disabled; reason={status.get('reason') or 'disabled'}; installed={'yes' if installed else 'no'}")
             else:
-                print(f"  runtime {name}: enabled by configuration; installed={'yes' if installed else 'no'}; live security unknown")
+                print(f"  runtime {name}: enabled by configuration; installed={'yes' if installed else 'no'}; "
+                      f"os_isolation={isolation}; isolation "
+                      f"{'verified by ' + evidence if verified and evidence_present else 'unverified'}")
+                if verified and not evidence_present:
+                    self.warn("RUNTIME", f"{name}: isolation_verified senza record di sonda leggibile",
+                              "eseguire bin/aos-isolation.py e indicare il record in isolation_evidence")
+                if isolation == "seatbelt" and shutil.which("sandbox-exec") is None:
+                    self.warn("RUNTIME", f"{name}: os_isolation=seatbelt ma sandbox-exec assente",
+                              "il worker si rifiuta di partire su questo host finché non è disponibile")
                 if installed:
                     viable.append(name)
         if viable:
@@ -387,7 +360,7 @@ class Doctor:
             installed = isinstance(reviewer, str) and shutil.which(binaries.get(reviewer, reviewer)) is not None
             print(f"  reviewer={reviewer} installed={'presente' if installed else 'assente'}, authenticated=unknown")
 
-        file_tools = [name for name in ("opencode", "claude-code")
+        file_tools = [name for name in ("claude-code", "codex-cli")
                       if ((isinstance(executors.get(name), dict) and executors[name].get("file_tools") is True)
                           or (isinstance(runtime_status.get(name), dict)
                               and runtime_status[name].get("file_tools") is True))]
@@ -474,8 +447,8 @@ class Doctor:
                 valid = False
             if not valid:
                 self.fail("ROUTER", str(router), "ripristinare il link alla root AOS/catalog/skill-library con l'installer")
-        runtime = ", ".join(f"{name}={'presente' if shutil.which(name) else 'assente'}" for name in ("rtk", "claude", "codex", "opencode"))
-        print("Open Executor: runtime separato dal modello; OpenCode opzionale. Claude open usa file tools, senza Bash.")
+        runtime = ", ".join(f"{name}={'presente' if shutil.which(name) else 'assente'}" for name in ("rtk", "claude", "codex"))
+        print("Open Executor: runtime separato dal modello; harness Claude Code con soli strumenti file, senza shell; l'host esegue i check.")
         print("Frontmatter: presenza campi; sintassi YAML completa non verificata (usare quick_validate).")
         print(f"CLI opzionali (solo PATH): {runtime}. Autenticazione e backend non verificati.")
         print("Esito locale: sola verifica locale,nessuna certificazione live.")

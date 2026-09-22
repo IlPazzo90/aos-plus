@@ -42,7 +42,13 @@ the call and requires decomposition.
 
 Cost budgets support task, daily, monthly and premium limits. Unknown cost under an
 active cap blocks a call; required review cannot be removed to fit the budget.
-The helper is a point-in-time check, not a concurrent spending reservation service.
+Admission is a reservation in the host ledger: one `BEGIN IMMEDIATE` transaction
+sums the committed outcomes, the open holds of every other session and this call's
+estimate, then inserts its own hold (`reservations` table). Two sessions racing for a
+cap that admits one get one admission (tests/test_learning.py runs them as two
+processes). A hold is released when the task records an outcome and expires after an
+hour if a session crashed before that; an estimate the check admitted as unknown is
+held as unknown and blocks later capped calls until settled.
 Native subscription quota and marginal dollar cost remain unknown unless reported
 by the provider. Published Gateway token prices are estimates for planning; peak,
 regional and provider-specific pricing can differ from the base price.

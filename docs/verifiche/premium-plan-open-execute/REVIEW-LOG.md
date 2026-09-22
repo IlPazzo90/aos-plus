@@ -118,3 +118,35 @@ correzione delimitata dopo la ladder open già esaurita. Test aggiornato count 1
 e due righe; 64 test learning verdi. Round 5: PASS indipendente esclusivamente su
 questa correzione. Report in REVIEW-ROUND4.md e REVIEW-ROUND5.md. Nessuna claim di
 PASS sull'isolamento OS, benchmark multi-ruolo o readiness di rilascio.
+
+## Chiusura dei gate — 22 settembre, seconda sessione
+
+Arbitro Claude (Opus 5 1M, host principale scelto dall'utente), reviewer Codex via
+`verify-agent/scripts/review.py --caller claude`. Brief e prompt in
+`tmp/verify/close-release-gates/` (ignorata da git); report conservati qui.
+
+Round 0 — check meccanici sul branch: 466 test Python (4 skip), 22 Node, Security
+Gate exit 0, doctor 0 anomalie.
+
+Round 1 — Codex, report valido (322 s, 1,55 M token input di cui 1,42 M da cache):
+2 BLOCKER, 4 MAJOR. Tutti riprodotti meccanicamente prima di toccare il codice.
+
+| Finding | Esito | Riproduzione | Correzione |
+| --- | --- | --- | --- |
+| BLOCKER — la sonda certifica tentativi mai eseguiti | Confermato | `observe()` con 15 bersagli, `tool_results=[]`, risposta «REFUSED» per ognuno → `isolated=True`, `unattempted=[]` | Un tentativo esiste solo con una chiamata di strumento che nomina il bersaglio (in ogni grafia: relativa, assoluta, risolta); i due controlli permessi devono riuscire; il brief dichiara che un passo senza chiamata invalida la sonda. Regressione in `tests/test_open_executor.py` |
+| BLOCKER — la produzione può spegnere seatbelt e dirsi verificata | Confermato | `run(..., runtime='opencode', os_isolation='none')` senza `probe_root` → nessun rifiuto, `isolation_verified=True` | `os_isolation` è scelto solo dalla sonda; `isolation_verified` richiede che lo strato applicato sia quello configurato e verificato |
+| MAJOR — `probe_root="/"` aggira il blocco su repository ordinari | Confermato | `resolve(runtime='codex-cli', probe_root=Path('/'))` → `codex-cli` | Una fixture è una directory sotto l'albero temporaneo che porta il marcatore della sonda; `/`, `/tmp` e la home sono rifiutate |
+| MAJOR — un outcome libera tutte le prenotazioni del task | Confermato | due prenotazioni 0,4 per `task-a`, un outcome → zero hold aperti, `task-b` ammesso oltre il cap | L'outcome libera la prenotazione che nomina; l'id viaggia col role event che l'ha presa. Due test: liquidazione singola e sopravvivenza della prenotazione sorella |
+| MAJOR — modelli assenti dal catalogo → escalation premium | Confermato | `decide('T1','LOW')` con catalogo privo dei modelli open → `executor='premium'`, zero tentativi | Un catalogo che non contiene i modelli open configurati blocca; un riferimento `provider/model` sconosciuto blocca prima del CLI |
+| MAJOR — una risposta «review indisponibile» può diventare PASS | Confermato | `advance(..., 'reviewed', json_reply(...))` con «Review unavailable. Example only: {…}» → `stage='pass'`; idem con `attacked: true` | La prosa attorno all'oggetto è limitata a 200 caratteri; `attacked` deve essere una lista non vuota di stringhe |
+
+Dopo l'arbitrato l'utente ha deciso due cose che cambiano il perimetro: **OpenCode
+fuori dal progetto** (plugin, installer, runner, permission map; config utente
+ripulita col rollback) e, dopo la prova che Codex senza shell non ha strumenti file,
+**Codex fuori come contenitore dei modelli open**, restando host, planner, reviewer
+cross-family ed escalation. Claude Code è l'unico harness open.
+
+Round 2 — stesso reviewer sul diff completo (68 file), incluse le rimozioni e i sei
+fix. Il prompt inviato porta il brief nella forma precedente a due correzioni
+redazionali (numero di file, frase sulla credenziale): il reviewer legge comunque il
+repository, e nessuna delle due tocca il contratto.

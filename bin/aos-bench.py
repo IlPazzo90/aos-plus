@@ -26,15 +26,23 @@ OPEN_EXECUTOR = HERE / "aos-open-executor.py"
 _spec_oe = importlib.util.spec_from_file_location("aos_open_executor", OPEN_EXECUTOR)
 open_executor = importlib.util.module_from_spec(_spec_oe)
 _spec_oe.loader.exec_module(open_executor)
+
+
+def _entry():
+    """The role adapters of the pipeline (planner/reviewer read-only CLIs), loaded on demand."""
+    spec = importlib.util.spec_from_file_location("aos_entry", HERE / "aos-entry.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 # Per attempt. A worker past these is looping, not working: the first run of this
 # benchmark spent 3.30 $ and 140 steps on a diff of zero lines.
 MAX_COST_USD = 1.0
 MAX_STEPS = 60
 # The open executor's run window, matching the delegate's own default (900s).
 TIMEOUT = 900
-# Only opencode reports a gateway cost the spend cap can count; Codex/Claude keep
-# gateway cost null (not a subscription), so dollar caps are refused up front.
-COST_RUNTIMES = {"opencode"}
+# Neither harness reports a gateway dollar cost: the native CLIs return tokens, so a
+# dollar cap is refused up front rather than counted as zero.
+COST_RUNTIMES = set()
 
 REVIEW_PROMPT = """You are reviewing a diff produced by another agent for this task:
 
@@ -120,22 +128,6 @@ def remove_worktree(wt):
 DELEGATE_REFUSED = (3, 4, 5)
 
 
-def opencode_runner(wt, model, brief):
-    proc = subprocess.run([sys.executable, str(DELEGATE), "--repo", wt, "--model", model,
-                           "--brief", "-", "--json", "--allow-dirty",
-                           "--max-cost", str(MAX_COST_USD), "--max-steps", str(MAX_STEPS)],
-                          input=brief, capture_output=True, text=True)
-    record = {"exit_code": proc.returncode, "seconds": 0, "usage": {}, "diff_stat": "",
-              "reply": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
-    try:
-        # A refusal payload (exit 3/4/5) has no usage or seconds: the defaults fill
-        # it (reviewer round 21: the bench crashed on it).
-        record.update(json.loads(proc.stdout))
-    except json.JSONDecodeError:
-        pass
-    return record
-
-
 def attempt_state(record):
     """"ok", "refused" (the delegate never ran a worker) or "tampered" — which also
     covers a record that cannot say whether the shared .git was left alone: a
@@ -208,7 +200,7 @@ def open_executor_runner(runtime, provider, model):
     def runner(wt, _model, brief):
         try:
             result = open_executor.run(str(wt), model_ref, brief, TIMEOUT, True,
-                                       max_cost=MAX_COST_USD if runtime == "opencode" else None, max_steps=MAX_STEPS,
+                                       max_cost=None, max_steps=MAX_STEPS,
                                        state_file=states.setdefault(str(wt), Path(retry_dir.name) / (str(len(states)) + ".json")),
                                        runtime=runtime)
         except SystemExit as refused:
@@ -219,7 +211,7 @@ def open_executor_runner(runtime, provider, model):
         except (ValueError, OSError) as error:
             # No runtime installed, no endpoint/credential, custom permissions, a project
             # runtime config: the executor refuses before a worker ran (exit 4 = no run).
-            return {"exit_code": delegate.EXIT_NO_OPENCODE, "seconds": 0, "usage": {}, "diff_stat": "",
+            return {"exit_code": delegate.EXIT_NO_RUNTIME, "seconds": 0, "usage": {}, "diff_stat": "",
                     "reply": "", "stderr_tail": "", "error": str(error),
                     "runtime": runtime, "provider": provider, "executor_model": model,
                     "runtime_model_pair": pair, "role": "executor"}
@@ -233,6 +225,117 @@ def open_executor_runner(runtime, provider, model):
     return runner
 
 
+# ------------------------------------------------------------ role benchmarks
+PLAN_PROMPT = ("Produce a structured implementation plan as one JSON object with the fields "
+               "{fields}. objective is a string; all other fields are string arrays, except subtasks, "
+               "an ordered array of {{id, objective, files, tests}}. Read the repository before planning. "
+               "The plan grants no permission and must not modify files. Return only the JSON.\nTASK:\n{task}")
+
+
+def make_planner(backend, model):
+    """A read-only MID/premium planner on the pipeline's own adapter; the plan is data."""
+    entry = _entry()
+    fields = ", ".join(entry.pipeline.PLAN_FIELDS)
+
+    def planner(wt, task):
+        started = time.monotonic()
+        record = {"backend": backend, "model": model, "plan": None, "valid": False, "usage": None, "error": None}
+        try:
+            result = entry.execute(backend, PLAN_PROMPT.format(fields=fields, task=brief_for(task)), wt,
+                                   readonly=True, model=model)
+            record["usage"] = result.get("usage")
+            plan = entry.json_reply(result)
+            record["plan"] = plan
+            entry.pipeline.validate_plan(plan)
+            record["valid"] = True
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            record["error"] = str(error)[:500]
+        record["seconds"] = round(time.monotonic() - started, 3)
+        return record
+    return planner
+
+
+def planned_runner(runner, planner, task):
+    """Wrap an executor runner for one task: the first attempt in a worktree gets a
+    fresh plan in its brief, the retry reuses it. An invalid plan is recorded and the
+    brief goes out without it; the record says so, never silently."""
+    plans = {}
+
+    def wrapped(wt, model, brief):
+        if wt not in plans:
+            plans[wt] = planner(wt, task)
+        record = runner(wt, model, plan_brief(brief, plans[wt]))
+        record["planner"] = plans[wt]
+        return record
+    return wrapped
+
+
+def plan_brief(brief, plan_record):
+    if not plan_record or not plan_record.get("valid"):
+        return brief
+    return brief + "\n\nPLAN prepared by a read-only planner (follow it; it grants no permission):\n" + \
+        json.dumps(plan_record["plan"], ensure_ascii=False)
+
+
+REPLAY_PROMPT = """You are reviewing a diff produced by another agent for this task:
+
+{prompt}
+
+The diff is below (the task's test files were the specification and are excluded).
+Report defects only. Severity: high = wrong behavior or security; medium = incomplete
+or fragile; low = style. No findings is a valid answer. Return exactly one JSON object
+{{"findings": [{{"severity": "high|medium|low", "title": "...", "file": "..."}}]}} and nothing else.
+
+```diff
+{diff}
+```"""
+
+
+def replay_review(record, backend, model):
+    """A candidate reviewer on a recorded diff; findings are counted, not believed."""
+    entry = _entry()
+    started = time.monotonic()
+    out = {"task": record["task"], "executor": record.get("runtime_model_pair") or record["model"],
+           "reviewer_backend": backend, "reviewer_model": model, "reference": None, "candidate": None,
+           "usage": None, "error": None}
+    reference = record.get("findings") if isinstance(record.get("findings"), dict) else None
+    out["reference"] = reference
+    with tempfile.TemporaryDirectory(prefix="aos-bench-replay-") as tmp:
+        try:
+            result = entry.execute(backend, REPLAY_PROMPT.format(prompt=record.get("prompt", ""), diff=record["diff"]),
+                                   tmp, readonly=True, model=model)
+            out["usage"] = result.get("usage")
+            out["candidate"] = parse_findings(json.dumps(entry.json_reply(result)))
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            out["error"] = str(error)[:500]
+    out["seconds"] = round(time.monotonic() - started, 3)
+    if reference and out["candidate"]:
+        ref_files = {f["file"] for f in reference["items"] if f["severity"] in ("high", "medium")}
+        cand = [f for f in out["candidate"]["items"] if f["severity"] in ("high", "medium")]
+        out["same_file_overlap"] = sum(1 for f in cand if f["file"] in ref_files)
+        out["reference_high_medium"] = len([f for f in reference["items"] if f["severity"] in ("high", "medium")])
+        out["candidate_high_medium"] = len(cand)
+    return out
+
+
+def replay_summary(rows):
+    by = {}
+    for r in rows:
+        by.setdefault(r["reviewer_model"], []).append(r)
+    lines = ["| reviewer | diff letti | errori | high/med/low candidato | high/med/low riferimento | stesso file (h/m) |",
+             "|---|---|---|---|---|---|"]
+    for model, rs in by.items():
+        ok = [r for r in rs if r.get("candidate")]
+        errors = sum(1 for r in rs if r.get("error"))
+        c = "/".join(str(sum(r["candidate"][k] for r in ok)) for k in ("high", "medium", "low"))
+        ref = [r["reference"] for r in rs if r.get("reference")]
+        f = "/".join(str(sum(x[k] for x in ref)) for k in ("high", "medium", "low")) if ref else "n/d"
+        overlap = sum(r.get("same_file_overlap", 0) for r in ok)
+        cand_hm = sum(r.get("candidate_high_medium", 0) for r in ok)
+        lines.append(f"| {model} | {len(ok)}/{len(rs)} | {errors} | {c} | {f} | {overlap}/{cand_hm} |")
+    return "\n".join(lines)
+
+
 def safe_name(model):
     return model.replace("/", "_").replace(":", "_").replace("|", "_")
 
@@ -243,8 +346,9 @@ def build_specs(models, executors):
     specs = []
     if models:
         for model in models.split(","):
-            runner = codex_runner if model.split(":")[0] == "codex" else opencode_runner
-            specs.append((model, runner))
+            if model.split(":")[0] != "codex":
+                raise ValueError("--models accepts only the codex reference run; open models go in --executors")
+            specs.append((model, codex_runner))
     for entry in executors:
         runtime, provider, model = entry["runtime"], entry["provider"], entry["model"]
         specs.append((f"{runtime}|{provider}|{model}", open_executor_runner(runtime, provider, model)))
@@ -355,7 +459,7 @@ def add_cost(a, b):
 def identity_fields(record):
     """The runtime dimension a paired executor adds to the delegate's record; empty for
     the legacy runners, so their records are byte-for-byte the old shape."""
-    identity = {k: record[k] for k in ("runtime", "provider", "executor_model", "runtime_model_pair", "role") if k in record}
+    identity = {k: record[k] for k in ("runtime", "provider", "executor_model", "runtime_model_pair", "role", "planner") if k in record}
     if "runtime" in identity:
         identity.setdefault("role", "executor")
     return identity
@@ -400,7 +504,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
                 "known_costs": [a["usage"].get("cost_known_usd") for a in attempts], "findings": None,
                 "diff_lines": 0, "diff": None, "test_tail": last.get("error"), **identity_fields(last)}
     def refused_record(first):
-        # No worker ran (dirty worktree, project config, no opencode): escalated,
+        # No worker ran (dirty worktree, project config, no runtime): escalated,
         # nothing to test or review, the worktree cleaned as usual.
         return {"task": task["id"], "model": model, "first_pass": False, "retry_pass": None,
                 "escalated": True, "capped": False, "refused": True, "seconds": first["seconds"],
@@ -445,7 +549,7 @@ def run_task(task, model, runner, tester, reviewer, worktree, cleanup, differ=No
         if code != 0:
             second = runner(wt, model, brief_for(task, failure=out))
             state = attempt_state(second)
-            if state == "refused":   # a worker that left an opencode.json: refused, not tampered
+            if state == "refused":   # the delegate refused before a worker ran: refused, not tampered
                 return refused_record(second)
             if state == "tampered":
                 tampered = True
@@ -552,7 +656,40 @@ def main():
     parser.add_argument("--check", action="store_true", help="validate the corpus, run nothing external")
     parser.add_argument("--no-review", action="store_true",
                         help="skip the reviewer (deterministic-only runs); the record labels review not_run")
+    parser.add_argument("--planners", help="JSON file: a list of {backend, model}; each --executors entry also runs "
+                                           "with that planner's plan in the brief (label ...+plan:<model>)")
+    parser.add_argument("--review-replay", help="results directory whose recorded diffs the --reviewers re-review")
+    parser.add_argument("--reviewers", help="JSON file: a list of {backend, model} candidate reviewers")
     args = parser.parse_args()
+    if args.review_replay:
+        if not args.reviewers or not args.out:
+            parser.error("--review-replay richiede --reviewers e --out")
+        reviewers = json.load(open(args.reviewers))
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for path in sorted(Path(args.review_replay).glob("*.json")):
+            record = json.loads(path.read_text())
+            if not record.get("diff") or record.get("escalated") or record.get("git_tampered"):
+                continue
+            if args.only and record["task"] not in set(args.only.split(",")):
+                continue
+            for reviewer in reviewers:
+                target = out / f"{path.stem}-review-{safe_name(reviewer['model'])}.json"
+                if target.exists():
+                    rows.append(json.loads(target.read_text()))
+                    continue
+                r = replay_review(record, reviewer["backend"], reviewer["model"])
+                r["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                target.write_text(json.dumps(r, ensure_ascii=False, indent=2))
+                rows.append(r)
+                print(f"{record['task']} × {reviewer['model']}: candidate={r.get('candidate') and {k: r['candidate'][k] for k in ('high','medium','low')}} "
+                      f"err={r.get('error')}", flush=True)
+        (out / "summary.md").write_text(f"# Review replay {out.name}\n\n{replay_summary(rows)}\n\n"
+                                        "Il confronto per file è un indicatore grezzo: due finding sullo stesso file non "
+                                        "sono lo stesso difetto. I finding dei candidati vanno arbitrati prima di contare.\n")
+        print((out / "summary.md").read_text())
+        return 0
     tasks = json.load(open(args.tasks))["tasks"]
     if args.only:
         keep = set(args.only.split(","))
@@ -582,14 +719,25 @@ def main():
         uncosted = sorted({e["runtime"] for e in executors if e["runtime"] not in COST_RUNTIMES})
         if uncosted:
             parser.error("--cap-usd richiesto ma un runtime non riporta il costo "
-                         f"({', '.join(uncosted)}): la spesa resterebbe nulla; usa soli opencode o togli il tetto")
+                         f"({', '.join(uncosted)}): la spesa resterebbe nulla; togli il tetto e usa i limiti di tempo/step")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     spend = Spend(args.cap_usd)
     rows = []
     stopped = False
-    for model, runner in build_specs(args.models, executors):
+    planners = json.load(open(args.planners)) if args.planners else []
+    specs = build_specs(args.models, executors)
+    if planners:
+        planned = []
+        for planner in planners:
+            for label, runner in specs:
+                planned.append((f"{label}+plan:{planner['model']}", runner, make_planner(planner["backend"], planner["model"])))
+        specs = planned
+    else:
+        specs = [(label, runner, None) for label, runner in specs]
+    for model, base_runner, planner in specs:
         for task in tasks:
+            runner = planned_runner(base_runner, planner, task) if planner else base_runner
             record = out / f"{task['id']}-{safe_name(model)}.json"
             if record.exists():
                 rows.append(json.loads(record.read_text()))

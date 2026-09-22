@@ -275,40 +275,34 @@ class DoctorTests(unittest.TestCase):
             "---\nname: aos\nmetadata:\n  version: \"2.1.2\"\ndescription: test\n---\n")
         self.assertNotIn("VERSIONE", self.run_doctor().stdout)
 
-    def test_provider_privacy_reports_configured(self):
-        # zeroDataRetention lives at the model level of the user's OpenCode config;
-        # the doctor reads it and reports configured, never a secret value.
+    def test_provider_privacy_reports_the_catalog_declaration(self):
+        # The catalog carries what the provider listing said about retention; the
+        # doctor reports it and never reads a secret or claims a verification.
         codex, claude = self.roots
         (claude / "config").mkdir()
         (claude / "config/open-models.json").write_text(json.dumps({
             "schema": 1,
             "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813",
-                     "fallback": "vercel/alibaba/qwen3-coder-next"}}))
-        xdg = self.base / "xdg"
-        (xdg / "opencode").mkdir(parents=True)
-        (xdg / "opencode/opencode.json").write_text(json.dumps({
-            "provider": {"vercel": {"models": {
-                "deepseek/deepseek-v4-pro-0813": {"options": {"zeroDataRetention": True}},
-                "alibaba/qwen3-coder-next": {"options": {"zeroDataRetention": True}}}}}}))
-        result = self.run_doctor(dict(os.environ, XDG_CONFIG_HOME=str(xdg)))
+                     "fallback": "vercel/alibaba/qwen3-coder-next"},
+            "model_catalog": {"vercel/deepseek/deepseek-v4-pro-0813": {"provider_reported_zdr": "some"},
+                              "vercel/alibaba/qwen3-coder-next": {"provider_reported_zdr": "all"}}}))
+        result = self.run_doctor(dict(os.environ))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Privacy provider:", result.stdout)
-        self.assertIn("zero_data_retention=configured", result.stdout)
+        self.assertIn("zero_data_retention=some", result.stdout)
+        self.assertIn("zero_data_retention=all", result.stdout)
+        self.assertNotIn("AVVISO PRIVACY", result.stdout)
 
-    def test_provider_privacy_warns_when_not_configured(self):
-        # A model present without the flag is not_configured: a warning, not a lie.
+    def test_provider_privacy_warns_when_the_catalog_says_nothing(self):
         codex, claude = self.roots
         (claude / "config").mkdir()
         (claude / "config/open-models.json").write_text(json.dumps({
             "schema": 1,
-            "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813"}}))
-        xdg = self.base / "xdg"
-        (xdg / "opencode").mkdir(parents=True)
-        (xdg / "opencode/opencode.json").write_text(json.dumps({
-            "provider": {"vercel": {"models": {"deepseek/deepseek-v4-pro-0813": {}}}}}))
-        result = self.run_doctor(dict(os.environ, XDG_CONFIG_HOME=str(xdg)))
+            "open": {"primary": "vercel/deepseek/deepseek-v4-pro-0813"},
+            "model_catalog": {"vercel/deepseek/deepseek-v4-pro-0813": {}}}))
+        result = self.run_doctor(dict(os.environ))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("zero_data_retention=not_configured", result.stdout)
+        self.assertIn("zero_data_retention=unknown", result.stdout)
         self.assertIn("AVVISO PRIVACY", result.stdout)
 
     def _write_models_config(self, with_budgets=True, budgets_value=None, with_mid=False, with_invalid_budget=False):
@@ -325,7 +319,7 @@ class DoctorTests(unittest.TestCase):
                     "benchmark": {"available": True, "status": "winner", "source": "comparable benchmark"}}},
             "executors": {"runtime_status": {"codex-cli": {
                 "open_execution": False, "reason": "restrictive rule loading unverified"}},
-                "opencode": {"file_tools": True}, "claude-code": {"file_tools": True}},
+                "codex-cli": {"file_tools": True}, "claude-code": {"file_tools": True}},
             "providers": {"vercel": {"api_key_env": "AOS_OPEN_API_KEY"}},
             "premium": {"reviewer": "claude"},
             "context_policy": {"defaults": {"target_context": 80000, "soft_limit": 120000, "hard_limit": 180000}}}
@@ -344,11 +338,7 @@ class DoctorTests(unittest.TestCase):
         home = self.base / "home"
         home.mkdir()
         xdg = self.base / "xdg"
-        (xdg / "opencode").mkdir(parents=True, exist_ok=True)
-        (xdg / "opencode/opencode.json").write_text(json.dumps({
-            "provider": {"vercel": {"models": {
-                "deepseek/deepseek-v4-pro-0813": {"options": {"zeroDataRetention": True}},
-                "alibaba/qwen3-coder-next": {"options": {"zeroDataRetention": True}}}}}}))
+        xdg.mkdir(parents=True, exist_ok=True)
         return dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(xdg))
 
     def test_operational_status_reports_policy_without_certifying_live(self):
@@ -406,14 +396,12 @@ class DoctorTests(unittest.TestCase):
         cfg_path = self.roots[1] / "config/open-models.json"
         cfg = json.loads(cfg_path.read_text())
         cfg["executors"]["runtime_status"] = {
-            "opencode": {"open_execution": False, "reason": "external config path denied"},
             "claude-code": {"open_execution": False, "reason": "host policy"},
             "codex-cli": {"open_execution": False, "reason": "native rules unverified"},
         }
         cfg_path.write_text(json.dumps(cfg))
         result = self.run_doctor(env)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("runtime opencode: disabled; reason=external config path denied", result.stdout)
         self.assertIn("runtime claude-code: disabled; reason=host policy", result.stdout)
         self.assertIn("runtime codex-cli: disabled; reason=native rules unverified", result.stdout)
         self.assertIn("RUNTIME", result.stdout)
@@ -422,14 +410,14 @@ class DoctorTests(unittest.TestCase):
         env = self._write_models_config()
         bin_dir = self.base / "bin"
         bin_dir.mkdir()
-        opencode = bin_dir / "opencode"
-        opencode.write_text("#!/bin/sh\n")
-        opencode.chmod(0o755)
+        claude = bin_dir / "claude"
+        claude.write_text("#!/bin/sh\n")
+        claude.chmod(0o755)
         env["PATH"] = str(bin_dir) + os.pathsep + "/bin"
         result = self.run_doctor(env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("runtime opencode: enabled by configuration; installed=yes; live security unknown", result.stdout)
-        self.assertIn("viable enabled installed runtime=opencode", result.stdout)
+        self.assertIn("runtime claude-code: enabled by configuration; installed=yes; os_isolation=none; isolation unverified", result.stdout)
+        self.assertIn("viable enabled installed runtime=claude-code", result.stdout)
 
     def test_missing_mid_candidate_is_a_warning(self):
         env = self._write_models_config()

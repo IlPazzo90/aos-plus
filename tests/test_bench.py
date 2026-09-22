@@ -137,7 +137,7 @@ class BenchTests(unittest.TestCase):
         # A refusal payload (exit 5, no run) is escalated and cleaned as usual; a
         # record that cannot say whether .git was left alone is tampered (round 21).
         called = []
-        r = bench.run_task(TASK, "m", runner=lambda w, m, b: {"error": "config OpenCode di progetto", "exit_code": 5,
+        r = bench.run_task(TASK, "m", runner=lambda w, m, b: {"error": "config di runtime nel progetto", "exit_code": 5,
                                                                 "model": "m", "seconds": 0, "usage": {}, "diff_stat": ""},
                            tester=lambda w: called.append("tester") or (0, "ok"),
                            reviewer=lambda w: called.append("reviewer") or NO_FINDINGS,
@@ -156,10 +156,9 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertTrue(r["git_tampered"])
         self.assertFalse(wt.exists())
-        # opencode_runner fills a refusal payload with the defaults the record needs.
-        with mock.patch.object(bench.subprocess, "run", return_value=mock.Mock(
-                stdout='{"error": "x", "exit_code": 5, "model": "m"}', stderr="", returncode=5)):
-            rec = bench.opencode_runner("/wt", "m", "brief")
+        # The executor runner fills a refusal payload with the defaults the record needs.
+        with mock.patch.object(bench.open_executor, "run", side_effect=SystemExit(5)):
+            rec = bench.open_executor_runner("claude-code", "vercel", "a/b")("/wt", "m", "brief")
         self.assertEqual(rec["seconds"], 0)
         self.assertEqual(rec["usage"], {})
         self.assertEqual(bench.attempt_state(rec), "refused")
@@ -485,7 +484,7 @@ class ExecutorBenchTests(unittest.TestCase):
             run.side_effect = lambda repo, ref, brief, t, ad, **kw: dict(
                 EXEC_OPEN_RESULT, runtime=kw["runtime"],
                 runtime_model_pair=f"{kw['runtime']}|vercel|deepseek/deepseek-v4-pro-0813")
-            for runtime in ("opencode", "codex-cli", "claude-code"):
+            for runtime in ("codex-cli", "claude-code"):
                 rec = bench.open_executor_runner(runtime, "vercel", "deepseek/deepseek-v4-pro-0813")("/wt", "m", "b")
                 self.assertEqual(rec["runtime"], runtime)
                 self.assertEqual(rec["runtime_model_pair"], f"{runtime}|vercel|deepseek/deepseek-v4-pro-0813")
@@ -495,20 +494,20 @@ class ExecutorBenchTests(unittest.TestCase):
     def test_provider_is_propagated_not_swallowed(self):
         with mock.patch.object(bench.open_executor, "run") as run:
             run.return_value = dict(EXEC_OPEN_RESULT, provider="openrouter",
-                                    runtime_model_pair="opencode|openrouter|vendor/model")
-            rec = bench.open_executor_runner("opencode", "openrouter", "vendor/model")("/wt", "m", "b")
+                                    runtime_model_pair="claude-code|openrouter|vendor/model")
+            rec = bench.open_executor_runner("claude-code", "openrouter", "vendor/model")("/wt", "m", "b")
         self.assertEqual(rec["provider"], "openrouter")
-        self.assertEqual(rec["runtime_model_pair"], "opencode|openrouter|vendor/model")
+        self.assertEqual(rec["runtime_model_pair"], "claude-code|openrouter|vendor/model")
 
     def test_executor_refusal_becomes_a_refusal_record(self):
         # A SystemExit from the executor (project config, exit 5) is a refusal, not a
         # run: it reaches attempt_state with no git_meta_changed and a refusal code.
         with mock.patch.object(bench.open_executor, "run", side_effect=SystemExit(5)):
-            rec = bench.open_executor_runner("opencode", "vercel", "vendor/model")("/wt", "m", "b")
+            rec = bench.open_executor_runner("claude-code", "vercel", "vendor/model")("/wt", "m", "b")
         self.assertEqual(rec["exit_code"], 5)
         self.assertNotIn("git_meta_changed", rec)
         self.assertEqual(bench.attempt_state(rec), "refused")
-        self.assertEqual(rec["runtime_model_pair"], "opencode|vercel|vendor/model")
+        self.assertEqual(rec["runtime_model_pair"], "claude-code|vercel|vendor/model")
 
     def test_unknown_cost_stays_null_through_the_pipeline(self):
         record = dict(EXEC_OPEN_RESULT, usage={"input_tokens": 10, "output_tokens": 2,
@@ -533,21 +532,20 @@ class ExecutorBenchTests(unittest.TestCase):
         self.assertNotIn("runtime_model_pair", r)
         self.assertEqual(r["model"], "legacy/model")
 
-    def test_build_specs_keeps_legacy_and_adds_paired_labels(self):
-        with mock.patch.object(bench, "opencode_runner") as oc, \
-                mock.patch.object(bench, "codex_runner") as cx, \
+    def test_build_specs_keeps_the_codex_reference_and_adds_paired_labels(self):
+        with mock.patch.object(bench, "codex_runner") as cx, \
                 mock.patch.object(bench, "open_executor_runner") as oe:
-            specs = bench.build_specs("codex,vercel/test/winner",
-                                      [{"runtime": "opencode", "provider": "vercel", "model": "a/b"},
+            specs = bench.build_specs("codex",
+                                      [{"runtime": "claude-code", "provider": "vercel", "model": "a/b"},
                                        {"runtime": "codex-cli", "provider": "vercel", "model": "a/b"}])
         self.assertEqual(specs[0][0], "codex")
         self.assertIs(specs[0][1], cx)
-        self.assertEqual(specs[1][0], "vercel/test/winner")
-        self.assertIs(specs[1][1], oc)
-        self.assertEqual(specs[2][0], "opencode|vercel|a/b")
-        self.assertEqual(specs[3][0], "codex-cli|vercel|a/b")
-        self.assertEqual(oe.call_args_list[0].args, ("opencode", "vercel", "a/b"))
+        self.assertEqual(specs[1][0], "claude-code|vercel|a/b")
+        self.assertEqual(specs[2][0], "codex-cli|vercel|a/b")
+        self.assertEqual(oe.call_args_list[0].args, ("claude-code", "vercel", "a/b"))
         self.assertEqual(oe.call_args_list[1].args, ("codex-cli", "vercel", "a/b"))
+        with self.assertRaisesRegex(ValueError, "only the codex reference run"):
+            bench.build_specs("vercel/test/winner", [])
 
     def test_no_review_labels_not_run_and_is_not_a_pass(self):
         r = exec_run_task(dict(EXEC_OPEN_RESULT), no_review=True)
@@ -561,7 +559,7 @@ class ExecutorBenchTests(unittest.TestCase):
 
     def test_review_absent_is_nd_not_a_pass(self):
         # An escalated task is reviewed as None: labelled n/d, never a clean pass.
-        r = bench.run_task(TASK, "opencode|vercel|a/b", exec_runner_from(dict(EXEC_OPEN_RESULT)),
+        r = bench.run_task(TASK, "claude-code|vercel|a/b", exec_runner_from(dict(EXEC_OPEN_RESULT)),
                            tester=lambda wt: (1, "fail"), reviewer=lambda wt: NO_FINDINGS,
                            worktree=lambda t: "/wt", cleanup=lambda wt: None, differ=lambda wt: 1)
         self.assertTrue(r["escalated"])
@@ -581,17 +579,79 @@ class ExecutorBenchTests(unittest.TestCase):
                     bench.main()
             self.assertEqual(caught.exception.code, 2)
 
-    def test_cap_usd_allowed_for_cost_reporting_runtime(self):
+    def test_cap_usd_is_refused_for_every_harness_because_none_reports_dollars(self):
         with tempfile.TemporaryDirectory() as tmp:
             tasks = Path(tmp) / "tasks.json"
             tasks.write_text(json.dumps({"tasks": []}))
             executors = Path(tmp) / "executors.json"
-            executors.write_text(json.dumps([{"runtime": "opencode", "provider": "vercel", "model": "a/b"}]))
+            executors.write_text(json.dumps([{"runtime": "claude-code", "provider": "vercel", "model": "a/b"}]))
             argv = ["aos-bench.py", "--tasks", str(tasks), "--executors", str(executors),
                     "--out", str(Path(tmp) / "out"), "--cap-usd", "1.0"]
-            with mock.patch.object(sys, "argv", argv):
-                self.assertEqual(bench.main(), 0)
+            with mock.patch.object(sys, "argv", argv), self.assertRaises(SystemExit):
+                bench.main()
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoleBenchTests(unittest.TestCase):
+    """Planner and reviewer candidates: the plan is data in the brief, findings are counted."""
+
+    def test_planned_runner_plans_once_per_worktree_and_records_it(self):
+        runner = fake_runner([(1, {"cost_usd": 0.01}), (0, {"cost_usd": 0.01})])
+        plans = []
+
+        def planner(wt, task):
+            plans.append(wt)
+            return {"backend": "claude", "model": "anthropic/sonnet", "valid": True,
+                    "plan": {"objective": "fix", "subtasks": []}, "usage": {"input_tokens": 5}, "error": None}
+        outcomes = iter([(1, "fail"), (0, "ok")])
+        record = run_task(runner=bench.planned_runner(runner, planner, TASK), tester=lambda wt: next(outcomes))
+        self.assertEqual(plans, ["/wt"])   # the retry reuses the plan
+        self.assertTrue(all("PLAN prepared by a read-only planner" in b for b in runner.calls))
+        self.assertIn('"objective": "fix"', runner.calls[1])
+        self.assertEqual(record["planner"]["model"], "anthropic/sonnet")
+        self.assertTrue(record["retry_pass"])
+
+    def test_invalid_plan_is_recorded_and_left_out_of_the_brief(self):
+        runner = fake_runner([(0, {"cost_usd": 0.01})])
+        planner = lambda wt, task: {"backend": "codex", "model": "openai/gpt-5.6-sol", "valid": False,  # noqa: E731
+                                    "plan": None, "usage": None, "error": "incomplete structured plan"}
+        record = run_task(runner=bench.planned_runner(runner, planner, TASK))
+        self.assertNotIn("PLAN prepared", runner.calls[0])
+        self.assertFalse(record["planner"]["valid"])
+        self.assertEqual(record["planner"]["error"], "incomplete structured plan")
+
+    def test_make_planner_validates_through_the_pipeline_contract(self):
+        entry = mock.Mock()
+        entry.pipeline = bench._entry().pipeline
+        entry.execute.return_value = {"reply": json.dumps({"objective": "x"}), "usage": {"input_tokens": 1}}
+        entry.json_reply = bench._entry().json_reply
+        with mock.patch.object(bench, "_entry", return_value=entry):
+            record = bench.make_planner("claude", "anthropic/sonnet")("/wt", TASK)
+        self.assertFalse(record["valid"])
+        self.assertIn("incomplete structured plan", record["error"])
+        self.assertEqual(entry.execute.call_args.kwargs, {"readonly": True, "model": "anthropic/sonnet"})
+        self.assertIn("do it", entry.execute.call_args.args[1])
+
+    def test_replay_review_counts_candidate_findings_and_same_file_overlap(self):
+        entry = mock.Mock()
+        entry.execute.return_value = {"reply": json.dumps({"findings": [
+            {"severity": "high", "title": "wrong", "file": "a.py"},
+            {"severity": "low", "title": "style", "file": "b.py"}]}), "usage": {"input_tokens": 9, "output_tokens": 2}}
+        entry.json_reply = bench._entry().json_reply
+        record = {"task": "t1", "model": "m", "prompt": "do it", "diff": "--- a.py\n+++ a.py\n",
+                  "findings": {"high": 1, "medium": 0, "low": 0, "items": [{"severity": "high", "title": "ref", "file": "a.py"}]}}
+        with mock.patch.object(bench, "_entry", return_value=entry):
+            out = bench.replay_review(record, "codex", "openai/gpt-5.6-sol")
+        self.assertEqual((out["candidate"]["high"], out["candidate"]["low"]), (1, 1))
+        self.assertEqual((out["same_file_overlap"], out["reference_high_medium"], out["candidate_high_medium"]), (1, 1, 1))
+        self.assertIn("--- a.py", entry.execute.call_args.args[1])
+        entry.execute.return_value = {"reply": "not json", "usage": None}
+        with mock.patch.object(bench, "_entry", return_value=entry):
+            failed = bench.replay_review(record, "codex", "openai/gpt-5.6-sol")
+        self.assertIsNone(failed["candidate"])
+        self.assertTrue(failed["error"])
+        table = bench.replay_summary([out, failed])
+        self.assertIn("| openai/gpt-5.6-sol | 1/2 | 1 | 1/0/1 | 2/0/0 | 1/1 |", table)

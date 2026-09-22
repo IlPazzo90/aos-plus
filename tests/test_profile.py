@@ -249,27 +249,3 @@ class ProfileTests(unittest.TestCase):
         self.assertNotIn("pubblica contenuti o manda messaggi veri", output)
         self.assertIn("leggi i nodi", output)
 
-
-    def test_reports_opencode_presence(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            bindir = Path(tmp) / "bin"
-            bindir.mkdir()
-            # Keep git/python reachable, drop everything else so opencode is absent.
-            for tool in ("git", "python3", "bash", "grep", "sed", "tr", "head", "wc", "cat", "find", "sort", "awk", "ls", "dirname", "basename", "printf", "cut", "uniq", "readlink", "stat"):
-                real = subprocess.run(["/usr/bin/which", tool], capture_output=True, text=True).stdout.strip()
-                if real:
-                    (bindir / tool).symlink_to(real)
-            env = dict(os.environ, PATH=str(bindir))
-            result = subprocess.run(["/bin/bash", str(PROFILE), tmp], text=True,
-                                    capture_output=True, timeout=15, env=env)
-            self.assertIn("opencode: assente", result.stdout, result.stdout + result.stderr)
-            fake = bindir / "opencode"
-            fake.write_text("#!/bin/sh\necho 1.2.3\n")
-            fake.chmod(0o755)
-            result = subprocess.run(["/bin/bash", str(PROFILE), tmp], text=True,
-                                    capture_output=True, timeout=15, env=env)
-            self.assertIn("opencode: 1.2.3", result.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

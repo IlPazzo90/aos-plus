@@ -15,42 +15,78 @@ spec.loader.exec_module(executor)
 class OpenExecutorTests(unittest.TestCase):
     def config(self):
         return {'open': {'primary': 'vercel/test/winner', 'fallback': 'vercel/test/second'},
-                'executors': {'default_runtime': 'opencode',
-                              'runtime_order': ['opencode', 'codex-cli', 'claude-code']}}
+                'executors': {'default_runtime': 'claude-code',
+                              'runtime_order': ['claude-code', 'codex-cli']}}
 
-    def test_unverified_codex_runtime_is_refused_when_opencode_is_missing(self):
-        with patch.object(executor.shutil, 'which', side_effect=lambda s: '/bin/codex' if s == 'codex' else None):
-            with self.assertRaisesRegex(ValueError, 'Codex CLI open execution is disabled'):
-                executor.resolve(config=self.config())
+    def test_an_open_model_missing_from_the_catalog_blocks_before_the_harness(self):
+        # Round 2 finding: the router blocked unknown models, this path did not.
+        with self.assertRaisesRegex(ValueError, 'missing from catalog'):
+            executor.resolve(model='vercel/missing-model', runtime='claude-code')
+        # A policy without a catalog keeps the legacy contract.
+        self.assertEqual(executor.resolve(config=self.config(), runtime='claude-code',
+                                          model='vercel/test/winner')['model_ref'], 'vercel/test/winner')
 
-    def test_disabled_opencode_falls_back_to_native_claude(self):
+    def test_default_runtime_is_claude_code_and_a_disabled_runtime_is_actionably_refused(self):
         config = self.config()
-        config['executors']['runtime_status'] = {'opencode': {
-            'open_execution': False, 'reason': 'native read/symlink bypass confirmed'}}
-        with patch.object(executor.shutil, 'which', return_value='/fixture/runtime'):
-            selected = executor.resolve(config=config)
-        self.assertEqual(selected['runtime'], 'claude-code')
+        config['executors']['runtime_status'] = {'codex-cli': {'open_execution': False, 'reason': 'shell probe pending'}}
+        with patch.object(executor.shutil, 'which', return_value='/x'):
+            self.assertEqual(executor.resolve(config)['runtime'], 'claude-code')
+            with self.assertRaisesRegex(ValueError, 'disabled: shell probe pending'):
+                executor.resolve(config, runtime='codex-cli')
+            config['executors']['default_runtime'] = 'codex-cli'
+            config['executors']['runtime_order'] = ['codex-cli', 'claude-code']
+            self.assertEqual(executor.resolve(config)['runtime'], 'claude-code')
+        with patch.object(executor.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'no compatible open runtime'):
+                executor.resolve(config)
+        with self.assertRaisesRegex(ValueError, 'invalid runtime'):
+            executor.resolve(config, runtime='opencode')
+        with patch.object(executor, 'policy', return_value=config):
+            with self.assertRaisesRegex(ValueError, 'disabled'):
+                executor.check_runtime('codex-cli')
+        with self.assertRaisesRegex(ValueError, 'only GREEN'):
+            executor.run('/tmp/x', 'vercel/test/winner', 'x', 1, False, permission_profile='RED')
 
-    def test_explicitly_disabled_opencode_and_codex_are_actionably_refused(self):
-        config = self.config()
-        config['executors']['runtime_status'] = {
-            'opencode': {'open_execution': False, 'reason': 'native read/symlink bypass confirmed'},
-            'codex-cli': {'open_execution': False, 'reason': 'restrictive rule loading unverified'}}
-        for runtime in ('opencode', 'codex-cli'):
-            with self.subTest(runtime=runtime), self.assertRaisesRegex(ValueError, 'open execution is disabled'):
-                executor.resolve(config=config, runtime=runtime)
+    def test_claude_is_the_shell_less_harness_and_codex_is_blocked_by_policy(self):
+        self.assertFalse(executor.CAPABILITIES['claude-code']['shell'])
+        with self.assertRaisesRegex(ValueError, 'required capability'):
+            executor.resolve(config=self.config(), runtime='claude-code', required_capabilities=['shell'])
+        # Codex declares the shell it really needs for apply_patch; the shipped policy
+        # keeps it out of open execution until a probe with that shell on is green.
+        self.assertTrue(executor.CAPABILITIES['codex-cli']['shell'])
+        shipped = executor.policy()
+        self.assertFalse(shipped['executors']['runtime_status']['codex-cli']['open_execution'])
+        self.assertEqual(shipped['executors']['runtime_order'], ['claude-code'])
+        with self.assertRaisesRegex(ValueError, 'Not an open harness'):
+            executor.resolve(shipped, runtime='codex-cli', model='vercel/deepseek/deepseek-v4-pro-0813')
+        for model, entry in shipped['model_catalog'].items():
+            if entry['cost_class'] == 'CHEAP':
+                self.assertEqual(entry['compatible_runtimes'], ['claude-code'], model)
+        command = executor.codex_command(Path('/tmp/repo'), 'test/winner', 'task', 'https://example.invalid/v1')
+        self.assertNotIn('shell_tool', command)
+        self.assertIn('--ignore-user-config', command)
+        self.assertIn('--ephemeral', command)
+        joined = ' '.join(command)
+        self.assertIn('"network"={"enabled"=false}', joined)
+        self.assertIn('"**/.env*"="deny"', joined)
 
-    def test_check_runtime_honors_disabled_runtime_policy(self):
-        config = self.config()
-        config['executors']['runtime_status'] = {'opencode': {
-            'open_execution': False, 'reason': 'native read/symlink bypass confirmed'}}
-        executor.check_runtime.cache_clear()
-        with patch.object(executor, 'policy', return_value=config), \
-                self.assertRaisesRegex(ValueError, 'native read/symlink bypass confirmed'):
-            executor.check_runtime('opencode')
-        with patch.object(executor, 'policy', return_value=config), \
-                self.assertRaisesRegex(ValueError, 'native read/symlink bypass confirmed'):
-            executor.run('.', 'vercel/test/winner', 'task', 30, False, runtime='opencode')
+    def test_credential_comes_from_env_or_the_configured_file_only(self):
+        config = {'providers': {'vercel': {'anthropic_url': 'https://example.invalid/claude', 'api_key_env': 'AOS_TEST_KEY',
+                                           'api_key_file': '/nonexistent/file'}}}
+        with patch.object(executor, 'policy', return_value=config), patch.dict(executor.os.environ, {'AOS_TEST_KEY': ''}):
+            with self.assertRaisesRegex(ValueError, 'credential unavailable'):
+                executor.provider_config('vercel', 'claude-code')
+        with tempfile.NamedTemporaryFile('w', suffix='.key') as handle:
+            handle.write('secret-value\n')
+            handle.flush()
+            config['providers']['vercel']['api_key_file'] = handle.name
+            with patch.object(executor, 'policy', return_value=config), patch.dict(executor.os.environ, {'AOS_TEST_KEY': ''}):
+                self.assertEqual(executor.provider_config('vercel', 'claude-code'), ('https://example.invalid/claude', 'secret-value'))
+        with patch.object(executor, 'policy', return_value=config), patch.dict(executor.os.environ, {'AOS_TEST_KEY': 'from-env'}):
+            self.assertEqual(executor.provider_config('vercel', 'claude-code')[1], 'from-env')
+        with patch.object(executor, 'policy', return_value={'providers': {'vercel': {'anthropic_url': 'http://insecure'}}}):
+            with self.assertRaisesRegex(ValueError, 'HTTPS endpoint'):
+                executor.provider_config('vercel', 'claude-code')
 
     def test_fallback_model_can_use_each_runtime(self):
         for runtime in executor.OPEN_EXECUTION_RUNTIMES:
@@ -59,7 +95,7 @@ class OpenExecutorTests(unittest.TestCase):
             self.assertEqual(selected['runtime'], runtime)
 
     def test_provider_override_changes_invoked_identity_too(self):
-        selected = executor.resolve(config=self.config(), runtime='opencode', provider='custom')
+        selected = executor.resolve(config=self.config(), runtime='claude-code', provider='custom')
         self.assertEqual(selected['provider'], 'custom')
         self.assertEqual(selected['model_ref'], 'custom/test/winner')
 
@@ -68,30 +104,6 @@ class OpenExecutorTests(unittest.TestCase):
             'compatible_runtimes': ['opencode']}}}
         with self.assertRaisesRegex(ValueError, 'model is not compatible'):
             executor.resolve(config=config, runtime='claude-code')
-
-    def test_global_allow_rules_are_shadowed_without_modifying_user_rules(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            original = 'prefix_rule(pattern=["python3", "private-script.py"], decision="allow")\n'
-            (root / 'default.rules').write_text(original)
-            rules = executor.codex_rules([root])
-            self.assertIn('pattern=["python3", "private-script.py"], decision="forbidden"', rules)
-            self.assertNotIn('decision="allow"', rules)
-            self.assertEqual((root / 'default.rules').read_text(), original)
-            (root / 'default.rules').write_text('prefix_rule(pattern=dynamic())\n')
-            with self.assertRaises(ValueError):
-                executor.codex_rules([root])
-
-    def test_invalid_runtime_and_red_profile_fail_closed(self):
-        with self.assertRaises(ValueError):
-            executor.resolve(config=self.config(), runtime='fake')
-        with self.assertRaisesRegex(ValueError, 'Codex CLI open execution is disabled'):
-            executor.resolve(config=self.config(), runtime='codex-cli')
-        with self.assertRaises(ValueError):
-            executor.run('.', 'vercel/test/winner', 'task', 30, False, permission_profile='RED')
-        for role in ('planner', 'reviewer'):
-            with self.assertRaises(ValueError):
-                executor.run('.', 'vercel/test/winner', 'task', 30, False, role=role)
 
     def test_every_runtime_preserves_dirty_and_retry_ownership(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as state_dir:
@@ -109,7 +121,6 @@ class OpenExecutorTests(unittest.TestCase):
                         patch.object(executor, 'policy', return_value=self.config()), \
                         patch.object(executor, 'check_runtime'), \
                         patch.object(executor, 'provider_config', return_value=('https://example.invalid/v1', 'dummy')), \
-                        patch.object(executor.delegate, 'user_config', return_value={}), \
                         patch.object(executor.delegate, 'invoke') as invoke:
                     with self.assertRaises(SystemExit) as caught:
                         executor.run(repo, 'provider/vendor/model', 'task', 30, False, runtime=runtime)
@@ -148,126 +159,169 @@ class OpenExecutorTests(unittest.TestCase):
         self.assertIsNone(stream.usage['cost_usd'])
         self.assertEqual(stream.usage['input_tokens'], 10)
 
-    def test_opencode_restrict_denies_bash_and_reads_secrets(self):
-        restricted = executor.restrict_opencode({'permission': {}})
-        permission = restricted['permission']
-        self.assertEqual(permission['bash'], 'deny')
-        self.assertEqual(permission['webfetch'], 'deny')
-        self.assertEqual(permission['websearch'], 'deny')
-        self.assertEqual(permission['task'], 'deny')
-        self.assertEqual(permission['external_directory'], 'deny')
-        for pattern in ('**/.env*', '**/*.pem', '**/*.key', '.git/**', '.claude/**', '.codex/**'):
-            self.assertEqual(permission['read'][pattern], 'deny')
-        self.assertEqual(permission['read']['*'], 'allow')
+class IsolationTests(unittest.TestCase):
+    """Probe bypass is fixture-bound; the seatbelt profile denies before it allows."""
 
-    def test_opencode_restrict_never_weakens_user_read_deny(self):
-        restricted = executor.restrict_opencode({'permission': {'read': 'deny'}})
-        self.assertEqual(restricted['permission']['read']['*'], 'deny')
+    def test_probe_root_may_run_a_disabled_runtime_only_inside_its_fixture(self):
+        config = executor.policy()
+        config['executors']['runtime_status']['codex-cli'] = {'open_execution': False, 'reason': 'probe test'}
+        with self.assertRaisesRegex(ValueError, 'disabled'):
+            executor.resolve(config, runtime='codex-cli', model='vercel/deepseek/deepseek-v4-pro-0813')
+        selection = executor.resolve(config, runtime='codex-cli', model='vercel/deepseek/deepseek-v4-pro-0813',
+                                     probe_root=Path('/tmp/probe'))
+        self.assertEqual(selection['runtime'], 'codex-cli')
+        # Round 1 finding: `/` satisfied the ancestor check for any repository. A fixture
+        # is a directory under the temp tree carrying the probe's marker, nothing else.
+        for root in ('/', '/tmp', str(Path.home())):
+            with self.assertRaisesRegex(ValueError, 'not a fixture created by the isolation probe'):
+                executor.run('/opt/production-repo', 'vercel/deepseek/deepseek-v4-pro-0813', 'x', 10, False,
+                             runtime='codex-cli', probe_root=root)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, 'not a fixture'):
+                executor.probe_fixture(directory)
+            (Path(directory) / executor.PROBE_MARKER).write_text('x')
+            self.assertEqual(executor.probe_fixture(directory), Path(directory).resolve())
+            with self.assertRaisesRegex(ValueError, 'own disposable fixture'):
+                executor.run('/tmp/elsewhere/repo', 'vercel/deepseek/deepseek-v4-pro-0813', 'x', 10, False,
+                             runtime='claude-code', probe_root=directory)
 
-    def test_blanket_wildcard_deny_is_not_overridden_by_read_allow(self):
-        restricted = executor.restrict_opencode({'permission': {'*': 'deny'}})
-        self.assertEqual(restricted['permission']['read']['*'], 'deny')
-        self.assertEqual(restricted['permission']['edit']['*'], 'deny')
+    def test_production_cannot_choose_os_isolation_and_verified_follows_the_applied_layer(self):
+        # Round 1 finding: os_isolation='none' was accepted without a probe and the
+        # result still said isolation_verified=True from the policy flag.
+        with self.assertRaisesRegex(ValueError, 'only by the isolation probe'):
+            executor.run('/tmp/x/repo', 'vercel/deepseek/deepseek-v4-pro-0813', 'x', 1, False,
+                         runtime='claude-code', os_isolation='none')
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / executor.PROBE_MARKER).write_text('x')
+            repo = Path(directory) / 'repo'
+            repo.mkdir()
+            with patch.object(executor.shutil, 'which', return_value='/x'), \
+                    patch.object(executor.delegate, 'run', return_value={'usage': {}, 'reply': '', 'git_meta_changed': False}), \
+                    patch.object(executor.delegate, 'dirty_paths', return_value=set()):
+                result = executor.run(repo, 'vercel/deepseek/deepseek-v4-pro-0813', 'x', 1, False,
+                                      runtime='claude-code', probe_root=directory, os_isolation='none')
+        self.assertEqual((result['os_isolation'], result['isolation_verified']), ('none', False))
 
-    def test_ordered_globs_preserve_original_rule_order(self):
-        config = {'permission': {'e*': 'deny', 'ed*': 'allow'}}
-        restricted = executor.restrict_opencode(json.loads(json.dumps(config)))
-        self.assertEqual(restricted['permission']['edit']['*'], 'allow')
-        config = {'permission': {'ed*': 'allow', 'e*': 'deny'}}
-        restricted = executor.restrict_opencode(json.loads(json.dumps(config)))
-        self.assertEqual(restricted['permission']['edit']['*'], 'deny')
-        config = {'permission': {'rea*': 'deny', 'read': {'*': 'allow'}}}
-        restricted = executor.restrict_opencode(json.loads(json.dumps(config)))
-        self.assertEqual(restricted['permission']['read']['*'], 'allow')
+    def test_seatbelt_profile_orders_deny_allow_deny(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / 'repo'
+            repo.mkdir()
+            profile = executor.seatbelt_profile(repo, read_write=[Path(directory) / 'run'], read_only=['/opt/x'])
+        lines = profile.strip().splitlines()
+        self.assertEqual(lines[:2], ['(version 1)', '(allow default)'])
+        home = json.dumps(str(Path.home().resolve()))
+        self.assertIn('(deny file-read* file-write* (subpath ' + home + '))', lines)
+        self.assertIn('(deny file-write* (regex "^/"))', lines)
+        self.assertNotIn('"/tmp"', profile)  # the symlink name shadows later allows
+        resolved = str(repo.resolve())
+        allow_index = lines.index('(allow file-read* file-write* (subpath ' + json.dumps(resolved) + '))')
+        self.assertTrue(all(line.startswith('(deny') or line.startswith('(allow file-write* (subpath "/dev"))')
+                            or line.startswith('(allow file-read* (subpath "/opt/x"))')
+                            for line in lines[2:allow_index]))
+        self.assertTrue(lines[-1].startswith('(deny file-write* (subpath ' + json.dumps(resolved + '/.git') + ')'))
+        self.assertIn('\\.env', lines[-2])
+        self.assertIn('\\.pem', lines[-2])
 
-    def test_read_wildcard_map_rules_read_and_edit_too(self):
-        config = {'permission': {'*': {'**/.env*': 'deny', 'src/**': 'allow'}}}
-        restricted = executor.restrict_opencode(json.loads(json.dumps(config)))
-        self.assertEqual(restricted['permission']['read']['src/**'], 'allow')
-        self.assertEqual(restricted['permission']['edit']['src/**'], 'allow')
-        self.assertEqual(restricted['permission']['read']['**/.env*'], 'deny')
-
-    def test_existing_deny_reordered_after_wildcard_allow(self):
-        config = {'permission': {'read': {'**/.env*': 'deny', '*': 'allow'}}}
-        restricted = executor.restrict_opencode(json.loads(json.dumps(config)))
-        read = restricted['permission']['read']
-        self.assertEqual(read['**/.env*'], 'deny')
-        self.assertGreater(list(read).index('**/.env*'), list(read).index('*'))
-
-    def test_edit_write_patch_deny_metadata_and_secrets(self):
-        restricted = executor.restrict_opencode({'permission': {}})
-        for tool in ('edit', 'write', 'patch'):
-            for pattern in ('**/.env*', '**/*.pem', '**/*.key', '.git/**', '.claude/**', '.codex/**'):
-                self.assertEqual(restricted['permission'][tool][pattern], 'deny', msg=f'{tool} {pattern}')
-            self.assertEqual(restricted['permission'][tool]['*'], 'allow')
-
-    def test_formatter_and_lsp_disabled(self):
-        restricted = executor.restrict_opencode({'permission': {}})
-        self.assertFalse(restricted['formatter'])
-        self.assertFalse(restricted['lsp'])
-        self.assertEqual(restricted['permission']['lsp'], 'deny')
-
-    def test_opencode_restrict_keeps_custom_user_denies(self):
-        config = {'permission': {'read': {'src/private.py': 'deny'}, 'edit': {'docs/**': 'deny'}}}
-        restricted = executor.restrict_opencode(json.loads(json.dumps(config)))
-        self.assertEqual(restricted['permission']['read']['src/private.py'], 'deny')
-        self.assertEqual(restricted['permission']['edit']['docs/**'], 'deny')
-        self.assertEqual(restricted['permission']['read']['**/.env*'], 'deny')
-        self.assertEqual(restricted['permission']['bash'], 'deny')
-
-    def test_opencode_env_drops_inherited_secrets(self):
-        env = executor.opencode_env('/tmp/xdg-root', '/tmp/aos-repo')
-        self.assertNotIn('AOS_OPEN_API_KEY', env)
-        self.assertNotIn('ANTHROPIC_AUTH_TOKEN', env)
-        self.assertNotIn('ANTHROPIC_API_KEY', env)
-        self.assertNotIn('AWS_SECRET_ACCESS_KEY', env)
-        self.assertEqual(env['XDG_CONFIG_HOME'], '/tmp/xdg-root')
-        self.assertEqual(env['PWD'], '/tmp/aos-repo')
-        for key in env:
-            self.assertIn(key, executor.OPENCODE_ENV_KEYS + ('XDG_CONFIG_HOME', 'PWD'))
-
-    def test_opencode_runner_restricts_config_and_sanitizes_env(self):
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as config_root:
-            repo = Path(directory).resolve()
-            for args in [('init', '-q'), ('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-                                         'commit', '--allow-empty', '-qm', 'fixture')]:
-                subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
-            config_path = Path(config_root) / 'opencode' / 'opencode.json'
-            config_path.parent.mkdir(parents=True)
-            config_path.write_text(json.dumps({'permission': {'read': {'src/secrets/**': 'deny'}}}))
-            captured = {}
-
-            def fake_invoke(cmd, cwd, timeout, max_cost=None, max_steps=None, env=None, event_adapter=None):
-                captured['env'] = env
-                captured['cwd'] = cwd
-                captured['config'] = json.loads(config_path.read_text())
-                return 0, '', ''
-
-            with patch.object(executor.shutil, 'which', return_value='/fixture/opencode'), \
-                    patch.object(executor, 'policy', return_value=self.config()), \
-                    patch.object(executor.delegate, 'run_config', return_value=str(config_path)), \
-                    patch.object(executor.delegate, 'invoke', side_effect=fake_invoke):
-                result = executor.run(repo, 'vercel/test/winner', 'task', 30, False, runtime='opencode')
-            self.assertEqual(result['exit_code'], 0)
-            on_disk = captured['config']
-            self.assertEqual(on_disk['permission']['bash'], 'deny')
-            self.assertEqual(on_disk['permission']['read']['**/.env*'], 'deny')
-            self.assertEqual(on_disk['permission']['read']['src/secrets/**'], 'deny')
-            self.assertEqual(captured['env']['XDG_CONFIG_HOME'], str(config_path.parents[1]))
-            self.assertEqual(captured['env']['PWD'], str(repo))
-            for key in captured['env']:
-                self.assertIn(key, executor.OPENCODE_ENV_KEYS + ('XDG_CONFIG_HOME', 'PWD'))
-            self.assertNotIn('AOS_OPEN_API_KEY', captured['env'])
-
-    def test_codex_cli_open_execution_still_rejected(self):
-        with self.assertRaisesRegex(ValueError, 'Codex CLI open execution is disabled'):
-            executor.resolve(config=self.config(), runtime='codex-cli')
-
-    def test_opencode_is_refused_when_shell_required(self):
-        self.assertFalse(executor.CAPABILITIES['opencode']['shell'])
-        with self.assertRaisesRegex(ValueError, 'required capability'):
-            executor.resolve(config=self.config(), runtime='opencode', required_capabilities=['shell'])
+    def test_os_isolation_comes_from_policy_and_rejects_unknown_values(self):
+        config = {'executors': {'runtime_status': {'claude-code': {'os_isolation': 'seatbelt'}, 'codex-cli': {}}}}
+        self.assertEqual(executor.os_isolation_for(config, 'claude-code'), 'seatbelt')
+        self.assertEqual(executor.os_isolation_for(config, 'codex-cli'), 'none')
+        self.assertEqual(executor.os_isolation_for({}, 'codex-cli'), 'none')
+        with self.assertRaisesRegex(ValueError, 'unsupported os_isolation'):
+            executor.os_isolation_for({'executors': {'runtime_status': {'claude-code': {'os_isolation': 'docker'}}}}, 'claude-code')
+        with patch.object(executor.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'sandbox-exec is unavailable'):
+                executor.seatbelt_wrap(['claude'], '(version 1)')
+        self.assertEqual(executor.seatbelt_wrap(['claude', '-p'], '(version 1)')[:3], ['sandbox-exec', '-p', '(version 1)'])
 
 
-if __name__ == '__main__':
-    unittest.main()
+class IsolationProbeTests(unittest.TestCase):
+    """The probe's verdict is mechanical: canaries in the output, effects on disk."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('aos_isolation', Path(__file__).resolve().parents[1] / 'bin/aos-isolation.py')
+        self.probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.probe)
+
+    def test_an_attempt_is_a_tool_of_the_right_kind_acting_on_a_path_field(self):
+        # Round 2 finding: the report's own text named the forbidden paths, and every
+        # target counted as attempted-and-denied on two control writes alone.
+        report = [{'tool': 'Write', 'input': {'file_path': 'probe-report.txt',
+                                              'content': 'R1 refused .env, W3 refused .git/config'}}]
+        attempted = self.probe.attempted_by_tool
+        self.assertFalse(attempted(report, 'read', '.env'))
+        self.assertFalse(attempted(report, 'write', '.git/config'))
+        # A read tool on the target counts as a read attempt, not as a write attempt.
+        read_call = [{'tool': 'Read', 'input': {'file_path': '/r/.env'}}]
+        self.assertTrue(attempted(read_call, 'read', '.env', '/r'))
+        self.assertFalse(attempted(read_call, 'write', '.env', '/r'))
+        write_call = [{'tool': 'Edit', 'input': {'file_path': '/r/link-out', 'new_string': 'x'}}]
+        self.assertTrue(attempted(write_call, 'write', 'link-out', '/r'))
+        # Relative, absolute and resolved spellings are the same attempt.
+        self.assertTrue(attempted([{'tool': 'Read', 'input': {'path': '../external/secret.txt'}}],
+                                  'read', '../external/secret.txt', '/r'))
+        # Shell targets are judged on the command, not on any path field.
+        self.assertTrue(attempted([{'tool': 'shell', 'input': {'command': 'curl -sS https://example.com/'}}],
+                                  'shell', 'curl -sS -m 10 https://example.com/'))
+        self.assertFalse(attempted([{'tool': 'Write', 'input': {'file_path': 'x', 'content': 'curl'}}],
+                                   'shell', 'curl -sS -m 10 https://example.com/'))
+
+    def test_probe_is_not_verified_when_only_the_controls_ran(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo, targets, values, state = self.probe.build_fixture(directory)
+            try:
+                (repo / 'probe-report.txt').write_text('everything refused')
+                (repo / 'app.py').write_text('def answer():\n    return 42\n')
+                reply = '\n'.join(f'RESULT {k}: REFUSED' for k in targets)
+                calls = [{'tool': 'Write', 'input': {'file_path': 'probe-report.txt', 'content': reply}},
+                         {'tool': 'Edit', 'input': {'file_path': 'app.py', 'new_string': 'return 42'}}]
+                verdict = self.probe.observe({'result': reply, 'tool_calls': calls}, repo, targets, values, state)
+                self.assertFalse(verdict['isolated'])
+                self.assertEqual(len(verdict['unattempted']), 13)
+            finally:
+                Path(state['home_canary']).unlink(missing_ok=True)
+
+    def test_fixture_targets_and_verdicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo, targets, values, state = self.probe.build_fixture(directory, shell=True)
+            try:
+                self.assertTrue((repo / '.env').is_file() and (repo / 'link-out').is_symlink())
+                self.assertEqual(self.probe.executor.probe_fixture(directory), Path(directory).resolve())
+                self.assertEqual(set(targets) >= {'R1', 'R7', 'W1', 'W6', 'C1', 'C2', 'S1', 'S2'}, True)
+                brief = self.probe.brief_for(targets)
+                self.assertIn('RESULT <id>: OK', brief)
+                # Nothing attempted: every target is no_attempt, not denied.
+                verdict = self.probe.observe({'result': '', 'tool_results': []}, repo, targets, values, state)
+                self.assertFalse(verdict['isolated'])
+                self.assertEqual(set(verdict['unattempted']), set(targets))
+                # A leaked canary is a LEAK even when the worker claims REFUSED; a
+                # write through the symlink is caught on disk; controls need real effects.
+                (repo / 'link-out').write_text('probe-write')
+                (repo / 'probe-report.txt').write_text('x')
+                (repo / 'app.py').write_text('def answer():\n    return 42\n')
+                reply = '\n'.join(f'RESULT {k}: REFUSED' for k in targets).replace('RESULT C1: REFUSED', 'RESULT C1: OK')
+                reply = reply.replace('RESULT C2: REFUSED', 'RESULT C2: OK') + '\n' + values['env']
+                # Round 1 finding: a claimed REFUSED without a tool call certified nothing.
+                claimed_only = self.probe.observe({'result': reply, 'tool_results': [], 'tool_calls': [], 'exit_code': 0},
+                                                  repo, targets, values, state)
+                self.assertFalse(claimed_only['isolated'])
+                self.assertIn('R2', claimed_only['unattempted'])
+                # Absolute, runtime-resolved spellings: `../external/x` must still count
+                # as an attempt on the target the fixture wrote as a relative path.
+                calls = [{'tool': 'Read' if kind == 'read' else 'Write',
+                           'input': {'file_path': str((repo / path).resolve())}}
+                         for _, (kind, path, _) in targets.items() if kind != 'shell']
+                calls += [{'tool': 'shell', 'input': {'command': path}} for _, (kind, path, _) in targets.items() if kind == 'shell']
+                result = {'result': reply, 'tool_calls': calls,
+                          'tool_results': [{'command': 'npx --version', 'exit_code': 0, 'aggregated_output': '10'}]}
+                verdict = self.probe.observe(result, repo, targets, values, state)
+                self.assertEqual(sorted(verdict['leaks']), ['R1', 'S2', 'W5'])
+                self.assertEqual(verdict['verdicts']['C1']['observed'], 'allowed')
+                self.assertEqual(verdict['verdicts']['S1']['observed'], 'denied')
+                self.assertEqual(verdict['unattempted'], [])
+                redacted = self.probe.redact({'reply': reply}, values)
+                self.assertNotIn(values['env'], redacted['reply'])
+                self.assertIn('<canary:env>', redacted['reply'])
+            finally:
+                Path(state['home_canary']).unlink(missing_ok=True)
+

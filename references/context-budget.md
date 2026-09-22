@@ -7,7 +7,7 @@ technical window as a ceiling it reports against, never as an operating target.
 
 The manager is `bin/aos-context.py`. It is provider/model aware, configurable and
 never hardcoded: policy lives in `config/open-models.json` under `context_policy`.
-It never talks to a provider — real usage is read from the OpenCode stream by the
+It never talks to a provider — real usage is read from the runtime stream by the
 caller; text or character counts are marked `estimated`, never passed off as
 measured.
 
@@ -45,6 +45,17 @@ reports no limits and never refuses work.
 `measure(tokens=…)` is `measured`; `measure(text=…)`/`measure(chars=…)` is
 `estimated` (4 chars ≈ 1 token, a rough order-of-magnitude, never pretended to be
 exact). Prefer real usage from the provider when it exists.
+
+The pipeline keeps both numbers per role call. `context_tokens` is the estimate of
+the prompt AOS supplied; `observed_input_tokens` is what the runtime reported back
+(input plus cache reads and writes, since a cached prompt is still context the
+provider processed); `hidden_context_tokens` is the difference — the runtime's system
+prompt, tool schemas, files the role read on its own. It is null when the runtime
+reported nothing, never zero. Measured on 2026-09-22 (live/claude-host-t2-state.json):
+a 441-token planner prompt became 28 914 observed tokens; a 2 596-token review prompt
+became 200 958, because the read-only reviewer reads the repository itself. The
+estimate therefore governs admission of what AOS sends; the observed number is what
+to look at when a role runs out of context.
 
 ## Compaction
 

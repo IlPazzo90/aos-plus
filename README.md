@@ -1,9 +1,10 @@
 # AOS Plus — AI Development Operating System
 
-> **2.4.0 WIP — NOT READY FOR MAIN.** Il routing separa host, ruolo, runtime e
-> modello; T2 definiti scelgono MID per planning/review. Il runtime open abilitato è
-> Claude Code con soli strumenti file. OpenCode e Codex CLI sono esclusi come worker
-> per prove di isolamento fallite; restano nel progetto. Stato e prove:
+> **2.4.0.** Il routing separa host, ruolo, runtime e modello; T2 definiti scelgono
+> MID per planning/review. L'harness open è Claude Code con soli strumenti file sotto
+> un profilo seatbelt macOS, verificato bersaglio per bersaglio da una sonda d'attacco
+> (13/13 negati). Codex resta host, planner, reviewer cross-family ed escalation
+> premium, e non esegue lavoro open. Stato e prove:
 > [validazione operativa](docs/verifiche/premium-plan-open-execute/OPERATIONAL-VALIDATION.md).
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
@@ -126,7 +127,7 @@ open attempts or an existing explicit policy exception. See the
 
 **AOS is the router.** It chooses the task executor from tier, risk, complexity,
 uncertainty, security impact, required capabilities, the configured benchmark winner
-and the retry/failure history; the manual main model of the OpenCode interface is a
+and the retry/failure history; the manual main model of the host session is a
 fallback runtime model, not the default. `bin/aos-router.py` `decide()` is the pure,
 tested decision function and `config/open-models.json` is the executable policy:
 T0/T1 and T2 at risk ≤ MEDIUM go to the open benchmark winner; T2/HIGH only with an
@@ -138,18 +139,27 @@ Premium escalation and review run on the subscriptions already paid for Claude C
 and Codex CLI, never a separate metered API key: the open executor is the only metered
 path, and the one the router prefers for eligible work.
 
-[OpenCode](https://opencode.ai) is the runtime that executes the work AOS routes to
-open — it already loads `~/.claude/skills` and the `CLAUDE.md`/`AGENTS.md` files — and
-`bin/aos-delegate.py` runs one `opencode run`
-in a repo and reports exit code, diff, seconds and usage read from the JSON events
-(null when not reported, never estimated), with cost and step caps enforced on the
-stream. Providers live in `~/.config/opencode/opencode.json`; any OpenAI-compatible
-endpoint is one block, and the delegate writes a per-run config that denies every
-skill (the catalog cost 42k input tokens per step; 7k without it) and what an
-unattended worker never needs — edits outside the repo, web tools, subagents, network
-and publishing commands — keeping only the providers and a reworked permission map as
-the run's only config layer, and never running its own `git` on a repo whose `.git`
-config, hooks or includes the worker changed. A guard, not a sandbox (2.0.1). No model name lives in the code: the benchmark winner is chosen with `bin/aos-bench.py`, which replays real commits from the
+The open model has no host of its own: it runs inside the **Claude Code harness** as a
+bounded worker with file tools only (Read/Glob/Grep/Edit/Write, no Bash), through
+`bin/aos-open-executor.py`, which reports exit code, diff, seconds, usage read from the
+CLI's own events (null when not reported, never estimated) and the tool calls the worker
+made. `bin/aos-delegate.py` keeps the guards around each attempt: a clean tree or only
+worker-owned dirt, retry ownership, a fingerprint of the repository metadata (config,
+hooks, includes and the pointers git follows — no `git` of ours runs on a repo whose
+metadata the worker changed), a process-group timeout and a step cap. Around the process
+there is a macOS `sandbox-exec` profile: the home, the temp trees and every write are
+denied, the repository and the run's own directories are re-allowed, then the secrets
+inside the repository and `.git`/`.claude`/`.codex` are denied again. The provider
+credential is read by the host from `api_key_env` or `api_key_file` and handed to the
+process as an environment variable a shell-less worker cannot read back.
+
+`bin/aos-isolation.py` is what makes that a claim with evidence rather than a
+configuration: it builds a disposable fixture (a repository with a `.env`, a
+certificate, a symlink pointing outside, a canary in the real home) and asks the worker
+to read and write every forbidden target. The verdict is mechanical — a target counts
+as attempted only when a tool call of the matching family names it in a path field, and
+the two permitted controls must succeed, because a worker that did nothing proves
+nothing. A guard, not a sandbox (2.0.1). No model name lives in the code: the benchmark winner is chosen with `bin/aos-bench.py`, which replays real commits from the
 user's own repositories against each model — the commit's test is the spec the worker
 reads and the judge it cannot rewrite — and writes first-pass, retry, escalation,
 seconds, tokens, cost and reviewer findings side by side, and its winner is written
@@ -186,18 +196,22 @@ This package excludes private project history, workstation catalogs and internal
 review transcripts. Maintain local customizations separately; inspect every public
 release payload and its history. See [CHANGELOG.md](CHANGELOG.md).
 
-## OpenCode entry
+## Open execution
 
-AOS can run automatically in OpenCode on the current project directory, selecting
-each native open turn or the premium CLI. See [setup and compatibility](references/opencode-entry.md).
+The open model runs through the `claude-code` adapter in `bin/aos-open-executor.py`,
+with the configured open provider/model, independently of whether the main session is
+Claude Code or Codex. It has file tools only; the deterministic tests run in the host's
+Verify stage, on the safe side of the boundary. See [runtime configuration and
+boundaries](references/orchestration.md#runtime-independent-open-executor).
 
+The `codex-cli` adapter is present but the policy keeps it out of open execution:
+Codex edits files through its shell tool, whose command policy did not hold a negative
+probe, and without that shell it has no file tools at all. Codex remains the premium
+host, planner, cross-family reviewer and escalation — which is where the independent
+gate lives. OpenCode was removed from the project on 2026-09-22, after its probe read
+a denied `.env`, followed a symlink out of the repository and wrote through it.
 
-Open execution also has explicit `codex-cli` and `claude-code` adapters in
-`bin/aos-open-executor.py`. They use the configured open provider/model, independently
-of whether the main session is Claude Code or Codex. OpenCode stays optional.
-Claude's open adapter currently uses file tools only; deterministic tests run in the
-host's Verify stage. See [runtime configuration and boundaries](references/orchestration.md#runtime-independent-open-executor).
-The runtime comparison and independent release review are still pending; the measured
-OpenCode/model winner remains the default.
+The measured model winner of the 2026-09-20 benchmark remains the default; no model or
+runtime is promoted without a complete, reviewed comparison.
 
 Verified lesson ledger, context handoff and budget admission: [learning](references/learning.md).
