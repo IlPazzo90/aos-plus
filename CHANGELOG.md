@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.1.1 — il reviewer gira sul modello scelto dal router — 2026-09-23
+
+**Il gate esterno chiama il reviewer con `--model`.** Il router sceglie il modello del
+reviewer per tier e rischio (sotto HIGH può essere un MID della famiglia opposta), ma
+`review.py` di verify-agent non accettava un modello e girava sempre sul predefinito
+del CLI. Da oggi lo accetta, con l'id scritto dal router; senza `--model` il
+comportamento resta quello di prima. La modifica sta nel repository verify-agent;
+qui cambia una riga di SKILL.md, che ora dice come chiamarlo.
+
+**La riserva R4-1b della review 3.1.0 è chiusa come non applicabile.** Serviva una
+pipeline avviata prima della 3.1.0 e ripresa dopo, con una scrittura del ledger fallita
+a metà. AOS non salva su disco lo stato di una pipeline (le cartelle di run contengono
+solo `handoff.json`), e le righe senza chiave in un ledger scritto dalla 3.0.x
+appartengono a run chiusi o a registrazioni manuali. Ogni stato creato dalla 3.1.0
+porta un `event_id` per chiamata.
+
+**Altre righe di test nel ledger.** Se hai eseguito la suite fra la 3.0.0 e la 3.1.0,
+il tuo ledger può avere ancora righe di test scritte in quei minuti: hanno il progetto
+in una cartella temporanea. Controlla con `aos-learning.py outcomes`, fai un backup del
+file e toglile; una suite completa con la 3.1.x lascia il conteggio invariato.
+
+**Catalogo delle skill.** Se `aos-doctor` segnala avvisi di catalogo dopo un
+aggiornamento dei plugin (l'indice punta alle cartelle della versione vecchia),
+rigenera l'indice con `skill-library.py refresh --discover` e poi `--apply`.
+
+**La matrice reale si riempie con l'uso.** Nessun intervento: i numeri per dominio e
+tipo di task arrivano dai task passati dalla pipeline.
+
+Verifiche: suite completa verde; doctor pulito; ledger contato prima e dopo la suite.
+
 ## 3.1.0 — il ledger sa com'è finito un task, e non conta più i test — 2026-09-23
 
 **Il 99% di DeepSeek era quasi tutto finto.** Il CHANGELOG della 3.0.0 diceva che la

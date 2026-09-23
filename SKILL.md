@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "3.1.0"
+  version: "3.1.1"
 description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -230,8 +230,10 @@ it runs — a browser you drive, a simulator, the exported file — not the sour
 T2/T3: read `references/quality-gates.md` for red team, applicable roles and DoD.
 **External gate: every T2/T3, at every risk.** T0/T1 HIGH answer the HIGH checks
 inline instead. Codex main calls Claude Code; Claude main calls Codex, via
-`verify-agent/scripts/review.py --caller codex|claude`: the reviewer is the family
-opposite to the work's author, premium at HIGH. Reviewer returns findings only,
+`verify-agent/scripts/review.py --caller codex|claude --model <reviewer_model>`: the
+reviewer is the family opposite to the work's author, premium at HIGH; `--model` is the
+router's `reviewer_model` as printed (below HIGH it may be a MID of that family), and
+without it the reviewer CLI runs on its own default. Reviewer returns findings only,
 never AOS or another reviewer. Confirm findings mechanically. Maximum **6 rounds**;
 empty, quota-blocked or interrupted is not PASS. Both directions require Git for the
 record; only the Codex reviewer requires a repo cwd. If unavailable, follow the
