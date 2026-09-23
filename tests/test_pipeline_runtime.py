@@ -30,6 +30,15 @@ class RuntimeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name).resolve()
+        # A start without learning_database falls back to ~/.local/state/aos: point
+        # HOME elsewhere so no test can write rows into the real ledger (300 fake
+        # outcomes had accumulated there before this guard).
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        home_patch = patch.dict(os.environ, HOME=home.name)
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
+        self.fake_home = Path(home.name)
         fd, database = tempfile.mkstemp(prefix='aos-learning-test-', suffix='.sqlite3')
         os.close(fd)
         Path(database).unlink()
@@ -121,7 +130,7 @@ class RuntimeTests(unittest.TestCase):
                 self.state = entry.pipeline_step(None, 'start', dict(
                     classification=dict(tier='T2', risk='MEDIUM', capabilities=[]),
                     text='write app', main_host=host, executor_runtime='claude-code',
-                    planner_preference=planner), self.repo)
+                    planner_preference=planner, learning_database=str(self.learning_db)), self.repo)
                 self.addCleanup(shutil.rmtree, self.state['run_dir'])
                 self.step('plan')
                 def worker(*args, **kwargs):
@@ -147,7 +156,7 @@ class RuntimeTests(unittest.TestCase):
         self.state = entry.pipeline_step(None, 'start', dict(
             classification=dict(tier='T2', risk='MEDIUM', capabilities=[]),
             text='write app', main_host='codex', executor_runtime='claude-code',
-            planner_preference='codex'), self.repo)
+            planner_preference='codex', learning_database=str(self.learning_db)), self.repo)
         self.addCleanup(shutil.rmtree, self.state['run_dir'])
         self.step('plan')
         with patch.object(entry.open_executor, 'run', side_effect=self._worker) as worker:
@@ -506,6 +515,79 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(by_role['planner']['bundle'])
         self.assertIsNone(by_role['reviewer']['bundle'])
 
+    def test_pipeline_pass_records_one_verified_task_row(self):
+        self.state = self.begin('T2', text='fix the bug in this Python code')
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.step('review')
+        self.assertEqual(self.state['stage'], 'pass')
+        rows = entry.learning.list_tasks(self.learning_db)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['outcome'], 'verified')
+        self.assertEqual(row['first_pass'], 1)
+        self.assertEqual(row['failed_attempts'], 0)
+        self.assertEqual(row['escalated'], 0)
+        self.assertIn('ENGINEERING', row['domain'])
+        self.assertEqual(row['bundles'], 1)
+        self.assertTrue(self.state.get('_task_recorded'))
+
+    def test_one_worker_failure_marks_not_first_pass(self):
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self._failing_worker):
+            self.step('execute')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.step('review')
+        self.assertEqual(self.state['stage'], 'pass')
+        rows = entry.learning.list_tasks(self.learning_db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['outcome'], 'verified')
+        self.assertEqual(rows[0]['failed_attempts'], 1)
+        self.assertEqual(rows[0]['first_pass'], 0)
+
+    def test_pipeline_blocked_by_missing_reviewer_records_blocked(self):
+        self.state = self.begin('T2')
+        self.state['reviewer'] = None
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.assertEqual(self.state['stage'], 'blocked')
+        rows = entry.learning.list_tasks(self.learning_db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['outcome'], 'blocked')
+        self.assertEqual(rows[0]['first_pass'], 0)
+
+    def test_disabled_learning_writes_no_task_row(self):
+        self.state = self.begin('T2')
+        self.state['learning_enabled'] = False
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.step('review')
+        self.assertEqual(self.state['stage'], 'pass')
+        self.assertEqual(entry.learning.list_tasks(self.learning_db), [])
+
+    def test_second_call_in_a_terminal_stage_does_not_record_twice(self):
+        state = dict(project=str(self.repo), task_id='task-terminal', stage='pass',
+                     learning_enabled=True, learning_database=str(self.learning_db),
+                     escalation_events=[], role_events=[], findings_confirmed=0,
+                     findings_refuted=0, review_rounds=0,
+                     plan={'subtasks': [{'id': 'one'}]})
+        with patch.object(entry, '_pipeline_step', return_value=state) as impl:
+            first = entry.pipeline_step(state, 'verify', {}, self.repo)
+            second = entry.pipeline_step(first, 'verify', {}, self.repo)
+        self.assertEqual(impl.call_count, 2)
+        rows = entry.learning.list_tasks(self.learning_db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['outcome'], 'verified')
+        self.assertEqual(rows[0]['project'], str(self.repo))
+
     def test_failed_worker_records_implementation_failure(self):
         self.step('plan')
         with patch.object(entry.open_executor, 'run', side_effect=self._failing_worker):
@@ -598,11 +680,79 @@ class RuntimeTests(unittest.TestCase):
                     learning_database=str(self.learning_db), profile=profile), self.repo)
             mkdtemp.assert_not_called()
 
+    def test_invalid_bounded_plan_fails_before_the_run_exists(self):
+        with patch.object(entry.tempfile, 'mkdtemp') as mkdtemp, self.assertRaises(ValueError) as caught:
+            entry.pipeline_step(None, 'start', dict(
+                classification=dict(tier='T1', risk='LOW', capabilities=[]),
+                text='write app', main_host='claude-code', plan={'objective': 'x'},
+                learning_database=str(self.learning_db)), self.repo)
+        self.assertIn('incomplete structured plan', str(caught.exception))
+        mkdtemp.assert_not_called()
+
     def test_keyword_profile_failure_leaves_rows_without_domain(self):
         with patch.object(entry.orchestrate, 'build_profile', side_effect=RuntimeError('boom')):
             self.state = self.begin('T2', text='fix the bug in this Python code')
         self.assertIsNone(self.state['adaptive_profile'])
 
+
+    def test_a_start_without_learning_database_never_reaches_the_real_home(self):
+        state = entry.pipeline_step(None, 'start', dict(
+            classification=dict(tier='T2', risk='MEDIUM', capabilities=[]),
+            text='write app', main_host='claude-code'), self.repo)
+        self.addCleanup(shutil.rmtree, state['run_dir'])
+        database = Path(state['learning_database']).resolve()
+        self.assertIn(self.fake_home.resolve(), database.parents)
+
+    def test_a_failed_task_write_does_not_duplicate_outcomes_on_retry(self):
+        # Round 1 of the task-record review: the outcome rows were written, the task
+        # row failed, the caller kept the old state and the retry wrote them again.
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        before = self.state
+        def premium(*args, **kwargs):
+            # An observed exit code makes the review call a recorded outcome.
+            return dict(self._premium(*args, **kwargs), exit_code=0)
+        with patch.object(entry, 'execute', side_effect=premium):
+            with patch.object(entry.learning, 'record_task', side_effect=OSError('disk full')):
+                with self.assertRaisesRegex(OSError, 'disk full'):
+                    self.step('review')
+            self.state = before
+            self.step('review')
+        self.assertEqual(self.state['stage'], 'pass')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        self.assertEqual([o['role'] for o in outcomes].count('executor'), 1)
+        # Round 2: the retried review is a second real call, not a duplicate.
+        self.assertEqual(len(self.paid), 3)
+        self.assertEqual([o['role'] for o in outcomes].count('reviewer'), 2)
+        kpi = entry.learning.kpi(str(self.learning_db))
+        self.assertEqual((kpi['tasks'], kpi['task_records']), (1, 1))
+
+    def test_every_role_call_has_its_own_event_id(self):
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        ids = [e['event_id'] for e in self.state['role_events']]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(isinstance(i, str) and len(i) == 32 for i in ids))
+
+    def test_a_state_saved_before_event_ids_does_not_duplicate_on_retry(self):
+        # Round 3: events of a state saved before event ids existed have none.
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        for event in self.state['role_events']:
+            event.pop('event_id', None)
+        before = self.state
+        with patch.object(entry.learning, 'record_task', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.step('review')
+        self.state = before
+        self.step('review')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        self.assertEqual([o['role'] for o in outcomes].count('executor'), 1)
 
 if __name__ == '__main__':
     unittest.main()

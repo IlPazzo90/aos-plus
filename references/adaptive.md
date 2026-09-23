@@ -139,6 +139,11 @@ for a new model or class.
   capability and per domain; recency decay (history kept for audit). Status NEW,
   KEEP, WATCH (drift: recent much worse than historical), PROMOTE, DEMOTE (only
   with enough observations and confidence, never after one failure).
+- Task record: when the pipeline reaches `pass` or `blocked` it writes one row per task
+  (`task_outcomes`: outcome, failed attempts, escalation, review rounds, findings,
+  bundles). `kpi` takes the verdict from it; tasks without one (older or manual data) are
+  still inferred from attempt rows, and `task_records` says how many were explicit. Each
+  pipeline call carries an event id, so retrying a step never writes the same attempt twice.
 - `kpi`: first-pass and verified success, retry, escalation, findings, cost and
   tokens per verified task, premium dependency and leverage, worker success,
   compaction rate and recovery, routing accuracy, user acceptance. Missing data is

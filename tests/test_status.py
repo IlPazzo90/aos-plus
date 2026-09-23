@@ -45,6 +45,25 @@ class StatusTests(unittest.TestCase):
         self.assertIn("codex → deepseek-v4-pro → claude", segment)
         self.assertNotIn("$", segment)
 
+    def test_profile_prefixes_the_segment_and_keeps_routing(self):
+        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "open", "--model", DEEPSEEK])
+        status.set_profile("sess-1", ["ENGINEERING", "LEGAL_COMPLIANCE"], "bug_fix")
+        record = self.record()
+        self.assertIn("ENG+LEGAL·bug_fix T1/LOW", record["segment"])
+        self.assertEqual(record["tier"], "T1")
+
+    def test_profile_alone_is_shown(self):
+        status.set_profile("sess-1", ["RESEARCH"], None)
+        self.assertEqual(self.record()["segment"], "🤖 RES")
+
+    def test_spent_money_beats_subscription_and_silences_the_warning(self):
+        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "main"])
+        status.main(["usage", "--model", DEEPSEEK, "--input", "1000", "--output", "1000"])
+        segment = self.record()["segment"]
+        self.assertIn("$", segment)
+        self.assertNotIn("sub", segment)
+        self.assertNotIn("⚠", segment)
+
     def test_premium_executor_shows_subscription_not_money(self):
         status.main(["set", "--tier", "T3", "--risk", "HIGH", "--executor", "premium",
                      "--model", "claude-fable-5-1"])

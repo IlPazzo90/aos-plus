@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -535,6 +536,10 @@ def _record_event(state, event, test_pass, error=None, verification_status='veri
         return
     profile = state.get('adaptive_profile') or {}
     learning.record_outcome(state['learning_database'], dict(
+        # The id born with the role call: writing the same event again (a step retried
+        # from a state whose flags were lost) is dropped by the ledger; a real new call
+        # has its own id and is recorded. Random, so unique across projects too.
+        event_key=event.get('event_id') or _legacy_event_key(state, event),
         reservation_id=event.get('reservation_id'),
         runtime=event.get('runtime'), provider=event.get('provider'), model=event.get('model'),
         role=event.get('role'), tier=state['tier'], risk=state['risk'], worker_exit=event.get('exit_code'),
@@ -550,6 +555,19 @@ def _record_event(state, event, test_pass, error=None, verification_status='veri
         bundle=event.get('bundle'), escalated=event.get('escalated'),
         failure_type=failure_type, review_findings=review_findings))
     event['_outcome_recorded'] = True
+
+
+def _legacy_event_key(state, event):
+    """Deterministic key for an event from a state saved before event ids existed.
+
+    Such an event already sits at a fixed position in role_events (every new call
+    carries its own random event_id), so project, task and position identify it.
+    """
+    index = next((i for i, e in enumerate(state.get('role_events', [])) if e is event), None)
+    if index is None:
+        return None
+    digest = hashlib.sha256(('%s\0%s\0%d' % (state['project'], state['task_id'], index)).encode()).hexdigest()
+    return 'legacy-' + digest[:32]
 
 
 def _adaptive_profile(profile):
@@ -666,7 +684,8 @@ def role_usage(state, role, backend, result):
                                                     risk=state.get('risk'),
                                                     uncertainty=(state.get('classification') or {}).get('uncertainty'),
                                                     retry=state.get('failures', 0),
-                                                    bundle=bundle, escalated=escalated))
+                                                    bundle=bundle, escalated=escalated,
+                                                    event_id=uuid.uuid4().hex))
 
 
 def _finalize_execution_outcomes(state):
@@ -686,12 +705,64 @@ def _record_role_observation(state):
         _record_event(state, event, False, 'role quality not scored', verification_status='not_scored')
 
 
+def _record_task(state):
+    """Store the pipeline's own terminal verdict, one row per task.
+
+    The recording order of outcome rows is not the event order: success rows are
+    only written once the task reaches ``pass``, so a KPI that reconstructs the
+    verdict from row order mistakes a recording-order artifact for a retry. The
+    pipeline knows the true outcome here and persists it directly.
+    """
+    profile = state.get('adaptive_profile') or {}
+    escalation_events = state.get('escalation_events', [])
+    role_events = state.get('role_events', [])
+    failed_attempts = len(escalation_events)
+    escalated = (any(event.get('target') == 'premium_executor' for event in escalation_events)
+                 or any(event.get('role') == 'premium_executor' for event in role_events))
+    findings_confirmed = state.get('findings_confirmed', 0)
+    findings_refuted = state.get('findings_refuted', 0)
+    review_rounds = state.get('review_rounds', 0)
+    plan = state.get('plan') or {}
+    subtasks = plan.get('subtasks', []) if isinstance(plan, dict) else []
+    bundles = len(subtasks) + (1 if any(event.get('role') == 'fixer' for event in role_events) else 0)
+    outcome = 'verified' if state.get('stage') == 'pass' else 'blocked'
+    first_pass = (outcome == 'verified' and failed_attempts == 0 and not escalated
+                  and findings_confirmed == 0)
+    learning.record_task(state['learning_database'], dict(
+        project=state['project'],
+        task_id=state['task_id'],
+        outcome=outcome,
+        first_pass=first_pass,
+        failed_attempts=failed_attempts,
+        escalated=escalated,
+        review_rounds=review_rounds,
+        findings_confirmed=findings_confirmed,
+        findings_refuted=findings_refuted,
+        bundles=bundles,
+        domain=profile.get('domain'),
+        task_type=profile.get('task_type'),
+    ))
+
+
 def pipeline_step(state, action, data, directory):
     """One host-authorized stage. Check commands require host bash permission.
 
     State is owned by the bridge, not supplied by the model. Provider failures
     never become permission failures or successful checks. No shell=True calls.
     """
+    returned = _pipeline_step(state, action, data, directory)
+    if action != 'start' and isinstance(returned, dict) and returned.get('stage') in ('pass', 'blocked'):
+        # Record the terminal verdict once; a second call in the same terminal
+        # stage must not write a second row. A recording error propagates like
+        # any other ledger error: it is never swallowed.
+        if returned.get('learning_enabled', True) and not returned.get('_task_recorded'):
+            _record_task(returned)
+            returned['_task_recorded'] = True
+    return returned
+
+
+def _pipeline_step(state, action, data, directory):
+    """Implementation of ``pipeline_step``; see that function for the contract."""
     directory = Path(directory).resolve()
     config = router.load_config(POLICY)
     if action == 'start':
@@ -720,6 +791,9 @@ def pipeline_step(state, action, data, directory):
         t1 = info['tier'] in ('T0', 'T1')
         if not decision.get('pipeline') and not (t1 and decision.get('executor') == 'open' and bounded_plan):
             raise ValueError('classification is not eligible for the role pipeline')
+        # Validate the bounded plan before the run directory exists: an invalid
+        # plan must fail without leaving an orphaned temp directory behind.
+        validated_plan = pipeline.validate_plan(bounded_plan) if t1 and bounded_plan else None
         # One adaptive profile per task, built before any run directory exists. An
         # explicit caller profile is input: invalid, it fails the start. The keyword
         # guess alone never does; without it the rows carry no domain.
@@ -751,7 +825,7 @@ def pipeline_step(state, action, data, directory):
         state['task_id'] = Path(state['run_dir']).name
         state['adaptive_profile'] = adaptive_profile
         if t1 and bounded_plan:
-            state['plan'] = pipeline.validate_plan(bounded_plan)
+            state['plan'] = validated_plan
             state['stage'] = 'execute'
         return state
     if not isinstance(state, dict) or state.get('directory') != str(directory):

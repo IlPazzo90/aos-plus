@@ -1174,6 +1174,149 @@ class ContinuousLearningTests(unittest.TestCase):
         self.assertFalse(any(i["model"] == "omit" for i in result["items"]))
 
 
+class TaskOutcomeTests(unittest.TestCase):
+    """The pipeline's stored task verdicts override attempt-order inference."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db = pathlib.Path(self.temp.name) / "learn.db"
+
+    def task(self, **overrides):
+        event = {
+            "project": "proj-a",
+            "task_id": "t-1",
+            "outcome": "verified",
+            "first_pass": True,
+            "failed_attempts": 0,
+            "escalated": False,
+            "review_rounds": 1,
+            "findings_confirmed": 0,
+            "findings_refuted": 0,
+            "bundles": 1,
+            "domain": "ENGINEERING",
+            "task_type": "bugfix",
+        }
+        event.update(overrides)
+        return event
+
+    def outcome(self, **overrides):
+        event = {
+            "runtime": "codex",
+            "provider": "openai",
+            "model": "model-x",
+            "role": "executor",
+            "tier": "T2",
+            "risk": "low",
+            "worker_exit": 0,
+            "test_pass": True,
+            "task_id": "t-1",
+            "project": "proj-a",
+            "verification_status": "verified",
+        }
+        event.update(overrides)
+        return event
+
+    def test_record_task_rejects_invalid_fields(self):
+        bad_values = [
+            {"outcome": "pass"},                    # not a terminal verdict
+            {"failed_attempts": True},              # bool is not a counter
+            {"failed_attempts": -1},                # negative counter
+            {"bundles": "1"},                       # string counter
+            {"first_pass": 1},                      # bool required, not int
+            {"escalated": 1},
+            {"domain": "MAGIC"},                    # same rule as record_outcome
+            {"project": ""},
+            {"task_id": "   "},
+        ]
+        for override in bad_values:
+            with self.assertRaises(ValueError, msg=override):
+                L.record_task(self.db, self.task(**override))
+
+    def test_first_pass_true_is_refused_with_failures(self):
+        for override in ({"failed_attempts": 1},
+                         {"escalated": True},
+                         {"findings_confirmed": 1},
+                         {"outcome": "blocked"}):
+            with self.assertRaises(ValueError, msg=override):
+                L.record_task(self.db, self.task(first_pass=True, **override))
+        # And a clean verified verdict accepts first_pass True.
+        stored = L.record_task(self.db, self.task())
+        self.assertEqual(stored["outcome"], "verified")
+        self.assertEqual(stored["created_at"], L.list_tasks(self.db)[0]["created_at"])
+
+    def test_upsert_blocked_then_verified_keeps_one_row(self):
+        blocked = L.record_task(self.db, self.task(outcome="blocked", first_pass=False))
+        verified = L.record_task(self.db, self.task(outcome="verified", first_pass=True))
+        rows = L.list_tasks(self.db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "verified")
+        self.assertEqual(rows[0]["first_pass"], 1)
+        # The latest terminal state wins on the same row id.
+        self.assertEqual(verified["id"], blocked["id"])
+
+    def test_kpi_uses_task_row_over_contradictory_attempt_rows(self):
+        # Outcome rows that would infer a retry (fail, then succeed).
+        L.record_outcome(self.db, self.outcome(worker_exit=1, test_pass=False))
+        L.record_outcome(self.db, self.outcome(retry=1))
+        result = L.kpi(self.db)
+        self.assertEqual(result["task_records"], 0)
+        self.assertEqual(result["first_pass_success_rate"], 0.0)
+        self.assertEqual(result["retry_rate"], 1.0)
+        # The pipeline's stored verdict says it was a clean first pass.
+        L.record_task(self.db, self.task())
+        result = L.kpi(self.db)
+        self.assertEqual(result["task_records"], 1)
+        self.assertEqual(result["first_pass_success_rate"], 1.0)
+        self.assertEqual(result["retry_rate"], 0.0)
+        self.assertEqual(result["verified_success_rate"], 1.0)
+
+    def test_task_without_task_row_keeps_inference(self):
+        L.record_outcome(self.db, self.outcome(worker_exit=1, test_pass=False))
+        L.record_outcome(self.db, self.outcome(retry=1))
+        result = L.kpi(self.db)
+        self.assertEqual(result["task_records"], 0)
+        self.assertEqual(result["first_pass_success_rate"], 0.0)
+        self.assertEqual(result["retry_rate"], 1.0)
+
+    def test_task_row_without_outcome_rows_still_counts_as_task(self):
+        L.record_task(self.db, self.task())
+        result = L.kpi(self.db)
+        self.assertEqual(result["tasks"], 1)
+        self.assertEqual(result["attempts"], 0)
+        self.assertEqual(result["task_records"], 1)
+        self.assertEqual(result["first_pass_success_rate"], 1.0)
+        self.assertEqual(result["verified_success_rate"], 1.0)
+
+    def test_task_rows_respect_project_filter(self):
+        L.record_task(self.db, self.task(project="p-a", task_id="a"))
+        L.record_task(self.db, self.task(project="p-b", task_id="b"))
+        self.assertEqual([r["task_id"] for r in L.list_tasks(self.db, project="p-a")], ["a"])
+        result = L.kpi(self.db, project="p-a")
+        self.assertEqual(result["tasks"], 1)
+        self.assertEqual(result["task_records"], 1)
+        self.assertEqual(result["first_pass_success_rate"], 1.0)
+
+    def test_task_rows_respect_since_filter(self):
+        L.record_task(self.db, self.task(task_id="old"))
+        time_module.sleep(0.02)
+        new = L.record_task(self.db, self.task(task_id="new"))
+        result = L.kpi(self.db, since=new["created_at"])
+        self.assertEqual(result["tasks"], 1)
+        self.assertEqual(result["task_records"], 1)
+        rows = L.list_tasks(self.db)
+        self.assertEqual({r["task_id"] for r in rows}, {"old", "new"})
+
+    def test_list_tasks_preserves_stored_fields(self):
+        L.record_task(self.db, self.task(first_pass=False, domain="ENGINEERING+RESEARCH",
+                                         review_rounds=3, findings_confirmed=2,
+                                         findings_refuted=1, bundles=4))
+        row = L.list_tasks(self.db)[0]
+        self.assertEqual(row["domain"], "ENGINEERING+RESEARCH")
+        self.assertEqual((row["review_rounds"], row["findings_confirmed"],
+                          row["findings_refuted"], row["bundles"]), (3, 2, 1, 4))
+
+
 class LearningCliTests(unittest.TestCase):
     """CLI subcommands print JSON and exit 0."""
 
@@ -1224,6 +1367,67 @@ class LearningCliTests(unittest.TestCase):
                      "--output", str(pathlib.Path(self.temp.name) / "matrix.json"))
         data = json.loads((pathlib.Path(self.temp.name) / "matrix.json").read_text())
         self.assertIn("models", data)
+
+    def test_record_task_and_tasks_cli(self):
+        import contextlib
+        import io
+        task = {"project": "p", "task_id": "t", "outcome": "verified", "first_pass": True,
+                "failed_attempts": 0, "escalated": False, "review_rounds": 1,
+                "findings_confirmed": 0, "findings_refuted": 0, "bundles": 1,
+                "domain": "ENGINEERING", "task_type": "fix"}
+        self.event_file.write_text(json.dumps(task))
+        code, out = self.run_cli("record-task", "--database", self.db, "--event", str(self.event_file))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["outcome"], "verified")
+        # stdin path when no --event is given.
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(task))):
+            code, out = self.run_cli("record-task", "--database", self.db)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["outcome"], "verified")
+        code, out = self.run_cli("tasks", "--database", self.db, "--project", "p")
+        self.assertEqual(code, 0)
+        rows = json.loads(out)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_id"], "t")
+
+
+class EventKeyTests(unittest.TestCase):
+    """A pipeline event is stored once, however often a step is retried."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def test_same_event_key_is_written_once(self):
+        event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                 "task_id": "t", "project": "p", "event_key": "t#1", "cost": 1.0}
+        first = L.record_outcome(self.db, event)
+        second = L.record_outcome(self.db, dict(event))
+        self.assertEqual(first["outcome_id"], second["outcome_id"])
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(len(L.list_outcomes(self.db)), 1)
+        L.record_outcome(self.db, dict(event, event_key="t#2"))
+        L.record_outcome(self.db, dict(event, event_key=None))
+        self.assertEqual(len(L.list_outcomes(self.db)), 3)
+
+    def test_duplicate_write_settles_its_reservation(self):
+        conn = sqlite3.connect(self.db)
+        L._ensure_schema(conn)
+        conn.execute("INSERT INTO reservations (task_id, estimate, premium, created_at) VALUES ('t', 1.0, 0, 'x')")
+        conn.commit()
+        conn.close()
+        event = {"model": "m", "worker_exit": 0, "task_id": "t", "project": "p", "event_key": "k"}
+        L.record_outcome(self.db, event)
+        L.record_outcome(self.db, dict(event, reservation_id=1))
+        conn = sqlite3.connect(self.db)
+        self.assertIsNotNone(conn.execute("SELECT settled_at FROM reservations WHERE id = 1").fetchone()[0])
+        conn.close()
+
+    def test_invalid_event_key_is_refused(self):
+        for key in ("", "x" * 201, 5):
+            with self.assertRaises(ValueError):
+                L.record_outcome(self.db, {"model": "m", "worker_exit": 0, "event_key": key})
 
 
 class VerifiedOnlyTests(unittest.TestCase):

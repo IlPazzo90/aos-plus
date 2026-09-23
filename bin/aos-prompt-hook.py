@@ -8,7 +8,8 @@ the prompt with aos-orchestrate, and emit a single JSON object whose
 delegation: every exit is 0, and a payload it cannot parse, an environment that
 asks for silence, or a classification that says nothing useful produces no
 output at all. It never talks to a provider, never runs a command and never
-reads a secret.
+reads a secret. Under Claude Code it also stores domains and task type in the
+session's status record (aos-status.py), so the status line can show them.
 """
 
 import importlib.util
@@ -63,7 +64,7 @@ def silent_reason(prompt):
     return None
 
 
-def _routing_hint(module, prompt, registry):
+def _routing_hint(module, prompt, registry, payload=None):
     """One line from the keyword classifier: a hint, never a routing decision.
 
     Tier, risk and executor are not printed: from keywords alone they would be
@@ -75,6 +76,7 @@ def _routing_hint(module, prompt, registry):
     task_type = cls.get("task_type")
     if domains == ["GENERAL"] and task_type is None:
         return None
+    _publish_profile(payload, domains, task_type)
     profile = module.build_profile(text=prompt, adaptive=adaptive)
     skills = []
     for bundle in module.decompose(profile, adaptive):
@@ -88,6 +90,28 @@ def _routing_hint(module, prompt, registry):
     return line[:300]
 
 
+def _publish_profile(payload, domains, task_type):
+    """Show the classification in the Claude Code status bar (aos-status.py).
+
+    Only for Claude Code (CLAUDE_PROJECT_DIR is set for its hooks) and only with
+    a session id in the payload: Codex has no status line to feed. Cosmetic:
+    any failure is swallowed.
+    """
+    if not isinstance(payload, dict) or not os.environ.get("CLAUDE_PROJECT_DIR"):
+        return
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "aos_status", Path(__file__).resolve().parent / "aos-status.py")
+        status = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(status)
+        requested = payload.get("session_id")
+        # session_id() falls back to the environment: publish only the payload's own id.
+        if isinstance(requested, str) and status.session_id(requested) == requested:
+            status.set_profile(requested, domains, task_type)
+    except Exception:
+        pass
+
+
 def decide(payload, registry, module=None):
     """The output object this hook emits for a payload, or None to stay silent."""
     module = module or _load_orchestrate()
@@ -95,7 +119,7 @@ def decide(payload, registry, module=None):
     if silent_reason(prompt) is not None:
         return None
     try:
-        hint = _routing_hint(module, prompt, registry)
+        hint = _routing_hint(module, prompt, registry, payload)
     except Exception:
         return None
     if not hint:

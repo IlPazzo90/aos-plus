@@ -1,5 +1,80 @@
 # Changelog
 
+## 3.1.0 — il ledger sa com'è finito un task, e non conta più i test — 2026-09-23
+
+**Il 99% di DeepSeek era quasi tutto finto.** Il CHANGELOG della 3.0.0 diceva che la
+matrice dava DeepSeek PROMOTE a 0,99 su 175 esiti verificati. Nel ledger reale 300 righe
+su 311 le avevano scritte i test: due test della pipeline partivano senza
+`learning_database`, prendevano il percorso di default `~/.local/state/aos` e a ogni
+esecuzione della suite aggiungevano due task finti riusciti. Ora il `setUp` di quei test
+punta `HOME` a una cartella temporanea e un test controlla che il default ci finisca
+dentro. Se hai lanciato la suite di test con una versione precedente, anche il tuo
+ledger ha queste righe: hanno il progetto in una cartella temporanea
+(`/var/folders/…`, `/private/var/folders/…` o `/tmp/…`). Fai una copia del file e
+cancella da `outcomes`, `task_outcomes` e `lessons` le righe con quel `project`.
+
+**Il risultato di un task non si ricostruisce più dall'ordine delle righe.** La review
+della 3.0 aveva chiuso con una riserva: i KPI deducevano task, bundle e review
+dall'ordine in cui le righe finivano nel ledger. Ma la pipeline scrive i successi solo a
+fine task, quindi l'ordine di scrittura non è quello degli eventi, e sul ledger reale
+tre primi tentativi sembravano retry perché registrati dopo un fixer fallito. Ora la
+pipeline, arrivata a `pass` o `blocked`, scrive una riga nella tabella nuova
+`task_outcomes` con esito, tentativi falliti, escalation, round di review, finding e
+bundle. `kpi` prende il verdetto da lì; i task vecchi o registrati a mano restano
+sull'inferenza di prima, e il campo `task_records` dice quanti sono espliciti. Nuovi
+comandi: `aos-learning.py record-task` e `tasks`.
+
+Ogni chiamata della pipeline nasce con un id, e il ledger scarta una seconda scrittura
+dello stesso id: se un passo fallisce dopo aver già scritto e lo riprovi, i tentativi,
+i costi e i token non raddoppiano.
+
+Anche: un piano T1 invalido non lascia più una cartella `aos-pipeline-*` orfana (viene
+validato prima di crearla).
+
+Come ci si è arrivati: DeepSeek ha scritto tabella, KPI e test in un worktree esterno e
+si è fermato al tetto dei 60 step, dopo aver cancellato per sbaglio l'intestazione di una
+classe di test. Poi cinque round di review Codex: cinque finding MAJOR. Il primo era
+reale (un errore nella scrittura del task duplicava gli esiti al retry); tre dei
+successivi li aveva aperti la mia correzione del round prima, tutti nella chiave di
+deduplicazione, che prima identificava la posizione dell'evento invece della chiamata.
+Il quinto round ha chiuso con PASS.
+
+Verifiche: suite da 674 a 697 test, verde su Python 3.9, 3.12 e 3.14 (3 skip preesistenti
+per `tomllib`); suite con `HOME` temporanea senza nessun ledger creato; KPI sulla copia
+del ledger reale identici prima e dopo per i dati legacy; prova vera con un task T1 e
+worker DeepSeek reale su un repository di prova (una riga di task, verificato al primo
+colpo, `task_records` 1). Verbale: `docs/verifiche/task-outcomes/`.
+
+Riserva: una riga scritta dalla versione precedente, senza id, può ancora essere
+riscritta se una pipeline in corso attraversa l'aggiornamento dopo una scrittura fallita
+a metà. Non l'ho corretto: ricollegarla al suo evento per somiglianza scarterebbe anche
+chiamate ripetute davvero.
+## 3.0.3 — la barra di stato mostra dominio, tipo e processi vivi — 2026-09-23
+
+La barra di Claude Code vedeva solo tier, rischio e catena, pubblicati a mano con
+`aos-status.py set`. I processi entrati con la 3.0 (classificazione per dominio,
+pipeline di ruoli, worker open, review Codex) non comparivano.
+
+- **Dominio e tipo.** `aos-prompt-hook.py`, sotto Claude Code (`CLAUDE_PROJECT_DIR`
+  presente) e con un `session_id` valido nel payload, salva domini e tipo nel record
+  di sessione con il nuovo `aos-status.set_profile`. Il segmento diventa
+  `🤖 ENG+LEGAL·bug_fix T1/LOW · … · ~0,09 $`. In Codex non scrive niente: non ha barra.
+  Qualsiasi errore di scrittura viene ignorato, l'hook resta a exit 0.
+- **Costo speso batte «sub».** Se un worker open ha bruciato token, la barra mostra
+  il costo stimato anche quando l'executor pubblicato era `main`, e l'avviso `⚠ open`
+  tace: il worker è partito davvero. Prima un record diceva `sub ⚠ open` con 0,33 $
+  spesi.
+- **Processi vivi** (lo script della barra di stato, fuori da questo repository):
+  `⚙ pipeline×N worker×N codex×N` contando `aos-entry.py`, `aos-open-executor.py` e
+  `codex exec` in esecuzione su tutta la macchina. Conta solo il processo vero, non le
+  shell che citano il comando.
+
+Verifiche: suite da 674 a 681 test, verde su Python 3.12 e 3.9 (3 skip per `tomllib`);
+`aos-security.sh` exit 0. Prova reale: hook con il session id della sessione corrente →
+record con `ENGINEERING`/`bug_fix`, barra `🤖 ENG·bug_fix | ⚙ codex×1` con la review
+Codex di un'altra sessione in corso; processi finti (`perl` con `$0` riscritto) per
+pipeline e codex, una shell `zsh -c` con gli stessi nomi non contata.
+
 ## 3.0.2 — la pipeline scrive nel ledger dominio, tipo e bundle — 2026-09-23
 
 Con la 3.0.0 la matrice sapeva dividere i risultati per dominio e tipo di task, ma

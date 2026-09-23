@@ -117,6 +117,21 @@ _SCHEMA = (
     " compactions INTEGER, compaction_recovered INTEGER, routing_appropriate INTEGER,"
     " created_at TEXT NOT NULL"
     ");"
+    "CREATE TABLE IF NOT EXISTS task_outcomes ("
+    " id INTEGER PRIMARY KEY,"
+    " project TEXT NOT NULL, task_id TEXT NOT NULL,"
+    " outcome TEXT NOT NULL,"
+    " first_pass INTEGER NOT NULL,"
+    " failed_attempts INTEGER NOT NULL,"
+    " escalated INTEGER NOT NULL,"
+    " review_rounds INTEGER NOT NULL,"
+    " findings_confirmed INTEGER NOT NULL,"
+    " findings_refuted INTEGER NOT NULL,"
+    " bundles INTEGER NOT NULL,"
+    " domain TEXT, task_type TEXT,"
+    " created_at TEXT NOT NULL,"
+    " UNIQUE(project, task_id)"
+    ");"
     "CREATE TABLE IF NOT EXISTS applications ("
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " lesson_id INTEGER NOT NULL,"
@@ -200,11 +215,16 @@ def _ensure_schema(conn):
                    "premium_planning_tokens INTEGER", "premium_execution_tokens INTEGER",
                    "premium_review_tokens INTEGER", "open_tokens INTEGER",
                    "compactions INTEGER", "compaction_recovered INTEGER", "routing_appropriate INTEGER",
-                   "bundle TEXT"):
+                   "bundle TEXT", "event_key TEXT"):
         try:
             conn.execute("ALTER TABLE outcomes ADD COLUMN %s" % column)
         except sqlite3.OperationalError:
             pass
+    # One row per recorded pipeline event: a caller that retries a step after a
+    # later write failed (its new state was never returned) must not count the
+    # same attempt, cost and tokens twice.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_outcomes_event_key "
+                 "ON outcomes (event_key) WHERE event_key IS NOT NULL")
 
 
 def _canon_evidence(ids):
@@ -485,6 +505,26 @@ def _reject(database, lesson, checks, reason):
 COST_CLASSES = {"CHEAP", "MID", "PREMIUM"}
 VERIFICATION_STATUSES = {"verified", "pending", "not_scored"}
 
+# Terminal verdicts stored by the pipeline in task_outcomes.
+TASK_OUTCOMES = ("verified", "blocked")
+
+
+def _validate_domain_task_type(domain, task_type):
+    """Validate the two adaptive-profile fields shared by outcomes and task rows.
+
+    ``record_outcome`` and ``record_task`` must enforce the same rules, so the
+    checks live here once instead of drifting apart.
+    """
+    if domain is not None:
+        if not isinstance(domain, str) or not domain.strip():
+            raise ValueError("domain must be one or more of %s joined by '+'" % ("+".join(DOMAINS),))
+        for part in domain.split("+"):
+            if part not in DOMAINS:
+                raise ValueError("domain must be one or more of %s joined by '+'" % ("+".join(DOMAINS),))
+    if task_type is not None:
+        if not isinstance(task_type, str) or len(task_type) > 40:
+            raise ValueError("task_type must be a string of at most 40 characters")
+
 
 def record_outcome(database, event):
     """Store one measured outcome. success is derived, never trusted verbatim.
@@ -534,19 +574,13 @@ def record_outcome(database, event):
     # --- continuous-learning fields (all nullable, validated when present) ---
 
     domain = event.get("domain")
-    if domain is not None:
-        if not isinstance(domain, str) or not domain.strip():
-            raise ValueError("domain must be one or more of %s joined by '+'" % ("+".join(DOMAINS),))
-        for part in domain.split("+"):
-            if part not in DOMAINS:
-                raise ValueError("domain must be one or more of %s joined by '+'" % ("+".join(DOMAINS),))
-
     task_type = event.get("task_type")
-    if task_type is not None:
-        if not isinstance(task_type, str) or len(task_type) > 40:
-            raise ValueError("task_type must be a string of at most 40 characters")
+    _validate_domain_task_type(domain, task_type)
     # The bundle id from aos-orchestrate.py route (requirements, implementation, ...):
     # it separates an independent deliverable of the same task from a retry.
+    event_key = event.get("event_key")
+    if event_key is not None and (not isinstance(event_key, str) or not event_key.strip() or len(event_key) > 200):
+        raise ValueError("event_key must be a non-empty string of at most 200 characters")
     bundle = event.get("bundle")
     if bundle is not None and (not isinstance(bundle, str) or not bundle.strip() or len(bundle) > 40):
         raise ValueError("bundle must be a non-empty string of at most 40 characters")
@@ -616,7 +650,7 @@ def record_outcome(database, event):
         "capabilities", "failure_type", "escalated", "review_findings",
         "user_acceptance", "duration_s", "exploration", "premium_planning_tokens",
         "premium_execution_tokens", "premium_review_tokens", "open_tokens",
-        "compactions", "compaction_recovered", "routing_appropriate", "bundle", "created_at",
+        "compactions", "compaction_recovered", "routing_appropriate", "bundle", "event_key", "created_at",
     )
     outcome_values = (
         event.get("runtime"), event.get("provider"), event.get("model"),
@@ -633,7 +667,7 @@ def record_outcome(database, event):
         event.get("premium_review_tokens"), event.get("open_tokens"),
         event.get("compactions"), event.get("compaction_recovered"),
         None if routing_appropriate is None else (1 if routing_appropriate else 0),
-        bundle, _now(),
+        bundle, event_key, _now(),
     )
     assert len(outcome_columns) == len(outcome_values)
 
@@ -642,6 +676,17 @@ def record_outcome(database, event):
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if event_key is not None:
+                existing = conn.execute("SELECT id, success FROM outcomes WHERE event_key = ?",
+                                        (event_key,)).fetchone()
+                if existing is not None:
+                    # Same call written again: its hold, if any, is settled all the same.
+                    reservation_id = event.get("reservation_id")
+                    if isinstance(reservation_id, int) and not isinstance(reservation_id, bool):
+                        conn.execute("UPDATE reservations SET settled_at = ? WHERE id = ? AND settled_at IS NULL",
+                                     (_now(), reservation_id))
+                    conn.execute("COMMIT")
+                    return {"outcome_id": existing[0], "success": bool(existing[1]), "duplicate": True}
             placeholders = ", ".join("?" for _ in outcome_columns)
             cur = conn.execute(
                 "INSERT INTO outcomes (%s) VALUES (%s)"
@@ -663,6 +708,117 @@ def record_outcome(database, event):
             raise
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------
+# task_outcomes: the pipeline's own terminal verdict, stored once per task.
+# --------------------------------------------------------------------------
+
+def _task_row(conn, project, task_id):
+    row = conn.execute("SELECT * FROM task_outcomes WHERE project = ? AND task_id = ?",
+                       (project, task_id)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def record_task(database, event):
+    """Store the pipeline's terminal verdict for one task.
+
+    Unlike ``record_outcome``, this row is written once per task when the
+    pipeline reaches ``pass`` or ``blocked``, so the ledger never has to
+    reconstruct the verdict from attempt ordering. The latest terminal state of
+    a task wins: a blocked task later resumed to pass is recorded as verified.
+    """
+    if not isinstance(event, dict):
+        raise ValueError("event must be a dict")
+
+    project = event.get("project")
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("project must be a nonempty string")
+    task_id = event.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("task_id must be a nonempty string")
+
+    outcome = event.get("outcome")
+    if outcome not in TASK_OUTCOMES:
+        raise ValueError("outcome must be 'verified' or 'blocked'")
+
+    first_pass = event.get("first_pass")
+    if not isinstance(first_pass, bool):
+        raise ValueError("first_pass must be a boolean")
+    escalated = event.get("escalated")
+    if not isinstance(escalated, bool):
+        raise ValueError("escalated must be a boolean")
+
+    counters = {}
+    for field_name in ("failed_attempts", "review_rounds", "findings_confirmed",
+                       "findings_refuted", "bundles"):
+        value = event.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("%s must be a nonnegative integer" % field_name)
+        counters[field_name] = value
+
+    if first_pass and (outcome != "verified" or counters["failed_attempts"] != 0
+                       or escalated or counters["findings_confirmed"] != 0):
+        raise ValueError("first_pass requires a verified task with no failed attempts, "
+                         "no escalation and no confirmed findings")
+
+    domain = event.get("domain")
+    task_type = event.get("task_type")
+    _validate_domain_task_type(domain, task_type)
+
+    values = (project, task_id, outcome, 1 if first_pass else 0,
+              counters["failed_attempts"], 1 if escalated else 0,
+              counters["review_rounds"], counters["findings_confirmed"],
+              counters["findings_refuted"], counters["bundles"],
+              domain, task_type, _now())
+
+    stored = None
+    conn = _connect(database)
+    try:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT INTO task_outcomes (project, task_id, outcome, first_pass,"
+                " failed_attempts, escalated, review_rounds, findings_confirmed,"
+                " findings_refuted, bundles, domain, task_type, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(project, task_id) DO UPDATE SET"
+                " outcome = excluded.outcome,"
+                " first_pass = excluded.first_pass,"
+                " failed_attempts = excluded.failed_attempts,"
+                " escalated = excluded.escalated,"
+                " review_rounds = excluded.review_rounds,"
+                " findings_confirmed = excluded.findings_confirmed,"
+                " findings_refuted = excluded.findings_refuted,"
+                " bundles = excluded.bundles,"
+                " domain = excluded.domain,"
+                " task_type = excluded.task_type,"
+                " created_at = excluded.created_at",
+                values)
+            stored = _task_row(conn, project, task_id)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    return stored
+
+
+def list_tasks(database, project=None):
+    """Return every stored task verdict as a dict; filter by ``project`` when given."""
+    conn = _connect(database)
+    try:
+        _ensure_schema(conn)
+        if project is None:
+            rows = conn.execute("SELECT * FROM task_outcomes ORDER BY id").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM task_outcomes WHERE project = ? ORDER BY id",
+                                (project,)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
 
 
 def _open_reservations(conn, now_text):
@@ -1078,8 +1234,21 @@ def kpi(database, project=None, since=None):
         task = tasks.setdefault(key, [])
         task.append(r)
 
+    # Explicit verdicts recorded by the pipeline. They honor the same project and
+    # since filters as the outcome rows, comparing the task row's own created_at.
+    recorded_tasks = list_tasks(database)
+    if project is not None:
+        recorded_tasks = [t for t in recorded_tasks if t["project"] == project]
+    if since is not None:
+        recorded_tasks = [t for t in recorded_tasks if _moment(t["created_at"]) >= since_moment]
+    task_by_key = {(t["project"], t["task_id"]): t for t in recorded_tasks}
+    # A task with a verdict but no outcome rows still counts as a task.
+    for key in task_by_key:
+        tasks.setdefault(key, [])
+
     attempts = len(rows)
     n_tasks = len(tasks)
+    task_records = 0
 
     first_pass_success_count = 0
     verified_success_count = 0
@@ -1105,51 +1274,68 @@ def kpi(database, project=None, since=None):
     accepted = 0
     rejected = 0
 
-    for task_rows in tasks.values():
+    for key, task_rows in tasks.items():
         sorted_rows = sorted(task_rows, key=lambda r: (r["created_at"], r["id"]))
-        # Work rows produce the deliverable; planner and reviewer rows are roles
-        # around it, never an attempt and never the task's outcome on their own. A
-        # premium_executor row is a bundle's escalated final attempt, still work.
-        work = [r for r in sorted_rows if r["role"] in (None, "executor", "fixer", "premium_executor")]
-        # Attempts are grouped by bundle: a bundle's later row after a failure is a
-        # retry, another bundle's row is an independent deliverable. Rows without a
-        # bundle id belong to one implicit bundle (the ledger cannot tell them apart).
-        bundles = {}
-        for r in work:
-            bundles.setdefault(r["bundle"], []).append(r)
-        is_retry = any(r["retry"] for r in sorted_rows) or any(
-            not earlier["success"] for rows_ in bundles.values() for earlier, _ in zip(rows_, rows_[1:]))
-        if bundles and all(rows_[0]["success"] and not rows_[0]["retry"] for rows_ in bundles.values()):
-            first_pass_success_count += 1
-        if bundles:
-            def order(row):
-                return (row["created_at"], row["id"])
-
-            def review_passed(review):
-                # A pending or unscored review proves nothing.
-                return review["success"] and review["verification_status"] == "verified"
-
-            reviews = [r for r in sorted_rows if r["role"] == "reviewer"]
-            last_work = order(work[-1])
-            ok = True
-            for bundle_id, rows_ in bundles.items():
-                final = rows_[-1]
-                # A review of this bundle after its final attempt still stands; a
-                # review without a bundle id covers the whole task, after all work.
-                standing = [r for r in reviews
-                            if (r["bundle"] == bundle_id and bundle_id is not None and order(r) > order(final))
-                            or (r["bundle"] is None and order(r) > last_work)]
-                if not (final["success"] and final["verification_status"] == "verified"
-                        and all(review_passed(r) for r in standing)):
-                    ok = False
-            if ok:
+        explicit = task_by_key.get(key)
+        if explicit is not None:
+            # The pipeline stored the verdict it already knew; never reconstruct it
+            # from attempt rows whose recording order is not the event order.
+            task_records += 1
+            if explicit["outcome"] == "verified":
                 verified_success_count += 1
-        if is_retry:
-            retry_tasks += 1
-        if any(r["escalated"] for r in sorted_rows):
-            escalation_tasks += 1
-        if any(r["review_findings"] for r in sorted_rows):
-            findings_tasks += 1
+            if explicit["first_pass"]:
+                first_pass_success_count += 1
+            if explicit["failed_attempts"] > 0:
+                retry_tasks += 1
+            if explicit["escalated"]:
+                escalation_tasks += 1
+            if explicit["findings_confirmed"] > 0:
+                findings_tasks += 1
+        else:
+            # Legacy and manually recorded data keep the row-based inference.
+            # Work rows produce the deliverable; planner and reviewer rows are roles
+            # around it, never an attempt and never the task's outcome on their own. A
+            # premium_executor row is a bundle's escalated final attempt, still work.
+            work = [r for r in sorted_rows if r["role"] in (None, "executor", "fixer", "premium_executor")]
+            # Attempts are grouped by bundle: a bundle's later row after a failure is a
+            # retry, another bundle's row is an independent deliverable. Rows without a
+            # bundle id belong to one implicit bundle (the ledger cannot tell them apart).
+            bundles = {}
+            for r in work:
+                bundles.setdefault(r["bundle"], []).append(r)
+            is_retry = any(r["retry"] for r in sorted_rows) or any(
+                not earlier["success"] for rows_ in bundles.values() for earlier, _ in zip(rows_, rows_[1:]))
+            if bundles and all(rows_[0]["success"] and not rows_[0]["retry"] for rows_ in bundles.values()):
+                first_pass_success_count += 1
+            if bundles:
+                def order(row):
+                    return (row["created_at"], row["id"])
+
+                def review_passed(review):
+                    # A pending or unscored review proves nothing.
+                    return review["success"] and review["verification_status"] == "verified"
+
+                reviews = [r for r in sorted_rows if r["role"] == "reviewer"]
+                last_work = order(work[-1])
+                ok = True
+                for bundle_id, rows_ in bundles.items():
+                    final = rows_[-1]
+                    # A review of this bundle after its final attempt still stands; a
+                    # review without a bundle id covers the whole task, after all work.
+                    standing = [r for r in reviews
+                                if (r["bundle"] == bundle_id and bundle_id is not None and order(r) > order(final))
+                                or (r["bundle"] is None and order(r) > last_work)]
+                    if not (final["success"] and final["verification_status"] == "verified"
+                            and all(review_passed(r) for r in standing)):
+                        ok = False
+                if ok:
+                    verified_success_count += 1
+            if is_retry:
+                retry_tasks += 1
+            if any(r["escalated"] for r in sorted_rows):
+                escalation_tasks += 1
+            if any(r["review_findings"] for r in sorted_rows):
+                findings_tasks += 1
         if any(r["compactions"] for r in sorted_rows):
             compaction_tasks += 1
         for r in sorted_rows:
@@ -1222,6 +1408,7 @@ def kpi(database, project=None, since=None):
         "user_acceptance": (accepted / (accepted + rejected)) if (accepted + rejected) else None,
         "tasks": n_tasks,
         "attempts": attempts,
+        "task_records": task_records,
     }
 
 
@@ -1588,6 +1775,15 @@ def main(argv=None):
     record_outcome_parser.add_argument("--database", required=True, help="sqlite database path")
     record_outcome_parser.add_argument("--event", required=True, help="path to a JSON event file, or '-' for stdin")
 
+    record_task_parser = sub.add_parser("record-task", help="store one pipeline terminal verdict")
+    record_task_parser.add_argument("--database", required=True, help="sqlite database path")
+    record_task_parser.add_argument("--event", default=None,
+                                    help="path to a JSON event file, or '-' for stdin (default stdin)")
+
+    tasks_parser = sub.add_parser("tasks", help="list stored task verdicts")
+    tasks_parser.add_argument("--database", required=True, help="sqlite database path")
+    tasks_parser.add_argument("--project", default=None, help="filter by project")
+
     matrix_parser = sub.add_parser("matrix", help="print the model performance matrix")
     matrix_parser.add_argument("--database", required=True, help="sqlite database path")
     matrix_parser.add_argument("--half-life-days", type=float, default=None,
@@ -1620,6 +1816,15 @@ def main(argv=None):
             with open(args.event, "r") as fh:
                 raw = fh.read()
         payload = record_outcome(args.database, json.loads(raw))
+    elif args.command == "record-task":
+        if args.event is None or args.event == "-":
+            raw = sys.stdin.read()
+        else:
+            with open(args.event, "r") as fh:
+                raw = fh.read()
+        payload = record_task(args.database, json.loads(raw))
+    elif args.command == "tasks":
+        payload = list_tasks(args.database, project=args.project)
     elif args.command == "matrix":
         payload = matrix(args.database, half_life_days=args.half_life_days, now=args.now)
         if args.output:

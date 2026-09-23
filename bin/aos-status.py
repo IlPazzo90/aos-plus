@@ -139,10 +139,20 @@ def money(value):
     return ('%.*f' % (digits, value)).replace('.', ',') + ' $'
 
 
+DOMAIN_SHORT = {'ENGINEERING': 'ENG', 'LEGAL_COMPLIANCE': 'LEGAL', 'BUSINESS_OPERATIONS': 'BIZ',
+                'RESEARCH': 'RES', 'DATA_ANALYTICS': 'DATA', 'GENERAL': 'GEN'}
+
+
+def profile_label(state):
+    """'ENG+LEGAL·bug_fix' from the prompt hook's classification, or ''."""
+    domains = '+'.join(DOMAIN_SHORT.get(d, d) for d in (state.get('domains') or []) if d)
+    return '·'.join(part for part in (domains, state.get('task_type')) if part)
+
+
 def render(state):
     """One status-bar segment; '' when there is nothing worth showing."""
     tier, risk = state.get('tier'), state.get('risk')
-    head = '/'.join(part for part in (tier, risk) if part)
+    head = ' '.join(part for part in (profile_label(state), '/'.join(p for p in (tier, risk) if p)) if part)
     executor = state.get('executor')
     chain = [state.get('planner'), short_model(state.get('model')) or executor, state.get('reviewer')]
     chain = ' → '.join(part for part in chain if part)
@@ -150,10 +160,12 @@ def render(state):
     counts = None
     if tokens.get('input') or tokens.get('output'):
         counts = '%s/%s' % (compact(tokens.get('input') or 0), compact(tokens.get('output') or 0))
-    if executor in ('main', 'premium'):
-        price = 'sub'
-    elif state.get('cost_usd') is not None:
+    # Money actually spent on a worker wins over 'sub': a pipeline started from a
+    # main-executor classification still burns gateway tokens.
+    if state.get('cost_usd') is not None:
         price = '~' + money(state['cost_usd'])
+    elif executor in ('main', 'premium'):
+        price = 'sub'
     else:
         price = None
     parts = [part for part in (head, chain, counts, price) if part]
@@ -165,7 +177,7 @@ def render(state):
     # silent: the main session already runs a premium-grade model, so that
     # warning would fire on nearly every HIGH task and train the reader to
     # ignore the symbol.
-    if state.get('routed_executor') == 'open' and executor != 'open':
+    if state.get('routed_executor') == 'open' and executor != 'open' and state.get('cost_usd') is None:
         segment += ' ⚠ open'
     return segment
 
@@ -234,6 +246,16 @@ def _set(session, args, routed):
     state.setdefault('tokens', {'input': 0, 'output': 0, 'cache': 0})
     state.setdefault('cost_usd', None)
     return write(session, state, args.ttl)
+
+
+def set_profile(session, domains, task_type, ttl=DEFAULT_TTL_SECONDS):
+    """Store the prompt hook's classification; keeps routing and tokens."""
+    if not session:
+        return {}
+    with locked(session):
+        state = load(session)
+        state.update(domains=list(domains or []), task_type=task_type)
+        return write(session, state, ttl)
 
 
 def add_usage(session, model_ref, tokens, ttl):

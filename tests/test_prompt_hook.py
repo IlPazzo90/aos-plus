@@ -149,3 +149,38 @@ class StdlibOnlyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusProfileTests(unittest.TestCase):
+    """The hook feeds domains and task type to the Claude Code status bar."""
+
+    def setUp(self):
+        import tempfile
+        self.registry = hook._load_orchestrate().load_registry()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.record = Path(self.directory.name) / "sess-hook.json"
+
+    def run_hook(self, env, body):
+        with mock.patch.dict(os.environ, env, clear=False):
+            return hook.decide(body, self.registry)
+
+    def test_claude_session_gets_domains_and_task_type(self):
+        self.run_hook({"AOS_STATUS_DIR": self.directory.name, "CLAUDE_PROJECT_DIR": "/x"},
+                      {"prompt": "correggi questo bug nel file app.py", "session_id": "sess-hook"})
+        record = json.loads(self.record.read_text())
+        self.assertIn("ENGINEERING", record["domains"])
+        self.assertIn("ENG", record["segment"])
+
+    def test_without_claude_code_nothing_is_written(self):
+        env = {"AOS_STATUS_DIR": self.directory.name}
+        with mock.patch.dict(os.environ, env):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            hook.decide({"prompt": "correggi questo bug nel file app.py", "session_id": "sess-hook"},
+                        self.registry)
+        self.assertFalse(self.record.exists())
+
+    def test_unsafe_session_id_is_not_a_file_name(self):
+        self.run_hook({"AOS_STATUS_DIR": self.directory.name, "CLAUDE_PROJECT_DIR": "/x"},
+                      {"prompt": "correggi questo bug nel file app.py", "session_id": "../evil"})
+        self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
