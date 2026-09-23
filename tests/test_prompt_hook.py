@@ -105,6 +105,41 @@ class MainTests(unittest.TestCase):
         self.assertEqual(stdout, "")
 
 
+class ReviewFollowUpTests(unittest.TestCase):
+    """3.0.1, from Codex's review of the installed hook."""
+
+    _run = MainTests._run
+
+    def test_host_notifications_stay_silent(self):
+        for text in ("<task-notification>\n<task-id>x</task-id> completed</task-notification>",
+                     "[SYSTEM NOTIFICATION - NOT USER INPUT] Background command completed"):
+            with self.subTest(text=text[:20]):
+                code, stdout = self._run(json.dumps({"prompt": text}).encode("utf-8"))
+                self.assertEqual((code, stdout), (0, ""))
+
+    def test_a_silent_prompt_loads_no_module_or_configuration(self):
+        with mock.patch.object(hook, "_load_orchestrate") as load:
+            code, stdout = self._run(json.dumps({"prompt": "ciao"}).encode("utf-8"))
+        self.assertEqual((code, stdout), (0, ""))
+        load.assert_not_called()
+
+    def test_the_hook_writes_no_bytecode(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(SCRIPT.parents[1] / "bin", root / "bin",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(SCRIPT.parents[1] / "config", root / "config")
+            result = subprocess.run([sys.executable, str(root / "bin/aos-prompt-hook.py")],
+                                    input=json.dumps({"prompt": "correggi il bug nel parser del login"}),
+                                    capture_output=True, text=True, timeout=30)
+            self.assertIn("hookSpecificOutput", result.stdout)
+            self.assertEqual(list(root.rglob("__pycache__")), [])
+
+
 class StdlibOnlyTests(unittest.TestCase):
     def test_hook_is_stdlib_only(self):
         source = SCRIPT.read_text(encoding="utf-8")

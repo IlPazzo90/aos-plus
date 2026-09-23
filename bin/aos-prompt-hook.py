@@ -17,6 +17,9 @@ import os
 import sys
 from pathlib import Path
 
+# An advisory hook leaves no trace: no __pycache__ next to the modules it imports.
+sys.dont_write_bytecode = True
+
 MAX_STDIN_BYTES = 65536
 
 HOOK_EVENT = "UserPromptSubmit"
@@ -53,6 +56,10 @@ def silent_reason(prompt):
         return "host control prefix"
     if len(stripped.split()) < 3:
         return "too short to classify"
+    # Background-task notifications reach the hook as prompts; nobody typed them.
+    head = stripped[:400]
+    if "<task-notification>" in head or "[SYSTEM NOTIFICATION" in head:
+        return "host notification"
     return None
 
 
@@ -114,6 +121,9 @@ def _main():
     try:
         payload = json.loads(data.decode("utf-8", errors="replace"))
     except ValueError:
+        return 0
+    # Decide silence before loading any module or configuration file.
+    if silent_reason(_prompt_text(payload)) is not None:
         return 0
     try:
         module = _load_orchestrate()

@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.1 — l'hook non lascia tracce e tace sulle notifiche — 2026-09-23
+
+Codex ha riletto l'hook prima che lo approvassi e ha corretto due cose che avevo scritto
+male: l'hook non legge solo stdin (legge anche `config/open-models.json` e
+`config/adaptive.json`), e gli import potevano creare `__pycache__` accanto agli script.
+Ora `aos-prompt-hook.py` imposta `sys.dont_write_bytecode`, decide se tacere prima di
+caricare moduli e configurazioni (un «ciao» non apre più nessun file) e non classifica
+le notifiche dei task in background che l'host gli passa come prompt: prima ogni
+«comando completato» riceveva la sua riga AOS. Il comando registrato in
+`hooks.json` non cambia, quindi l'approvazione già data in Codex resta valida.
+
+Verifiche: 665 test, verdi su Python 3.12 e 3.9 (3 skip per `tomllib`); tre test nuovi
+(notifiche zitte, nessun modulo caricato su un prompt da ignorare, nessun `__pycache__`
+eseguendo l'hook da una copia pulita).
+
 ## 3.0.0 — il modello lo sceglie il costo atteso, non il tier — 2026-09-23
 
 **Chiedi un contratto, e DeepSeek non lo scrive.** Prima di oggi una richiesta non di
