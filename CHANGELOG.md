@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.0.2 — la pipeline scrive nel ledger dominio, tipo e bundle — 2026-09-23
+
+Con la 3.0.0 la matrice sapeva dividere i risultati per dominio e tipo di task, ma
+nessuno glieli passava: `aos-entry.py` registrava modello, tier, rischio ed esito, e
+basta. Ogni riga arrivava senza dominio, quindi le colonne per dominio restavano vuote
+e il router continuava a decidere sui soli prior dichiarati.
+
+Ora la pipeline, alla partenza, costruisce il profilo del task con
+`aos-orchestrate.py` (domini, tipo di task, capacità richieste) e lo mette su ogni
+riga. Ogni tentativo porta il suo bundle: `s1`, `s2`… per subtask, `fix` per il fixer.
+Planner e reviewer non ne hanno, perché coprono tutto il task. Un worker fallito
+registra `timeout` o `implementation_failure`, un check fallito `test_failure`; il
+premium chiamato in escalation è marcato `escalated`; i finding confermati dalla review
+vanno sulla riga dell'executor. Puoi passare un `profile` esplicito alla partenza: se è
+invalido (dominio inesistente, capacità fuori da 0–1) la partenza fallisce subito,
+prima di creare il run, e non a metà pipeline alla prima scrittura nel ledger. La
+classificazione per parole chiave invece non può far fallire niente: se si rompe, le
+righe escono senza dominio come prima.
+
+Due correzioni trovate collegando i campi:
+- Se falliscono i check del secondo subtask, il fallimento finiva anche sul primo, che
+  aveva già passato i suoi. Ora va solo sul bundle che si sta verificando.
+- `kpi` ignorava le righe `premium_executor`: un bundle salvato dall'escalation
+  risultava fallito, perché l'ultimo tentativo contato era quello open andato male.
+
+Esecuzione: DeepSeek in un worktree esterno (54 step, 17 minuti); poi io ho spostato il
+profilo prima della creazione del run, aggiunto la validazione alla partenza e
+sostituito un test che dava «primo colpo» a una riga escalata.
+
+Verifiche: suite da 665 a 674 test, verde su Python 3.9, 3.12 e 3.14 (3 skip
+preesistenti per `tomllib`); `aos-security.sh` exit 0. Prova vera: un task T1 («correggi
+il bug nella funzione add») su un repository di prova, con worker DeepSeek reale e un
+ledger separato. Il worker ha corretto `a - b` in `a + b`, i check sono passati e la
+riga registrata ha `ENGINEERING`, `bug_fix`, bundle `s1` e le capacità; `matrix` mostra
+dominio e tipo di task, `kpi` dà il task verificato al primo colpo.
+
+Aperto: se il piano passato a una partenza T1 è invalido, la cartella temporanea del
+run resta orfana (succedeva già prima di questa versione).
+
 ## 3.0.1 — l'hook non lascia tracce e tace sulle notifiche — 2026-09-23
 
 Codex ha riletto l'hook prima che lo approvassi e ha corretto due cose che avevo scritto

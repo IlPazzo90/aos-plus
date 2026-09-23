@@ -481,6 +481,128 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.paid, [])
         self.assertEqual(state['role_events'][-1]['cost_class'], 'CHEAP')
 
+    def test_pipeline_rows_carry_domain_and_bundle(self):
+        self.state = self.begin('T2', text='fix the bug in this Python code')
+        # A premium that reports an exit_code so the planner/reviewer observations
+        # are actually recorded, letting us assert their bundle is None on the rows.
+        def premium(backend, text, directory, readonly=False, model=None):
+            if 'PREMIUM PLANNER' in text:
+                result = self.plan
+            else:
+                result = dict(findings=[], attacked=['acceptance and security'])
+            return dict(reply=json.dumps(result), usage=dict(input_tokens=3, output_tokens=2),
+                        model=model, exit_code=0)
+        with patch.object(entry, 'execute', side_effect=premium):
+            self.step('plan')
+            with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+                self.step('execute')
+            self.checks()
+            self.step('review')
+        self.assertEqual(self.state['stage'], 'pass')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        by_role = {o['role']: o for o in outcomes}
+        self.assertIn('ENGINEERING', by_role['executor']['domain'])
+        self.assertEqual(by_role['executor']['bundle'], 's1')
+        self.assertIsNone(by_role['planner']['bundle'])
+        self.assertIsNone(by_role['reviewer']['bundle'])
+
+    def test_failed_worker_records_implementation_failure(self):
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self._failing_worker):
+            self.step('execute')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        self.assertEqual(outcomes[0]['failure_type'], 'implementation_failure')
+
+    def test_timeout_worker_records_timeout_failure_type(self):
+        self.step('plan')
+        def timeout_worker(*args, **kwargs):
+            return dict(exit_code=1, head_before='same', head_after='same', model=args[1],
+                        error='timeout', usage=dict(input_tokens=1, output_tokens=1))
+        with patch.object(entry.open_executor, 'run', side_effect=timeout_worker):
+            self.step('execute')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        self.assertEqual(outcomes[0]['failure_type'], 'timeout')
+
+    def test_failed_checks_on_second_subtask_record_only_s2(self):
+        self.plan['subtasks'].append(dict(id='two', objective='integrate', files=['app.py']))
+        self.begin('T3')
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.assertEqual((self.state['stage'], self.state['subtask']), ('execute', 1))
+        self.assertEqual(entry.learning.list_outcomes(self.learning_db), [])
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.step('check', dict(id='unit', argv=[sys.executable, '-c', 'raise SystemExit(1)']))
+        self.step('check', dict(id='diff', argv=['git', 'diff', '--check']))
+        self.step('check', dict(id='security', argv=['bash', str(ROOT / 'bin/aos-security.sh')]))
+        self.step('verify')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        self.assertEqual([o['bundle'] for o in outcomes], ['s2'])
+        self.assertEqual(outcomes[0]['failure_type'], 'test_failure')
+        self.assertFalse(outcomes[0]['success'])
+
+    def test_explicit_profile_overrides_domains_and_task_type(self):
+        self.state = entry.pipeline_step(None, 'start', dict(
+            classification=dict(tier='T2', risk='MEDIUM', capabilities=[]),
+            text='fix the bug in this Python code', main_host='claude-code',
+            learning_database=str(self.learning_db),
+            profile=dict(domains=['LEGAL_COMPLIANCE'], task_type='drafting')), self.repo)
+        self.addCleanup(shutil.rmtree, self.state['run_dir'])
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.step('review')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        role = next(o for o in outcomes if o['role'] == 'executor')
+        self.assertEqual(role['domain'], 'LEGAL_COMPLIANCE')
+        self.assertEqual(role['task_type'], 'drafting')
+
+    def test_matrix_reports_domain_from_pipeline_outcome(self):
+        self.state = self.begin('T2', text='fix the bug in this Python code')
+        self.step('plan')
+        with patch.object(entry.open_executor, 'run', side_effect=self.worker):
+            self.step('execute')
+        self.checks()
+        self.step('review')
+        outcomes = entry.learning.list_outcomes(self.learning_db)
+        executor = next(o for o in outcomes if o['role'] == 'executor')
+        matrix = entry.learning.matrix(str(self.learning_db))
+        self.assertIn('ENGINEERING', matrix['models'][executor['model']]['domains'])
+
+    def test_premium_executor_row_counts_as_work_in_kpi(self):
+        # Open fails, premium rescues the same bundle: the bundle's final attempt is
+        # the premium one, so the task is verified but not a first pass.
+        common = dict(tier='T2', risk='MEDIUM', task_id='t1', project=str(self.repo),
+                      verification_status='verified', bundle='s1')
+        entry.learning.record_outcome(str(self.learning_db), dict(
+            common, runtime='claude-code', provider='vercel', model='vercel/deepseek/deepseek-v4-pro-0813',
+            role='executor', worker_exit=0, test_pass=False, retry=0, error='deterministic checks failed',
+            failure_type='test_failure'))
+        entry.learning.record_outcome(str(self.learning_db), dict(
+            common, runtime='codex-cli', provider='openai', model='openai/gpt-6-astra',
+            role='premium_executor', worker_exit=0, test_pass=True, retry=0, escalated=True))
+        kpi = entry.learning.kpi(str(self.learning_db))
+        self.assertEqual(kpi['verified_success_rate'], 1.0)
+        self.assertEqual(kpi['first_pass_success_rate'], 0.0)
+
+    def test_invalid_explicit_profile_fails_before_the_run_exists(self):
+        for profile in (dict(domains=['NOT_A_DOMAIN']), dict(domains=['ENGINEERING'], task_type='x' * 41),
+                        dict(domains=['ENGINEERING'], capabilities={'coding': 2})):
+            with patch.object(entry.tempfile, 'mkdtemp') as mkdtemp, self.assertRaises(ValueError):
+                entry.pipeline_step(None, 'start', dict(
+                    classification=dict(tier='T2', risk='MEDIUM', capabilities=[]),
+                    text='fix the bug in this Python code', main_host='claude-code',
+                    learning_database=str(self.learning_db), profile=profile), self.repo)
+            mkdtemp.assert_not_called()
+
+    def test_keyword_profile_failure_leaves_rows_without_domain(self):
+        with patch.object(entry.orchestrate, 'build_profile', side_effect=RuntimeError('boom')):
+            self.state = self.begin('T2', text='fix the bug in this Python code')
+        self.assertIsNone(self.state['adaptive_profile'])
+
 
 if __name__ == '__main__':
     unittest.main()

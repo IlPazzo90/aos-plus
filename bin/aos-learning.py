@@ -1108,8 +1108,9 @@ def kpi(database, project=None, since=None):
     for task_rows in tasks.values():
         sorted_rows = sorted(task_rows, key=lambda r: (r["created_at"], r["id"]))
         # Work rows produce the deliverable; planner and reviewer rows are roles
-        # around it, never an attempt and never the task's outcome on their own.
-        work = [r for r in sorted_rows if r["role"] in (None, "executor", "fixer")]
+        # around it, never an attempt and never the task's outcome on their own. A
+        # premium_executor row is a bundle's escalated final attempt, still work.
+        work = [r for r in sorted_rows if r["role"] in (None, "executor", "fixer", "premium_executor")]
         # Attempts are grouped by bundle: a bundle's later row after a failure is a
         # retry, another bundle's row is an independent deliverable. Rows without a
         # bundle id belong to one implicit bundle (the ledger cannot tell them apart).

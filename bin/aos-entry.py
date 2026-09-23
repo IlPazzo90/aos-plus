@@ -32,6 +32,7 @@ open_executor = module('aos-open-executor')
 open_executor.delegate = delegate
 operations = module('aos-operations')
 learning = module('aos-learning')
+orchestrate = module('aos-orchestrate')
 POLICY = ROOT / 'config/open-models.json'
 DOMAINS = ('software', 'research', 'writing', 'business', 'general')
 CAPABILITIES = ('web', 'files', 'shell', 'mcp', 'codex_app', 'codex_runtime', 'claude_runtime')
@@ -528,9 +529,11 @@ def _budget(state, model, premium=False):
     state['pending_reservation'] = result.get('reservation_id')
 
 
-def _record_event(state, event, test_pass, error=None, verification_status='verified'):
+def _record_event(state, event, test_pass, error=None, verification_status='verified',
+                  failure_type=None, review_findings=None):
     if not state.get('learning_enabled', True) or event.get('_outcome_recorded'):
         return
+    profile = state.get('adaptive_profile') or {}
     learning.record_outcome(state['learning_database'], dict(
         reservation_id=event.get('reservation_id'),
         runtime=event.get('runtime'), provider=event.get('provider'), model=event.get('model'),
@@ -541,8 +544,34 @@ def _record_event(state, event, test_pass, error=None, verification_status='veri
         input_tokens=(event.get('usage') or {}).get('input_tokens'), output_tokens=(event.get('usage') or {}).get('output_tokens'),
         task_id=state['task_id'], project=state['project'], retry=event.get('retry'),
         main_host=event.get('main_host'), uncertainty=event.get('uncertainty'),
-        verification_status=verification_status))
+        verification_status=verification_status,
+        domain=profile.get('domain'), task_type=profile.get('task_type'),
+        capabilities=profile.get('capabilities'),
+        bundle=event.get('bundle'), escalated=event.get('escalated'),
+        failure_type=failure_type, review_findings=review_findings))
     event['_outcome_recorded'] = True
+
+
+def _adaptive_profile(profile):
+    """Shrink an orchestrate profile to the ledger fields, validated as the ledger will.
+
+    A value the ledger would refuse must fail here, at start, not at the first
+    recorded outcome halfway through the pipeline.
+    """
+    domains = profile.get('domains')
+    if (not isinstance(domains, list) or not domains
+            or any(not isinstance(d, str) or d not in learning.DOMAINS for d in domains)):
+        raise ValueError('profile domains must be a nonempty list of ' + ', '.join(learning.DOMAINS))
+    task_type = profile.get('task_type')
+    if task_type is not None and (not isinstance(task_type, str) or not task_type.strip() or len(task_type) > 40):
+        raise ValueError('profile task_type must be a nonempty string of at most 40 characters')
+    capabilities = {}
+    for name, value in (profile.get('capabilities') or {}).items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+            raise ValueError('profile capability must be a number in [0,1]: ' + str(name))
+        if value > 0:
+            capabilities[name] = float(value)
+    return {'domain': '+'.join(dict.fromkeys(domains)), 'task_type': task_type, 'capabilities': capabilities}
 
 
 def _lesson(state, checks, component, action):
@@ -613,6 +642,19 @@ def role_usage(state, role, backend, result):
     runtime = result.get('runtime') or {'codex': 'codex-cli', 'claude': 'claude-code'}.get(backend)
     cost_class = catalog.get('cost_class')
     _observe_context(state, role, usage)
+    # The bundle id pins this role call to an independent deliverable: the executor
+    # (and an escalated premium attempt against its work) belongs to an index-based
+    # subtask label (planner subtask ids are free text and may exceed 40 chars), the
+    # fixer to 'fix', while planner and reviewer cover the whole task and carry None.
+    if role in ('premium_executor',) and state.get('role') == 'fixer':
+        bundle = 'fix'
+    elif role in ('executor', 'premium_executor') and state.get('role') == 'executor':
+        bundle = 's%d' % (state['subtask'] + 1)
+    elif role == 'fixer':
+        bundle = 'fix'
+    else:
+        bundle = None
+    escalated = role == 'premium_executor'
     state.setdefault('role_events', []).append(dict(role=role, model=model, provider=provider, runtime=runtime,
                                                     reservation_id=state.pop('pending_reservation', None),
                                                     runtime_model_pair=result.get('runtime_model_pair'),
@@ -623,7 +665,8 @@ def role_usage(state, role, backend, result):
                                                     main_host=state.get('main_host'), tier=state.get('tier'),
                                                     risk=state.get('risk'),
                                                     uncertainty=(state.get('classification') or {}).get('uncertainty'),
-                                                    retry=state.get('failures', 0)))
+                                                    retry=state.get('failures', 0),
+                                                    bundle=bundle, escalated=escalated))
 
 
 def _finalize_execution_outcomes(state):
@@ -631,7 +674,10 @@ def _finalize_execution_outcomes(state):
         return
     for event in state.get('role_events', []):
         if event.get('role') in ('executor', 'fixer', 'premium_executor'):
-            _record_event(state, event, True)
+            # Review findings are against the executor's work: only the executor row
+            # carries their count; fixer and premium rows earn no finding credit.
+            _record_event(state, event, True,
+                          review_findings=state.get('findings_confirmed', 0) if event.get('role') == 'executor' else 0)
 
 
 def _record_role_observation(state):
@@ -674,6 +720,20 @@ def pipeline_step(state, action, data, directory):
         t1 = info['tier'] in ('T0', 'T1')
         if not decision.get('pipeline') and not (t1 and decision.get('executor') == 'open' and bounded_plan):
             raise ValueError('classification is not eligible for the role pipeline')
+        # One adaptive profile per task, built before any run directory exists. An
+        # explicit caller profile is input: invalid, it fails the start. The keyword
+        # guess alone never does; without it the rows carry no domain.
+        if data.get('profile') is not None:
+            adaptive_profile = _adaptive_profile(orchestrate.build_profile(
+                text=data['text'], profile=data['profile'], adaptive=orchestrate.load_registry()['adaptive'],
+                tier=info['tier'], risk=info['risk']))
+        else:
+            try:
+                adaptive_profile = _adaptive_profile(orchestrate.build_profile(
+                    text=data['text'], adaptive=orchestrate.load_registry()['adaptive'],
+                    tier=info['tier'], risk=info['risk']))
+            except Exception:
+                adaptive_profile = None
         selected_primary = decision.get('model') or config.open_primary
         selected_fallback = config.open_fallback if primary_available else config.open_mid
         selected_mid = config.open_mid if primary_available else None
@@ -689,6 +749,7 @@ def pipeline_step(state, action, data, directory):
                      task_id='',
                      context_events=[], routing_advice=routing_advice)
         state['task_id'] = Path(state['run_dir']).name
+        state['adaptive_profile'] = adaptive_profile
         if t1 and bounded_plan:
             state['plan'] = pipeline.validate_plan(bounded_plan)
             state['stage'] = 'execute'
@@ -738,8 +799,10 @@ def pipeline_step(state, action, data, directory):
         role_usage(state, state['role'], 'open', result)
         ok = result['exit_code'] == 0 and not result.get('error')
         if not ok:
+            failure_type = 'timeout' if result.get('error') == 'timeout' else 'implementation_failure'
             _record_event(state, state['role_events'][-1], False,
-                          result.get('error') or 'worker exit ' + str(result['exit_code']))
+                          result.get('error') or 'worker exit ' + str(result['exit_code']),
+                          failure_type=failure_type)
         state = pipeline.advance(state, 'executed', dict(ok=ok, evidence=result.get('error') or 'worker exit ' + str(result['exit_code'])))
         state['checks'] = []
         state['last_worker'] = {k: result.get(k) for k in ('exit_code','model','runtime','provider','executor_model','runtime_model_pair','error','usage','diff_stat')}
@@ -800,9 +863,15 @@ def pipeline_step(state, action, data, directory):
             raise ValueError('missing current deterministic checks: ' + ', '.join(sorted(required - checks.keys())))
         ok = all(checks[k]['exit_code'] == 0 for k in required)
         if not ok:
+            # The failed checks belong to the attempt being verified, not to every
+            # unrecorded executor event. Only the current bundle's events are failed;
+            # an earlier subtask that already passed its own checks stays unrecorded
+            # until finalize rather than inheriting this failure. Compute before
+            # pipeline.advance mutates role/subtask.
+            bundle = 'fix' if state['role'] == 'fixer' else 's%d' % (state['subtask'] + 1)
             for event in state.get('role_events', []):
-                if event.get('role') in ('executor', 'fixer', 'premium_executor'):
-                    _record_event(state, event, False, 'deterministic checks failed')
+                if event.get('role') in ('executor', 'fixer', 'premium_executor') and event.get('bundle') == bundle:
+                    _record_event(state, event, False, 'deterministic checks failed', failure_type='test_failure')
         if not ok:
             _lesson(state, [checks[k] for k in required if checks[k]['exit_code'] != 0], 'deterministic-checks',
                     'preserve failing host checks and investigate the project-scoped failure')

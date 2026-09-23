@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "3.0.1"
+  version: "3.0.2"
 description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
