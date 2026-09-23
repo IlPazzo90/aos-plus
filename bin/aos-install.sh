@@ -57,6 +57,7 @@ references/quality-gates.md
 references/output-contract.md
 references/token-efficiency.md
 references/design.md
+references/adaptive.md
 bin/aos-profile.sh
 bin/profile-python.py
 bin/aos-doctor.py
@@ -64,6 +65,8 @@ bin/aos-measure.py
 bin/aos-bench.py
 bin/aos-context.py
 bin/aos-learning.py
+bin/aos-orchestrate.py
+bin/aos-prompt-hook.py
 bin/aos-operations.py
 bin/aos-delegate.py
 bin/aos-entry.py
@@ -79,10 +82,13 @@ catalog/core.json
 catalog/index.json
 catalog/skill-library/SKILL.md
 config/open-models.json
+config/adaptive.json
 evals/scenarios.json
 tests/test_bench.py
 tests/test_context.py
 tests/test_learning.py
+tests/test_orchestrate.py
+tests/test_prompt_hook.py
 tests/test_operations.py
 tests/test_hook_protocol.py
 tests/test_delegate.py

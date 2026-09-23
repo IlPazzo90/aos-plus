@@ -68,8 +68,14 @@ class OpenExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Not an open harness'):
             executor.resolve(shipped, runtime='codex-cli', model='vercel/deepseek/deepseek-v4-pro-0813')
         for model, entry in shipped['model_catalog'].items():
-            if entry['cost_class'] == 'CHEAP':
+            if entry.get('invocation') == 'open_worker':
                 self.assertEqual(entry['compatible_runtimes'], ['claude-code'], model)
+        # A host subagent or premium session shares the runtime name, never the harness.
+        with self.assertRaisesRegex(ValueError, 'out of the pool'):
+            executor.resolve(shipped, runtime='claude-code', model='vercel/alibaba/qwen3-coder-next')
+        for model in ('anthropic/haiku', 'anthropic/sonnet', 'anthropic/fable'):
+            with self.assertRaisesRegex(ValueError, 'not an open worker model'):
+                executor.resolve(shipped, runtime='claude-code', model=model)
         command = executor.codex_command(Path('/tmp/repo'), 'test/winner', 'task', 'https://example.invalid/v1')
         self.assertNotIn('shell_tool', command)
         self.assertIn('--ignore-user-config', command)

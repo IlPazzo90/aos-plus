@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import time as time_module
 import unittest
+from unittest import mock
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "bin/aos-learning.py"
 
@@ -837,6 +838,592 @@ class ReservationTests(unittest.TestCase):
                                   stdout=subprocess.PIPE, text=True) for name in ("s1", "s2")]
         outputs = [p.communicate(timeout=60)[0].strip() for p in procs]
         self.assertEqual(sorted(o.split()[0] for o in outputs), ["ADMITTED", "REFUSED"], outputs)
+
+
+class ContinuousLearningTests(unittest.TestCase):
+    """Outcome fields, performance matrix, KPI and recommend stages (Bundle B)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db = pathlib.Path(self.temp.name) / "learn.db"
+
+    def outcome(self, **overrides):
+        event = {
+            "runtime": "codex",
+            "provider": "openai",
+            "model": "model-x",
+            "role": "executor",
+            "tier": "T2",
+            "risk": "low",
+            "worker_exit": 0,
+            "test_pass": True,
+            "task_id": "t-1",
+            "project": "proj-a",
+            # The matrix and recommend count verified outcomes only.
+            "verification_status": "verified",
+        }
+        event.update(overrides)
+        return event
+
+    def add_outcome(self, created_at=None, **overrides):
+        """Record an outcome and, if given, pin its created_at for determinism."""
+        result = L.record_outcome(self.db, self.outcome(**overrides))
+        if created_at is not None:
+            conn = sqlite3.connect(str(self.db))
+            try:
+                conn.execute("UPDATE outcomes SET created_at = ? WHERE id = ?",
+                             (created_at, result["outcome_id"]))
+                conn.commit()
+            finally:
+                conn.close()
+        return result["outcome_id"]
+
+    # --- schema / record_outcome ---
+
+    def test_backward_compatible_migration_adds_new_columns(self):
+        legacy = pathlib.Path(self.temp.name) / "legacy.db"
+        conn = sqlite3.connect(str(legacy))
+        conn.execute("CREATE TABLE outcomes (id INTEGER PRIMARY KEY, runtime TEXT, provider TEXT,"
+                     " model TEXT, role TEXT, tier TEXT, risk TEXT, success INTEGER NOT NULL,"
+                     " worker_exit INTEGER, test_pass INTEGER, error TEXT, cost_class TEXT,"
+                     " cost REAL, input_tokens INTEGER, output_tokens INTEGER, task_id TEXT,"
+                     " project TEXT, created_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO outcomes VALUES (1, 'r', 'p', 'm', 'executor', 'T1', 'LOW',"
+                     " 1, 0, 1, NULL, NULL, 1, 1, 1, 't', 'proj', '2026-01-01T00:00:00Z')")
+        conn.commit()
+        conn.close()
+        # No error means migration ran; new columns are present and nullable.
+        row = L.list_outcomes(legacy)[0]
+        self.assertEqual(row["model"], "m")
+        self.assertIsNone(row["domain"])
+        self.assertIsNone(row["failure_type"])
+        for col in ("escalated", "review_findings", "compactions",
+                    "compaction_recovered", "routing_appropriate"):
+            self.assertIsNone(row[col], col)
+
+    def test_record_outcome_stores_all_new_fields(self):
+        oid = L.record_outcome(self.db, self.outcome(
+            domain="ENGINEERING+RESEARCH",
+            task_type="bugfix",
+            capabilities={"coding": 0.9, "testing": 0.4},
+            failure_type="test_failure",
+            escalated=True,
+            review_findings=3,
+            user_acceptance="rejected",
+            duration_s=12.5,
+            exploration=True,
+            premium_planning_tokens=10,
+            premium_execution_tokens=20,
+            premium_review_tokens=30,
+            open_tokens=40,
+            compactions=2,
+            compaction_recovered=1,
+            routing_appropriate=False,
+        ))
+        self.assertIsInstance(oid["outcome_id"], int)
+        row = L.list_outcomes(self.db)[0]
+        self.assertEqual(row["domain"], "ENGINEERING+RESEARCH")
+        self.assertEqual(row["task_type"], "bugfix")
+        self.assertEqual(json.loads(row["capabilities"]), {"coding": 0.9, "testing": 0.4})
+        self.assertEqual(row["failure_type"], "test_failure")
+        self.assertEqual(row["escalated"], 1)
+        self.assertEqual(row["review_findings"], 3)
+        self.assertEqual(row["user_acceptance"], "rejected")
+        self.assertEqual(row["duration_s"], 12.5)
+        self.assertEqual(row["exploration"], 1)
+        self.assertEqual(row["premium_planning_tokens"], 10)
+        self.assertEqual(row["premium_execution_tokens"], 20)
+        self.assertEqual(row["premium_review_tokens"], 30)
+        self.assertEqual(row["open_tokens"], 40)
+        self.assertEqual(row["compactions"], 2)
+        self.assertEqual(row["compaction_recovered"], 1)
+        self.assertEqual(row["routing_appropriate"], 0)
+        # failure_type forces success off.
+        self.assertFalse(row["success"])
+
+    def test_capabilities_stored_sorted(self):
+        L.record_outcome(self.db, self.outcome(capabilities={"z": 0.5, "a": 0.9}))
+        raw = L.list_outcomes(self.db)[0]["capabilities"]
+        self.assertEqual(raw, json.dumps({"a": 0.9, "z": 0.5}, sort_keys=True))
+
+    def test_new_field_validation_errors(self):
+        cases = [
+            {"domain": "MAGIC"},                       # not a known domain
+            {"domain": "ENGINEERING+MAGIC"},           # one bad among good
+            {"task_type": "x" * 41},                   # > 40 chars
+            {"capabilities": "not-a-dict"},
+            {"capabilities": {"coding": 1.5}},         # out of [0,1]
+            {"capabilities": {"coding": float("nan")}},
+            {"capabilities": {"coding": True}},        # bool is not a float score
+            {"failure_type": "not_a_failure_type"},
+            {"escalated": "yes"},
+            {"exploration": "yes"},
+            {"routing_appropriate": "yes"},
+            {"review_findings": -1},
+            {"review_findings": True},
+            {"user_acceptance": "maybe"},
+            {"duration_s": -1},
+            {"duration_s": float("inf")},
+            {"duration_s": True},
+            {"premium_planning_tokens": -2},
+            {"premium_planning_tokens": True},
+            {"compactions": -1},
+            {"compaction_recovered": True},
+        ]
+        for override in cases:
+            with self.assertRaises(ValueError, msg=override):
+                L.record_outcome(self.db, self.outcome(**override))
+
+    # --- attribution / score ---
+
+    def test_context_failure_does_not_lower_model_score(self):
+        self.add_outcome(created_at="2026-09-23T00:00:00Z",
+                         model="m", task_id="t1", worker_exit=0, test_pass=True)
+        self.add_outcome(created_at="2026-09-23T00:00:00Z",
+                         model="m", task_id="t2", worker_exit=1, test_pass=False,
+                         failure_type="context_failure")
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z")
+        entry = result["models"]["m"]
+        # The aos-attributed failure never counts for/against the score.
+        self.assertEqual(entry["overall"]["sample_size"], 1)
+        self.assertAlmostEqual(entry["overall"]["score"], 1.0)
+        # ...but it is still tallied in failure_types.
+        self.assertEqual(entry["failure_types"], {"context_failure": 1})
+
+    def test_rejected_user_acceptance_counts_as_failure(self):
+        self.add_outcome(created_at="2026-09-23T00:00:00Z",
+                         worker_exit=0, test_pass=True, user_acceptance="rejected")
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z")
+        entry = result["models"]["model-x"]
+        self.assertEqual(entry["overall"]["sample_size"], 1)
+        self.assertAlmostEqual(entry["overall"]["score"], 0.0)
+
+    def test_decay_old_failure_weighs_less_than_recent_success(self):
+        self.add_outcome(created_at="2026-01-01T00:00:00Z", worker_exit=1, test_pass=False)
+        self.add_outcome(created_at="2026-09-23T00:00:00Z", worker_exit=0, test_pass=True, task_id="t2")
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z")
+        entry = result["models"]["model-x"]
+        self.assertEqual(entry["overall"]["sample_size"], 2)
+        self.assertGreater(entry["overall"]["score"], 0.9)
+
+    def test_confidence_grows_with_samples(self):
+        self.add_outcome(created_at="2026-09-23T00:00:00Z", model="one", worker_exit=0, test_pass=True)
+        small = L.matrix(self.db, now="2026-09-23T00:00:00Z")["models"]["one"]["overall"]["confidence"]
+        for i in range(30):
+            self.add_outcome(created_at="2026-09-23T00:00:00Z", model="many",
+                             task_id="t-%d" % i, worker_exit=0, test_pass=True)
+        large = L.matrix(self.db, now="2026-09-23T00:00:00Z")["models"]["many"]["overall"]["confidence"]
+        self.assertGreater(large, small)
+
+    def test_one_high_score_has_lower_confidence_than_thirty_lower_scores(self):
+        self.add_outcome(created_at="2026-09-23T00:00:00Z", model="perfect", worker_exit=0, test_pass=True)
+        # 30 samples, 28 success + 2 failures -> score 0.9333, confidence 30/35.
+        for i in range(28):
+            self.add_outcome(created_at="2026-09-23T00:00:00Z", model="bulk",
+                             task_id="s%d" % i, worker_exit=0, test_pass=True)
+        for i in range(2):
+            self.add_outcome(created_at="2026-09-23T00:00:00Z", model="bulk",
+                             task_id="f%d" % i, worker_exit=1, test_pass=False)
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z")
+        perfect = result["models"]["perfect"]["overall"]
+        bulk = result["models"]["bulk"]["overall"]
+        self.assertGreater(perfect["score"], bulk["score"])
+        self.assertLess(perfect["confidence"], bulk["confidence"])
+
+    def test_drift_to_watch_not_demote(self):
+        # 10 historical mostly-failing tries (rate 0.2), then 10 recent all-fail
+        # (rate 0.0). With recent_window=10 the last 10 are "recent" and the
+        # first 10 "historical". A 0.15 delta marks drift; a single bad streak
+        # must yield WATCH, never DEMOTE (even though the unweighted score is
+        # below demote_below).
+        for i in range(2):
+            self.add_outcome(created_at="2026-09-01T00:00:00Z", worker_exit=0, test_pass=True, task_id="h%d" % i)
+        for i in range(8):
+            self.add_outcome(created_at="2026-09-01T00:00:00Z", worker_exit=1, test_pass=False, task_id="hf%d" % i)
+        for i in range(10):
+            self.add_outcome(created_at="2026-09-23T00:00:00Z", worker_exit=1, test_pass=False, task_id="r%d" % i)
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z",
+                          min_observations=10, drift_delta=0.15, recent_window=10)
+        entry = result["models"]["model-x"]
+        self.assertTrue(entry["drift"])
+        self.assertEqual(entry["status"], "WATCH")
+
+    def test_promote_and_demote_thresholds(self):
+        for i in range(30):
+            self.add_outcome(created_at="2026-09-23T00:00:00Z", model="good",
+                             task_id="g%d" % i, worker_exit=0, test_pass=True)
+        for i in range(30):
+            self.add_outcome(created_at="2026-09-23T00:00:00Z", model="bad",
+                             task_id="b%d" % i, worker_exit=1, test_pass=False)
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z")
+        self.assertEqual(result["models"]["good"]["status"], "PROMOTE")
+        self.assertEqual(result["models"]["bad"]["status"], "DEMOTE")
+
+    def test_new_model_status_below_three_samples(self):
+        self.add_outcome(created_at="2026-09-23T00:00:00Z", worker_exit=0, test_pass=True)
+        result = L.matrix(self.db, now="2026-09-23T00:00:00Z")
+        self.assertEqual(result["models"]["model-x"]["status"], "NEW")
+
+    # --- kpi ---
+
+    def test_kpi_nulls_when_no_data(self):
+        result = L.kpi(self.db)
+        self.assertEqual(result["tasks"], 0)
+        self.assertEqual(result["attempts"], 0)
+        for key in ("first_pass_success_rate", "verified_success_rate", "retry_rate",
+                    "escalation_rate", "review_findings_rate", "cost_per_verified_task",
+                    "tokens_per_verified_task", "premium_dependency_ratio",
+                    "worker_success_rate", "compaction_rate", "compaction_recovery_rate",
+                    "routing_accuracy", "user_acceptance"):
+            self.assertIsNone(result[key], key)
+
+    def test_kpi_exact_values_on_crafted_dataset(self):
+        # Task t1: single verified success.
+        self.add_outcome(task_id="t1", worker_exit=0, test_pass=True,
+                         verification_status="verified", cost=10.0, cost_class="CHEAP",
+                         premium_planning_tokens=60, open_tokens=40,
+                         routing_appropriate=1, user_acceptance="accepted")
+        # Task t2: failed first attempt then a verified retry.
+        self.add_outcome(task_id="t2", worker_exit=1, test_pass=False, cost=5.0,
+                         cost_class="CHEAP")
+        self.add_outcome(task_id="t2", worker_exit=0, test_pass=True, retry=1,
+                         verification_status="verified", cost=15.0, cost_class="CHEAP",
+                         premium_execution_tokens=20, open_tokens=80,
+                         routing_appropriate=0, user_acceptance="rejected")
+        result = L.kpi(self.db)
+        self.assertEqual(result["tasks"], 2)
+        self.assertEqual(result["attempts"], 3)
+        self.assertAlmostEqual(result["first_pass_success_rate"], 0.5)
+        self.assertAlmostEqual(result["verified_success_rate"], 1.0)
+        self.assertAlmostEqual(result["retry_rate"], 0.5)
+        # The failed t2 attempt (5.0) is part of what the verified work cost: (10 + 5 + 15) / 2.
+        self.assertAlmostEqual(result["cost_per_verified_task"], 15.0)
+        self.assertAlmostEqual(result["tokens_per_verified_task"], 100.0)
+        self.assertAlmostEqual(result["premium_dependency_ratio"], 0.4)
+        self.assertAlmostEqual(result["premium_leverage"]["planning"], 30.0)
+        self.assertAlmostEqual(result["premium_leverage"]["execution"], 10.0)
+        self.assertAlmostEqual(result["premium_leverage"]["review"], 0.0)
+        self.assertAlmostEqual(result["worker_success_rate"], 2 / 3)
+        self.assertAlmostEqual(result["routing_accuracy"], 0.5)
+        self.assertAlmostEqual(result["user_acceptance"], 0.5)
+
+    def test_premium_dependency_ratio(self):
+        # No open tokens at all: ratio = premium / premium -> 1.0.
+        self.add_outcome(task_id="t1", worker_exit=0, test_pass=True,
+                         verification_status="verified", premium_planning_tokens=50)
+        result = L.kpi(self.db)
+        self.assertAlmostEqual(result["premium_dependency_ratio"], 1.0)
+        # No tokens at all -> null, never division by zero.
+        empty = L.kpi(pathlib.Path(self.temp.name) / "empty.db")
+        self.assertIsNone(empty["premium_dependency_ratio"])
+
+    # --- recommend ---
+
+    def _rec_items(self, **kwargs):
+        return L.recommend(self.db, **kwargs)["items"]
+
+    def test_recommend_stages(self):
+        # 1 failure -> observation.
+        self.add_outcome(model="obs", domain="ENGINEERING", task_id="o1",
+                         worker_exit=1, test_pass=False)
+        # 3 of 3 -> hypothesis.
+        for i in range(3):
+            self.add_outcome(model="hyp", domain="ENGINEERING", task_id="h%d" % i,
+                             worker_exit=1, test_pass=False)
+        # 5 of 6 -> routing_recommendation.
+        for i in range(5):
+            self.add_outcome(model="route", domain="LEGAL_COMPLIANCE", task_id="r%d" % i,
+                             worker_exit=1, test_pass=False)
+        self.add_outcome(model="route", domain="LEGAL_COMPLIANCE", task_id="r-ok",
+                         worker_exit=0, test_pass=True)
+        # 2 of 6 -> omitted (under threshold with >= 2 attempts).
+        for i in range(2):
+            self.add_outcome(model="omit", domain="RESEARCH", task_id="m%d" % i,
+                             worker_exit=1, test_pass=False)
+        for i in range(4):
+            self.add_outcome(model="omit", domain="RESEARCH", task_id="m-ok%d" % i,
+                             worker_exit=0, test_pass=True)
+
+        result = L.recommend(self.db)
+        self.assertFalse(result["applied"])
+
+        by_stage = {}
+        for item in result["items"]:
+            by_stage.setdefault(item["stage"], []).append(item)
+
+        obs = [i for i in by_stage.get("observation", []) if i["model"] == "obs"]
+        self.assertEqual(len(obs), 1)
+        self.assertEqual(obs[0]["attempts"], 1)
+        self.assertEqual(obs[0]["failures"], 1)
+
+        hyp = [i for i in by_stage.get("hypothesis", []) if i["model"] == "hyp"]
+        self.assertEqual(len(hyp), 1)
+        self.assertEqual(hyp[0]["stage"], "hypothesis")
+        self.assertEqual((hyp[0]["attempts"], hyp[0]["failures"]), (3, 3))
+
+        route = [i for i in by_stage.get("routing_recommendation", []) if i["model"] == "route"]
+        self.assertEqual(len(route), 1)
+        self.assertEqual((route[0]["attempts"], route[0]["failures"]), (6, 5))
+        self.assertEqual(route[0]["recommendation"], "deprioritize route for LEGAL_COMPLIANCE")
+
+        # A single observation must never be a routing_recommendation.
+        self.assertTrue(all(i["stage"] != "routing_recommendation" or i["attempts"] >= 5
+                            for i in result["items"]))
+        # The omitted group produced nothing.
+        self.assertFalse(any(i["model"] == "omit" for i in result["items"]))
+
+
+class LearningCliTests(unittest.TestCase):
+    """CLI subcommands print JSON and exit 0."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db = str(pathlib.Path(self.temp.name) / "learn.db")
+        self.event_file = pathlib.Path(self.temp.name) / "event.json"
+
+    def run_cli(self, *argv):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = L.main(list(argv))
+        return code, buf.getvalue()
+
+    def test_record_outcome_cli_from_file_and_stdin(self):
+        import contextlib
+        import io
+        event = {"runtime": "codex", "provider": "openai", "model": "m",
+                 "role": "executor", "tier": "T2", "risk": "low",
+                 "worker_exit": 0, "test_pass": True, "task_id": "t", "project": "p",
+                 "domain": "ENGINEERING", "task_type": "fix"}
+        self.event_file.write_text(json.dumps(event))
+        code, out = self.run_cli("record-outcome", "--database", self.db, "--event", str(self.event_file))
+        self.assertEqual(code, 0)
+        self.assertIn("outcome_id", json.loads(out))
+        # stdin path (feed a controllable stdin stream).
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(event))):
+            code, out = self.run_cli("record-outcome", "--database", self.db, "--event", "-")
+        self.assertEqual(code, 0)
+        self.assertIn("outcome_id", json.loads(out))
+
+    def test_matrix_model_status_kpi_recommend_cli_exit_zero(self):
+        self.event_file.write_text(json.dumps({
+            "runtime": "codex", "provider": "openai", "model": "m", "role": "executor",
+            "tier": "T2", "risk": "low", "worker_exit": 0, "test_pass": True,
+            "task_id": "t", "project": "p"}))
+        self.run_cli("record-outcome", "--database", self.db, "--event", str(self.event_file))
+        for argv in (("matrix",), ("model-status",), ("kpi",), ("recommend",)):
+            code, out = self.run_cli(argv[0], "--database", self.db)
+            self.assertEqual(code, 0, argv)
+            self.assertIsInstance(json.loads(out), dict, argv)
+
+    def test_matrix_cli_writes_output_file(self):
+        self.run_cli("matrix", "--database", self.db, "--now", "2026-09-23T00:00:00Z",
+                     "--output", str(pathlib.Path(self.temp.name) / "matrix.json"))
+        data = json.loads((pathlib.Path(self.temp.name) / "matrix.json").read_text())
+        self.assertIn("models", data)
+
+
+class VerifiedOnlyTests(unittest.TestCase):
+    """Round 1 of the 3.0 review: unverified outcomes promoted a model."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def record(self, n, status, success=True):
+        for i in range(n):
+            L.record_outcome(self.db, {"model": "m", "role": "executor", "worker_exit": 0 if success else 1,
+                                       "test_pass": success, "task_id": "t%d" % i, "domain": "GENERAL",
+                                       "task_type": "feature", "verification_status": status})
+
+    def test_unverified_outcomes_never_move_a_model(self):
+        self.record(25, "not_scored")
+        self.record(25, "pending", success=False)
+        self.assertNotIn("m", L.matrix(self.db)["models"])
+        self.assertEqual(L.recommend(self.db)["items"], [])
+
+    def test_the_matrix_reports_task_type_performance(self):
+        self.record(4, "verified")
+        entry = L.matrix(self.db)["models"]["m"]
+        self.assertEqual(entry["task_types"]["feature"]["sample_size"], 4)
+
+    def test_taxonomy_and_thresholds_come_from_the_router_config(self):
+        adaptive = json.loads((SCRIPT.parents[1] / "config/adaptive.json").read_text())
+        self.assertEqual(set(L.FAILURE_TYPES), set(adaptive["failure_types"]))
+        self.assertEqual(set(L.DOMAINS), set(adaptive["domains"]))
+        self.assertEqual(L.LEARNING, adaptive["learning"])
+
+    def test_tokens_per_verified_task_counts_every_class_and_null_without_data(self):
+        L.record_outcome(self.db, {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                                   "task_id": "t", "cost_class": "MID", "verification_status": "verified",
+                                   "input_tokens": 1000, "output_tokens": 500})
+        self.assertEqual(L.kpi(self.db)["tokens_per_verified_task"], 1500)
+        other = self.db + ".empty"
+        L.record_outcome(other, {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                                 "task_id": "t", "verification_status": "verified"})
+        self.assertIsNone(L.kpi(other)["tokens_per_verified_task"])
+
+
+class ReviewRoundTwoLearningTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def record(self, database, **extra):
+        event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                 "task_id": "t", "verification_status": "verified"}
+        event.update(extra)
+        L.record_outcome(database, event)
+
+    def test_retries_escalation_and_findings_lower_the_credit_of_a_success(self):
+        clean, messy = self.db, self.db + ".messy"
+        self.record(clean)
+        self.record(messy, retry=2, escalated=True, review_findings=3)
+        self.assertEqual(L.matrix(clean)["models"]["m"]["overall"]["score"], 1.0)
+        self.assertLess(L.matrix(messy)["models"]["m"]["overall"]["score"], 0.5)
+
+    def test_a_review_row_is_not_a_retry(self):
+        self.record(self.db)
+        self.record(self.db, role="reviewer")
+        self.assertEqual(L.kpi(self.db)["retry_rate"], 0.0)
+        # An attempt after a failed one is a retry (round 3: a second passing bundle is not).
+        self.record(self.db, worker_exit=1, test_pass=False)
+        self.record(self.db)
+        self.assertEqual(L.kpi(self.db)["retry_rate"], 1.0)
+
+
+class ReviewRoundThreeLearningTests(unittest.TestCase):
+    """Round 3: roles, attempts and the task's final outcome are different things."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def record(self, **extra):
+        event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                 "task_id": "t", "verification_status": "verified"}
+        event.update(extra)
+        if extra.get("success") is False:
+            event.pop("success")
+            event.update(worker_exit=1, test_pass=False)
+        L.record_outcome(self.db, event)
+
+    def test_a_successful_plan_does_not_verify_a_failed_execution(self):
+        self.record(role="planner")
+        self.record(success=False)
+        result = L.kpi(self.db)
+        self.assertEqual((result["first_pass_success_rate"], result["verified_success_rate"]), (0.0, 0.0))
+
+    def test_a_failed_final_review_fails_the_task(self):
+        self.record()
+        self.record(role="reviewer", success=False)
+        self.assertEqual(L.kpi(self.db)["verified_success_rate"], 0.0)
+
+    def test_mixed_token_reporting_adds_up_per_row(self):
+        self.record(input_tokens=100, output_tokens=50)
+        self.record(role="reviewer", premium_review_tokens=1000)
+        self.assertEqual(L.kpi(self.db)["tokens_per_verified_task"], 1150)
+
+    def test_two_bundles_passing_first_time_are_not_retries(self):
+        self.record(domain="LEGAL_COMPLIANCE")
+        self.record(domain="ENGINEERING")
+        self.assertEqual(L.kpi(self.db)["retry_rate"], 0.0)
+        self.record(success=False)
+        self.record()
+        self.assertEqual(L.kpi(self.db)["retry_rate"], 1.0)
+
+
+class ReviewRoundFourLearningTests(unittest.TestCase):
+    """Round 4: a bundle id separates deliverables from retries; reviews must be verified."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def record(self, **extra):
+        event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                 "task_id": "t", "verification_status": "verified"}
+        event.update(extra)
+        L.record_outcome(self.db, event)
+
+    def test_a_passing_bundle_does_not_hide_a_failed_one(self):
+        self.record(bundle="requirements", worker_exit=1, test_pass=False)
+        self.record(bundle="implementation")
+        result = L.kpi(self.db)
+        self.assertEqual((result["verified_success_rate"], result["retry_rate"]), (0.0, 0.0))
+
+    def test_a_bundle_fixed_on_retry_verifies_the_task(self):
+        self.record(bundle="requirements", worker_exit=1, test_pass=False)
+        self.record(bundle="requirements", retry=1)
+        self.record(bundle="implementation")
+        result = L.kpi(self.db)
+        self.assertEqual((result["verified_success_rate"], result["retry_rate"],
+                          result["first_pass_success_rate"]), (1.0, 1.0, 0.0))
+
+    def test_an_unverified_review_does_not_verify_the_task(self):
+        for status in ("pending", "not_scored"):
+            with self.subTest(status=status):
+                database = self.db + status
+                for event in ({}, {"role": "reviewer", "verification_status": status}):
+                    L.record_outcome(database, dict({"model": "m", "role": "executor", "worker_exit": 0,
+                                                     "test_pass": True, "task_id": "t",
+                                                     "verification_status": "verified"}, **event))
+                self.assertEqual(L.kpi(database)["verified_success_rate"], 0.0)
+
+    def test_bundle_is_validated(self):
+        for bad in ("", "x" * 41, 7):
+            with self.assertRaises(ValueError):
+                self.record(bundle=bad)
+
+
+class ReviewRoundFiveLearningTests(unittest.TestCase):
+    """Round 5: a review belongs to its bundle; a later bundle does not erase it."""
+
+    def test_a_later_bundle_does_not_hide_a_failed_or_unverified_review(self):
+        for status in ("verified", "pending", "not_scored"):
+            with self.subTest(status=status):
+                directory = tempfile.mkdtemp()
+                self.addCleanup(lambda d=directory: __import__("shutil").rmtree(d, ignore_errors=True))
+                database = str(pathlib.Path(directory) / "ledger.sqlite3")
+                for role, bundle, passed, verification in (("executor", "A", True, "verified"),
+                                                            ("reviewer", "A", False, status),
+                                                            ("executor", "B", True, "verified")):
+                    L.record_outcome(database, {"task_id": "t", "model": "m", "role": role, "bundle": bundle,
+                                                "worker_exit": 0 if passed else 1, "test_pass": passed,
+                                                "verification_status": verification})
+                self.assertEqual(L.kpi(database)["verified_success_rate"], 0.0)
+
+    def test_a_fix_after_the_failed_review_of_its_bundle_can_verify_the_task(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        database = str(pathlib.Path(directory) / "ledger.sqlite3")
+        for role, bundle, passed in (("executor", "A", True), ("reviewer", "A", False),
+                                     ("fixer", "A", True), ("reviewer", "A", True), ("executor", "B", True)):
+            L.record_outcome(database, {"task_id": "t", "model": "m", "role": role, "bundle": bundle,
+                                        "worker_exit": 0 if passed else 1, "test_pass": passed,
+                                        "verification_status": "verified"})
+        self.assertEqual(L.kpi(database)["verified_success_rate"], 1.0)
+
+
+class ReviewRoundSixLearningTests(unittest.TestCase):
+    def test_the_same_task_id_in_two_projects_is_two_tasks(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        database = str(pathlib.Path(directory) / "ledger.sqlite3")
+        for project, ok in (("project-a", False), ("project-b", True)):
+            L.record_outcome(database, {"project": project, "task_id": "fix-login", "bundle": "main",
+                                        "model": "anthropic/sonnet", "role": "executor",
+                                        "worker_exit": 0 if ok else 1, "test_pass": ok,
+                                        "verification_status": "verified"})
+        k = L.kpi(database)
+        self.assertEqual((k["tasks"], k["verified_success_rate"], k["retry_rate"]), (2, 0.5, 0.0))
 
 
 if __name__ == "__main__":

@@ -24,12 +24,63 @@ import json
 import math
 import re
 import sqlite3
+import sys
+from pathlib import Path
 from datetime import datetime, timezone
 
 LESSON_TYPES = ("execution", "domain", "routing", "verification")
 CONFIDENCES = ("low", "medium", "high")
 SCOPES = ("project", "global")
 ACTIONS = ("test", "policy", "routing", "skill", "guardrail", "benchmark", "documentation")
+
+# Outcome classification dimensions and learning thresholds. One source: the
+# router reads the same config/adaptive.json, so a failure type or domain added
+# there is valid here too. The built-in values are the fallback when the file is
+# absent or unreadable (the module stays usable on its own).
+ADAPTIVE_CONFIG = Path(__file__).resolve().parents[1] / "config" / "adaptive.json"
+_BUILTIN_DOMAINS = ("GENERAL", "ENGINEERING", "LEGAL_COMPLIANCE", "BUSINESS_OPERATIONS",
+                    "RESEARCH", "DATA_ANALYTICS")
+_BUILTIN_ATTRIBUTION = {
+    "reasoning_failure": "model", "implementation_failure": "model", "tool_failure": "infra",
+    "context_failure": "aos", "instruction_failure": "model", "hallucination": "model",
+    "test_failure": "model", "timeout": "infra", "routing_failure": "aos",
+    "capability_mismatch": "aos", "review_failure": "model", "security_violation": "model",
+    "architecture_ambiguity": "aos",
+}
+_BUILTIN_LEARNING = {
+    "half_life_days": 30, "prior_strength": 5, "min_observations": 20, "recent_window": 10,
+    "drift_delta": 0.2, "promote_above": 0.85, "demote_below": 0.5, "min_confidence": 0.6,
+    "recommend_min_evidence": 5, "recommend_failure_rate": 0.6,
+    "retry_credit": 0.8, "escalation_credit": 0.7, "finding_credit": 0.95, "max_counted_findings": 5,
+}
+
+
+def _load_adaptive(path=ADAPTIVE_CONFIG):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_ADAPTIVE = _load_adaptive()
+_domains = _ADAPTIVE.get("domains")
+DOMAINS = tuple(_domains) if isinstance(_domains, dict) and _domains else _BUILTIN_DOMAINS
+_failures = _ADAPTIVE.get("failure_types")
+# A failure_type maps to who owns the shortfall. Only "model" failures count
+# for/against a model's score; aos/infra failures still appear in failure_types.
+FAILURE_ATTRIBUTION = ({name: block.get("attribution", "model") for name, block in _failures.items()
+                        if isinstance(block, dict)}
+                       if isinstance(_failures, dict) and _failures else dict(_BUILTIN_ATTRIBUTION))
+FAILURE_TYPES = tuple(FAILURE_ATTRIBUTION)
+_learning = _ADAPTIVE.get("learning") if isinstance(_ADAPTIVE.get("learning"), dict) else {}
+LEARNING = {key: _learning.get(key, value) for key, value in _BUILTIN_LEARNING.items()}
+
+
+def _attribution(failure_type):
+    """Owner of a failure_type: 'model' unless explicitly aos/infra."""
+    return FAILURE_ATTRIBUTION.get(failure_type, "model")
+
 
 _ROLLBACK_RE = re.compile(r"rollback:(\S+)")
 
@@ -58,6 +109,12 @@ _SCHEMA = (
     " cost REAL, input_tokens INTEGER, output_tokens INTEGER,"
     " task_id TEXT, project TEXT, retry INTEGER NOT NULL DEFAULT 0, main_host TEXT, uncertainty TEXT,"
     " verification_status TEXT,"
+    " domain TEXT, task_type TEXT, capabilities TEXT, failure_type TEXT,"
+    " escalated INTEGER, review_findings INTEGER, user_acceptance TEXT,"
+    " duration_s REAL, exploration INTEGER,"
+    " premium_planning_tokens INTEGER, premium_execution_tokens INTEGER,"
+    " premium_review_tokens INTEGER, open_tokens INTEGER,"
+    " compactions INTEGER, compaction_recovered INTEGER, routing_appropriate INTEGER,"
     " created_at TEXT NOT NULL"
     ");"
     "CREATE TABLE IF NOT EXISTS applications ("
@@ -134,6 +191,20 @@ def _ensure_schema(conn):
         conn.execute("ALTER TABLE outcomes ADD COLUMN verification_status TEXT")
     except sqlite3.OperationalError:
         pass
+    # Backward-compatible nullable additions for continuous learning. Older
+    # databases survive unchanged; each ALTER TABLE ADD COLUMN is a no-op when
+    # the column already exists.
+    for column in ("domain TEXT", "task_type TEXT", "capabilities TEXT", "failure_type TEXT",
+                   "escalated INTEGER", "review_findings INTEGER", "user_acceptance TEXT",
+                   "duration_s REAL", "exploration INTEGER",
+                   "premium_planning_tokens INTEGER", "premium_execution_tokens INTEGER",
+                   "premium_review_tokens INTEGER", "open_tokens INTEGER",
+                   "compactions INTEGER", "compaction_recovered INTEGER", "routing_appropriate INTEGER",
+                   "bundle TEXT"):
+        try:
+            conn.execute("ALTER TABLE outcomes ADD COLUMN %s" % column)
+        except sqlite3.OperationalError:
+            pass
 
 
 def _canon_evidence(ids):
@@ -149,6 +220,24 @@ def _as_text(value):
         return str(value)
     except Exception:
         return ""
+
+
+def _normalized_capabilities(capabilities):
+    """Validate a capabilities dict and return it name-sorted.
+
+    Every value must be a finite float in [0, 1]; bools are rejected as they are
+    ints in Python but not a legitimate capability score.
+    """
+    normalized = {}
+    for name, value in capabilities.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("capabilities must be a dict of string names to finite floats in [0,1]")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("capabilities must be a dict name -> finite float in [0,1]")
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("capabilities must be a dict name -> finite float in [0,1]")
+        normalized[name] = float(value)
+    return dict(sorted(normalized.items()))
 
 
 def _snapshot(checks):
@@ -442,25 +531,122 @@ def record_outcome(database, event):
     if verification_status is not None and verification_status not in VERIFICATION_STATUSES:
         raise ValueError("verification_status must be verified, pending, not_scored, or null")
 
+    # --- continuous-learning fields (all nullable, validated when present) ---
+
+    domain = event.get("domain")
+    if domain is not None:
+        if not isinstance(domain, str) or not domain.strip():
+            raise ValueError("domain must be one or more of %s joined by '+'" % ("+".join(DOMAINS),))
+        for part in domain.split("+"):
+            if part not in DOMAINS:
+                raise ValueError("domain must be one or more of %s joined by '+'" % ("+".join(DOMAINS),))
+
+    task_type = event.get("task_type")
+    if task_type is not None:
+        if not isinstance(task_type, str) or len(task_type) > 40:
+            raise ValueError("task_type must be a string of at most 40 characters")
+    # The bundle id from aos-orchestrate.py route (requirements, implementation, ...):
+    # it separates an independent deliverable of the same task from a retry.
+    bundle = event.get("bundle")
+    if bundle is not None and (not isinstance(bundle, str) or not bundle.strip() or len(bundle) > 40):
+        raise ValueError("bundle must be a non-empty string of at most 40 characters")
+
+    capabilities = event.get("capabilities")
+    if capabilities is not None:
+        if not isinstance(capabilities, dict):
+            raise ValueError("capabilities must be a dict name -> finite float in [0,1]")
+        _normalized_capabilities(capabilities)  # raises on non-finite / out-of-range values
+
+    failure_type = event.get("failure_type")
+    if failure_type is not None and failure_type not in FAILURE_TYPES:
+        raise ValueError("failure_type must be one of FAILURE_TYPES")
+
+    escalated = event.get("escalated")
+    if escalated is not None and not isinstance(escalated, int) and not isinstance(escalated, bool):
+        raise ValueError("escalated must be a boolean")
+
+    review_findings = event.get("review_findings")
+    if review_findings is not None:
+        if isinstance(review_findings, bool) or not isinstance(review_findings, int) or review_findings < 0:
+            raise ValueError("review_findings must be a nonnegative integer")
+
+    user_acceptance = event.get("user_acceptance")
+    if user_acceptance is not None and user_acceptance not in ("accepted", "rejected"):
+        raise ValueError("user_acceptance must be accepted or rejected")
+
+    duration_s = event.get("duration_s")
+    if duration_s is not None:
+        if isinstance(duration_s, bool) or not isinstance(duration_s, (int, float)):
+            raise ValueError("duration_s must be a number")
+        if not math.isfinite(duration_s) or duration_s < 0:
+            raise ValueError("duration_s must be finite and nonnegative")
+
+    exploration = event.get("exploration")
+    if exploration is not None and not isinstance(exploration, int) and not isinstance(exploration, bool):
+        raise ValueError("exploration must be a boolean")
+
+    # Token-class and compaction counters: numeric, nonnegative integers.
+    for field_name in ("premium_planning_tokens", "premium_execution_tokens",
+                       "premium_review_tokens", "open_tokens", "compactions",
+                       "compaction_recovered"):
+        value = event.get(field_name)
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("%s must be a nonnegative integer" % field_name)
+
+    routing_appropriate = event.get("routing_appropriate")
+    if routing_appropriate is not None and not isinstance(routing_appropriate, int) and not isinstance(routing_appropriate, bool):
+        raise ValueError("routing_appropriate must be a boolean")
+
     test_pass = event.get("test_pass")
     error = event.get("error")
     success = (worker_exit == 0) and (test_pass is True) and (not error)
+    # A recorded failure_type forces success off, like a truthy ``error``.
+    if failure_type is not None:
+        success = False
+
+    capabilities_json = None if capabilities is None else json.dumps(
+        _normalized_capabilities(capabilities), sort_keys=True)
+
+    outcome_columns = (
+        "runtime", "provider", "model", "role", "tier", "risk",
+        "success", "worker_exit", "test_pass", "error", "cost_class", "cost",
+        "input_tokens", "output_tokens", "task_id", "project", "retry",
+        "main_host", "uncertainty", "verification_status", "domain", "task_type",
+        "capabilities", "failure_type", "escalated", "review_findings",
+        "user_acceptance", "duration_s", "exploration", "premium_planning_tokens",
+        "premium_execution_tokens", "premium_review_tokens", "open_tokens",
+        "compactions", "compaction_recovered", "routing_appropriate", "bundle", "created_at",
+    )
+    outcome_values = (
+        event.get("runtime"), event.get("provider"), event.get("model"),
+        event.get("role"), event.get("tier"), event.get("risk"),
+        1 if success else 0, worker_exit, test_pass,
+        event.get("error"), cost_class,
+        cost, input_tokens, output_tokens,
+        event.get("task_id"), event.get("project"), retry, event.get("main_host"),
+        event.get("uncertainty"), verification_status,
+        domain, task_type, capabilities_json, failure_type,
+        None if escalated is None else (1 if escalated else 0), review_findings,
+        user_acceptance, duration_s, None if exploration is None else (1 if exploration else 0),
+        event.get("premium_planning_tokens"), event.get("premium_execution_tokens"),
+        event.get("premium_review_tokens"), event.get("open_tokens"),
+        event.get("compactions"), event.get("compaction_recovered"),
+        None if routing_appropriate is None else (1 if routing_appropriate else 0),
+        bundle, _now(),
+    )
+    assert len(outcome_columns) == len(outcome_values)
 
     conn = _connect(database)
     try:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
+            placeholders = ", ".join("?" for _ in outcome_columns)
             cur = conn.execute(
-                "INSERT INTO outcomes (runtime, provider, model, role, tier, risk,"
-                " success, worker_exit, test_pass, error, cost_class, cost, input_tokens, output_tokens,"
-                " task_id, project, retry, main_host, uncertainty, verification_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (event.get("runtime"), event.get("provider"), event.get("model"),
-                 event.get("role"), event.get("tier"), event.get("risk"),
-                 1 if success else 0, worker_exit, test_pass,
-                 event.get("error"), cost_class,
-                 cost, input_tokens, output_tokens,
-                 event.get("task_id"), event.get("project"), retry, event.get("main_host"), event.get("uncertainty"), verification_status, _now()),
+                "INSERT INTO outcomes (%s) VALUES (%s)"
+                % (", ".join(outcome_columns), placeholders),
+                outcome_values,
             )
             # The outcome carries the measured cost of exactly one reserved call: release
             # that hold only. Sibling holds of the same task stay until their own outcome.
@@ -538,6 +724,17 @@ def _outcome_rows(rows):
         "cost": r["cost"], "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
         "task_id": r["task_id"], "project": r["project"], "retry": r["retry"],
         "main_host": r["main_host"], "uncertainty": r["uncertainty"], "verification_status": r["verification_status"],
+        "domain": r["domain"], "task_type": r["task_type"], "capabilities": r["capabilities"],
+        "bundle": r["bundle"],
+        "failure_type": r["failure_type"], "escalated": r["escalated"],
+        "review_findings": r["review_findings"], "user_acceptance": r["user_acceptance"],
+        "duration_s": r["duration_s"], "exploration": r["exploration"],
+        "premium_planning_tokens": r["premium_planning_tokens"],
+        "premium_execution_tokens": r["premium_execution_tokens"],
+        "premium_review_tokens": r["premium_review_tokens"],
+        "open_tokens": r["open_tokens"], "compactions": r["compactions"],
+        "compaction_recovered": r["compaction_recovered"],
+        "routing_appropriate": r["routing_appropriate"],
         "created_at": r["created_at"],
     } for r in rows]
 
@@ -619,6 +816,502 @@ def routing_advice(database, project, runtime, role, tier, risk,
         "min_observations": min_observations, "minimum_success_rate": minimum_success_rate,
         "recommendations": recommendations,
         "excluded_models": [row["model"] for row in recommendations if row["recommendation"] == "exclude"],
+    }
+
+
+# --------------------------------------------------------------------------
+# performance matrix / model status
+# --------------------------------------------------------------------------
+
+def _capability_map(capabilities_json):
+    """Decode the stored capabilities JSON string into a plain dict (or {})."""
+    if not capabilities_json:
+        return {}
+    try:
+        data = json.loads(capabilities_json)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, (int, float))}
+
+
+def _age_weight(created_at, now, half_life_days):
+    """Recency weight: 0.5 ** (age_days / half_life_days)."""
+    created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    if created.tzinfo is None or created.utcoffset() is None:
+        created = created.replace(tzinfo=timezone.utc)
+    age_days = (now - created).total_seconds() / 86400.0
+    return 0.5 ** (age_days / half_life_days)
+
+
+def _scored_outcome(row, now, half_life_days):
+    """Return (is_counted, success, weight) for one outcome row.
+
+    Only rows with a model are considered. A `user_acceptance == 'rejected'`
+    row counts as a failure. Rows whose failure_type attribution is 'aos' or
+    'infra' are not counted for/against the score (but remain in failure_types).
+    """
+    if not row["model"]:
+        return None
+    # Same rule as routing_advice: a pending or unscored outcome never steers a
+    # model, neither toward PROMOTE nor toward DEMOTE.
+    if row["verification_status"] != "verified":
+        return None
+    weight = _age_weight(row["created_at"], now, half_life_days)
+    attribution = _attribution(row["failure_type"]) if row["failure_type"] else "model"
+    if attribution in ("aos", "infra"):
+        return None
+    success = row["success"] is True and row["user_acceptance"] != "rejected"
+    # A success that needed retries, an escalation or review findings earns less
+    # credit than a clean first pass (spec section 12 penalties; factors in config).
+    credit = 1.0 if success else 0.0
+    if success:
+        credit *= LEARNING["retry_credit"] ** max(int(row["retry"] or 0), 0)
+        if row["escalated"]:
+            credit *= LEARNING["escalation_credit"]
+        findings = min(max(int(row["review_findings"] or 0), 0), LEARNING["max_counted_findings"])
+        credit *= LEARNING["finding_credit"] ** findings
+    return (True, credit, weight)
+
+
+def _weighted_summary(items):
+    """items: list of (success:bool, weight:float, created_at:str).
+
+    Returns the recursive-decay summary: weighted score, unweighted sample
+    size, effective n (sum of weights) and the latest timestamp.
+    """
+    if not items:
+        return {"score": 0.0, "sample_size": 0, "confidence": 0.0,
+                "n_eff": 0.0, "last_updated": None}
+    weight_sum = sum(w for _, w, _ in items)
+    success_sum = sum(w * float(s) for s, w, _ in items)
+    score = success_sum / weight_sum if weight_sum else 0.0
+    last = max(ts for _, _, ts in items)
+    return {"score": score, "sample_size": len(items), "n_eff": weight_sum,
+            "last_updated": last}
+
+
+def matrix(database, half_life_days=None, now=None, prior_strength=None, min_observations=None,
+           recent_window=None, drift_delta=None, promote_above=None, demote_below=None,
+           min_confidence=None):
+    """Recency-weighted performance matrix over recorded outcomes.
+
+    Only counted (model-attribution) outcomes move a model's score; ''aos'' and
+    ''infra'' failures appear in ``failure_types`` but never against the model.
+    History is never deleted: decay only down-weights old outcomes.
+    ``now`` may be a datetime or an ISO string for deterministic tests.
+    """
+    # Unset thresholds come from config/adaptive.json "learning".
+    half_life_days = LEARNING["half_life_days"] if half_life_days is None else half_life_days
+    prior_strength = LEARNING["prior_strength"] if prior_strength is None else prior_strength
+    min_observations = LEARNING["min_observations"] if min_observations is None else min_observations
+    recent_window = LEARNING["recent_window"] if recent_window is None else recent_window
+    drift_delta = LEARNING["drift_delta"] if drift_delta is None else drift_delta
+    promote_above = LEARNING["promote_above"] if promote_above is None else promote_above
+    demote_below = LEARNING["demote_below"] if demote_below is None else demote_below
+    min_confidence = LEARNING["min_confidence"] if min_confidence is None else min_confidence
+    if isinstance(half_life_days, bool) or not isinstance(half_life_days, (int, float)) or half_life_days <= 0:
+        raise ValueError("half_life_days must be a positive number")
+    moment = _moment(now)
+
+    rows = list_outcomes(database)
+    # Group counted outcomes by model.
+    by_model = {}
+    failure_types = {}
+    for row in rows:
+        if not row["model"]:
+            continue
+        model = row["model"]
+        failure_types.setdefault(model, {})
+        if row["failure_type"]:
+            ft = failure_types[model]
+            ft[row["failure_type"]] = ft.get(row["failure_type"], 0) + 1
+        scored = _scored_outcome(row, moment, half_life_days)
+        if scored is None:
+            continue
+        counted, success, weight = scored
+        by_model.setdefault(model, []).append(
+            {"id": row["id"], "success": success, "weight": weight,
+             "created_at": row["created_at"], "domain": row["domain"],
+             "task_type": row["task_type"], "capabilities": _capability_map(row["capabilities"])})
+
+    models = {}
+    for model, outcomes in by_model.items():
+        outcomes.sort(key=lambda o: o["created_at"])
+        overall_items = [(o["success"], o["weight"], o["created_at"]) for o in outcomes]
+        overall = _weighted_summary(overall_items)
+        confidence = round(overall["n_eff"] / (overall["n_eff"] + prior_strength), 4)
+        score = round(overall["score"], 4)
+        sample_size = overall["sample_size"]
+
+        # Capabilities: outcome contributes to k with weight w * need_k (needs >= 0.3).
+        cap_items = {}
+        for o in outcomes:
+            for cap, need in o["capabilities"].items():
+                if not isinstance(need, (int, float)) or need < 0.3:
+                    continue
+                cap_items.setdefault(cap, []).append(
+                    (o["success"], o["weight"] * need, o["created_at"]))
+        capabilities = {}
+        for cap, items in cap_items.items():
+            s = _weighted_summary(items)
+            capabilities[cap] = {
+                "score": round(s["score"], 4), "sample_size": s["sample_size"],
+                "confidence": round(s["n_eff"] / (s["n_eff"] + prior_strength), 4),
+                "last_updated": s["last_updated"],
+            }
+
+        # Domains: each "+"-joined domain gets the full outcome weight.
+        dom_items = {}
+        for o in outcomes:
+            if not o["domain"]:
+                continue
+            for domain in o["domain"].split("+"):
+                domain = domain.strip()
+                if domain:
+                    dom_items.setdefault(domain, []).append(
+                        (o["success"], o["weight"], o["created_at"]))
+        domains = {}
+        for domain, items in dom_items.items():
+            s = _weighted_summary(items)
+            domains[domain] = {
+                "score": round(s["score"], 4), "sample_size": s["sample_size"],
+                "confidence": round(s["n_eff"] / (s["n_eff"] + prior_strength), 4),
+                "last_updated": s["last_updated"],
+            }
+
+        # Task types: each outcome with a task_type gets the full outcome weight.
+        type_items = {}
+        for o in outcomes:
+            if o["task_type"]:
+                type_items.setdefault(o["task_type"], []).append(
+                    (o["success"], o["weight"], o["created_at"]))
+        task_types = {}
+        for task_type, items in type_items.items():
+            s = _weighted_summary(items)
+            task_types[task_type] = {
+                "score": round(s["score"], 4), "sample_size": s["sample_size"],
+                "confidence": round(s["n_eff"] / (s["n_eff"] + prior_strength), 4),
+                "last_updated": s["last_updated"],
+            }
+
+        # Drift: recent streak vs historical.
+        drift = False
+        status = "KEEP"
+        if sample_size < 3:
+            status = "NEW"
+        else:
+            historical = outcomes[:-recent_window]
+            recent = outcomes[-recent_window:]
+            if len(historical) >= 10 and len(recent) >= 5:
+                hist_rate = sum(o["success"] for o in historical) / len(historical)
+                recent_rate = sum(o["success"] for o in recent) / len(recent)
+                if recent_rate < hist_rate - drift_delta:
+                    drift = True
+                    status = "WATCH"
+            if not drift:
+                if sample_size >= min_observations and confidence >= min_confidence:
+                    if score >= promote_above:
+                        status = "PROMOTE"
+                    elif score < demote_below:
+                        status = "DEMOTE"
+                    else:
+                        status = "KEEP"
+                else:
+                    status = "KEEP"
+
+        models[model] = {
+            "status": status,
+            "drift": drift,
+            "overall": {"score": score, "sample_size": sample_size,
+                        "confidence": confidence, "last_updated": overall["last_updated"]},
+            "capabilities": capabilities,
+            "domains": domains,
+            "task_types": task_types,
+            "failure_types": failure_types.get(model, {}),
+        }
+
+    return {
+        "generated_at": _iso(moment),
+        "half_life_days": half_life_days,
+        "models": models,
+    }
+
+
+def model_status(database):
+    """Compact per-model status summary derived from the performance matrix."""
+    result = matrix(database)
+    status = {}
+    for model, entry in result["models"].items():
+        status[model] = {
+            "status": entry["status"],
+            "drift": entry["drift"],
+            "sample_size": entry["overall"]["sample_size"],
+            "score": entry["overall"]["score"],
+        }
+    return status
+
+
+# --------------------------------------------------------------------------
+# kpi
+# --------------------------------------------------------------------------
+
+def kpi(database, project=None, since=None):
+    """Group outcomes by task_id and derive operational KPIs.
+
+    NULL task_id becomes its own task. Denomators of zero yield ``None`` (never a
+    fabricated zero) across every ratio.
+    """
+    rows = list_outcomes(database)
+    if project is not None:
+        rows = [r for r in rows if r["project"] == project]
+    if since is not None:
+        since_moment = _moment(since)
+        rows = [r for r in rows if _moment(r["created_at"]) >= since_moment]
+
+    # Tasks: per task, the earliest row is the first attempt.
+    tasks = {}
+    for r in rows:
+        # The same task id in two projects is two tasks.
+        key = (r["project"], r["task_id"]) if r["task_id"] is not None else ("__null__", r["id"])
+        task = tasks.setdefault(key, [])
+        task.append(r)
+
+    attempts = len(rows)
+    n_tasks = len(tasks)
+
+    first_pass_success_count = 0
+    verified_success_count = 0
+    retry_tasks = 0
+    escalation_tasks = 0
+    findings_tasks = 0
+    verified_cost_total = 0.0
+    verified_cost_reported = 0
+    premium_planning = 0
+    premium_execution = 0
+    premium_review = 0
+    open_tokens_total = 0
+    premium_tokens_total = 0
+    measured_tokens = 0
+    measured_token_rows = 0
+    worker_total = 0
+    worker_success = 0
+    compaction_tasks = 0
+    compaction_total = 0
+    compaction_recovered_total = 0
+    routing_appropriate_sum = 0
+    routing_appropriate_count = 0
+    accepted = 0
+    rejected = 0
+
+    for task_rows in tasks.values():
+        sorted_rows = sorted(task_rows, key=lambda r: (r["created_at"], r["id"]))
+        # Work rows produce the deliverable; planner and reviewer rows are roles
+        # around it, never an attempt and never the task's outcome on their own.
+        work = [r for r in sorted_rows if r["role"] in (None, "executor", "fixer")]
+        # Attempts are grouped by bundle: a bundle's later row after a failure is a
+        # retry, another bundle's row is an independent deliverable. Rows without a
+        # bundle id belong to one implicit bundle (the ledger cannot tell them apart).
+        bundles = {}
+        for r in work:
+            bundles.setdefault(r["bundle"], []).append(r)
+        is_retry = any(r["retry"] for r in sorted_rows) or any(
+            not earlier["success"] for rows_ in bundles.values() for earlier, _ in zip(rows_, rows_[1:]))
+        if bundles and all(rows_[0]["success"] and not rows_[0]["retry"] for rows_ in bundles.values()):
+            first_pass_success_count += 1
+        if bundles:
+            def order(row):
+                return (row["created_at"], row["id"])
+
+            def review_passed(review):
+                # A pending or unscored review proves nothing.
+                return review["success"] and review["verification_status"] == "verified"
+
+            reviews = [r for r in sorted_rows if r["role"] == "reviewer"]
+            last_work = order(work[-1])
+            ok = True
+            for bundle_id, rows_ in bundles.items():
+                final = rows_[-1]
+                # A review of this bundle after its final attempt still stands; a
+                # review without a bundle id covers the whole task, after all work.
+                standing = [r for r in reviews
+                            if (r["bundle"] == bundle_id and bundle_id is not None and order(r) > order(final))
+                            or (r["bundle"] is None and order(r) > last_work)]
+                if not (final["success"] and final["verification_status"] == "verified"
+                        and all(review_passed(r) for r in standing)):
+                    ok = False
+            if ok:
+                verified_success_count += 1
+        if is_retry:
+            retry_tasks += 1
+        if any(r["escalated"] for r in sorted_rows):
+            escalation_tasks += 1
+        if any(r["review_findings"] for r in sorted_rows):
+            findings_tasks += 1
+        if any(r["compactions"] for r in sorted_rows):
+            compaction_tasks += 1
+        for r in sorted_rows:
+            if r["compactions"]:
+                compaction_total += r["compactions"]
+            if r["compaction_recovered"]:
+                compaction_recovered_total += r["compaction_recovered"]
+
+    for r in rows:
+        # Failed attempts and retries cost money too: every reported cost counts.
+        if r["cost"] is not None:
+            verified_cost_total += r["cost"]
+            verified_cost_reported += 1
+        if r["premium_planning_tokens"]:
+            premium_planning += r["premium_planning_tokens"]
+        if r["premium_execution_tokens"]:
+            premium_execution += r["premium_execution_tokens"]
+        if r["premium_review_tokens"]:
+            premium_review += r["premium_review_tokens"]
+        if r["open_tokens"]:
+            open_tokens_total += r["open_tokens"]
+        # Per row: measured input/output tokens (every class reports them), else the
+        # row's role counters; never both, so nothing is counted twice.
+        if r["input_tokens"] is not None or r["output_tokens"] is not None:
+            measured_tokens += (r["input_tokens"] or 0) + (r["output_tokens"] or 0)
+            measured_token_rows += 1
+        else:
+            role_counters = [r[name] for name in ("premium_planning_tokens", "premium_execution_tokens",
+                                                  "premium_review_tokens", "open_tokens") if r[name] is not None]
+            if role_counters:
+                measured_tokens += sum(role_counters)
+                measured_token_rows += 1
+        if r["role"] == "executor" and r["cost_class"] == "CHEAP":
+            worker_total += 1
+            if r["success"]:
+                worker_success += 1
+        if r["routing_appropriate"] is not None:
+            routing_appropriate_sum += (1 if r["routing_appropriate"] else 0)
+            routing_appropriate_count += 1
+        if r["user_acceptance"] == "accepted":
+            accepted += 1
+        elif r["user_acceptance"] == "rejected":
+            rejected += 1
+
+    # Premium dependency: premium tokens over premium + open tokens.
+    premium_tokens_total = premium_planning + premium_execution + premium_review
+    denom_premium = premium_tokens_total + open_tokens_total
+
+    return {
+        "first_pass_success_rate": (first_pass_success_count / n_tasks) if n_tasks else None,
+        "verified_success_rate": (verified_success_count / n_tasks) if n_tasks else None,
+        "retry_rate": (retry_tasks / n_tasks) if n_tasks else None,
+        "escalation_rate": (escalation_tasks / n_tasks) if n_tasks else None,
+        "review_findings_rate": (findings_tasks / n_tasks) if n_tasks else None,
+        "cost_per_verified_task": (verified_cost_total / verified_success_count) if verified_success_count and verified_cost_reported else None,
+        # Measured input/output tokens first; role counters only when none were measured;
+        # nothing measured at all is unknown, not zero.
+        "tokens_per_verified_task": (measured_tokens / verified_success_count)
+                                    if verified_success_count and measured_token_rows else None,
+        "premium_dependency_ratio": (premium_tokens_total / denom_premium) if denom_premium else None,
+        "premium_leverage": {
+            "planning": (premium_planning / verified_success_count) if verified_success_count else None,
+            "execution": (premium_execution / verified_success_count) if verified_success_count else None,
+            "review": (premium_review / verified_success_count) if verified_success_count else None,
+        },
+        "worker_success_rate": (worker_success / worker_total) if worker_total else None,
+        "compaction_rate": (compaction_tasks / n_tasks) if n_tasks else None,
+        "compaction_recovery_rate": (compaction_recovered_total / compaction_total) if compaction_total else None,
+        "routing_accuracy": (routing_appropriate_sum / routing_appropriate_count) if routing_appropriate_count else None,
+        "user_acceptance": (accepted / (accepted + rejected)) if (accepted + rejected) else None,
+        "tasks": n_tasks,
+        "attempts": attempts,
+    }
+
+
+# --------------------------------------------------------------------------
+# recommend (lesson stages)
+# --------------------------------------------------------------------------
+
+def recommend(database, min_evidence=None, failure_rate_threshold=None):
+    """Derive lesson stages from counted outcomes; never applies anything.
+
+    Group model-attribution outcomes by (model, domain) and (model, task_type);
+    each group with at least one failure yields an observation/hypothesis/
+    routing_recommendation stage. ``applied`` is always False.
+    """
+    min_evidence = LEARNING["recommend_min_evidence"] if min_evidence is None else min_evidence
+    if failure_rate_threshold is None:
+        failure_rate_threshold = LEARNING["recommend_failure_rate"]
+    if isinstance(min_evidence, bool) or not isinstance(min_evidence, int) or min_evidence < 1:
+        raise ValueError("min_evidence must be a positive integer")
+    if (isinstance(failure_rate_threshold, bool) or not isinstance(failure_rate_threshold, (int, float))
+            or not math.isfinite(failure_rate_threshold) or not 0 <= failure_rate_threshold <= 1):
+        raise ValueError("failure_rate_threshold must be a finite number in [0,1]")
+
+    groups = {}
+    for row in list_outcomes(database):
+        if not row["model"] or row["verification_status"] != "verified":
+            continue
+        if row["failure_type"] and _attribution(row["failure_type"]) in ("aos", "infra"):
+            continue
+        success = row["success"] is True and row["user_acceptance"] != "rejected"
+        if row["domain"]:
+            for domain in row["domain"].split("+"):
+                domain = domain.strip()
+                if domain:
+                    key = (row["model"], "domain", domain)
+                    groups.setdefault(key, {"model": row["model"], "group": {"domain": domain},
+                                            "attempts": 0, "failures": 0, "evidence": []})
+                    g = groups[key]
+                    g["attempts"] += 1
+                    if not success:
+                        g["failures"] += 1
+                    g["evidence"].append(row["id"])
+        if row["task_type"]:
+            key = (row["model"], "task_type", row["task_type"])
+            groups.setdefault(key, {"model": row["model"], "group": {"task_type": row["task_type"]},
+                                    "attempts": 0, "failures": 0, "evidence": []})
+            g = groups[key]
+            g["attempts"] += 1
+            if not success:
+                g["failures"] += 1
+            g["evidence"].append(row["id"])
+
+    items = []
+    for entry in groups.values():
+        if entry["failures"] < 1:
+            continue
+        attempts = entry["attempts"]
+        failures = entry["failures"]
+        failure_rate = failures / attempts
+        stage = None
+        recommendation = None
+        if attempts == 1:
+            stage = "observation"
+        elif attempts < min_evidence:
+            if failure_rate >= failure_rate_threshold:
+                stage = "hypothesis"
+        else:
+            if failure_rate >= failure_rate_threshold:
+                stage = "routing_recommendation"
+                value = next(iter(entry["group"].values()))
+                recommendation = "deprioritize %s for %s" % (entry["model"], value)
+        if stage is None:
+            # Under threshold with >= 2 attempts -> omitted.
+            continue
+        item = {
+            "model": entry["model"],
+            "group": entry["group"],
+            "stage": stage,
+            "attempts": attempts,
+            "failures": failures,
+            "failure_rate": failure_rate,
+            "evidence": entry["evidence"],
+        }
+        if recommendation is not None:
+            item["recommendation"] = recommendation
+        items.append(item)
+
+    return {
+        "items": items,
+        "applied": False,
+        "note": "recommendations only; apply_lesson with rollback is the only path to a change",
     }
 
 
@@ -861,6 +1554,24 @@ def apply_lesson(database, lesson_id, action, evidence, approved=False):
 # CLI
 # --------------------------------------------------------------------------
 
+def _write_atomic(path, text):
+    """Write ``text`` to ``path`` atomically via a temp file + rename."""
+    import os
+    import tempfile
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".aos-learning-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -871,9 +1582,53 @@ def main(argv=None):
     history_parser.add_argument("--project", default=None, help="filter by project")
     report_parser.add_argument("--project", default=None, help="filter by project")
     report_parser.add_argument("--since", default=None, help="filter lessons since ISO UTC timestamp")
+
+    record_outcome_parser = sub.add_parser("record-outcome", help="store one measured outcome")
+    record_outcome_parser.add_argument("--database", required=True, help="sqlite database path")
+    record_outcome_parser.add_argument("--event", required=True, help="path to a JSON event file, or '-' for stdin")
+
+    matrix_parser = sub.add_parser("matrix", help="print the model performance matrix")
+    matrix_parser.add_argument("--database", required=True, help="sqlite database path")
+    matrix_parser.add_argument("--half-life-days", type=float, default=None,
+                               help="recency half-life in days (default: config/adaptive.json learning)")
+    matrix_parser.add_argument("--now", default=None, help="ISO timestamp to weight recency from")
+    matrix_parser.add_argument("--output", default=None, help="optionally write JSON atomically to this file")
+
+    model_status_parser = sub.add_parser("model-status", help="print per-model status summary")
+    model_status_parser.add_argument("--database", required=True, help="sqlite database path")
+
+    kpi_parser = sub.add_parser("kpi", help="print operational KPIs from outcomes")
+    kpi_parser.add_argument("--database", required=True, help="sqlite database path")
+    kpi_parser.add_argument("--project", default=None, help="filter by project")
+    kpi_parser.add_argument("--since", default=None, help="ISO UTC timestamp lower bound")
+
+    recommend_parser = sub.add_parser("recommend", help="derive lesson stages (never applies)")
+    recommend_parser.add_argument("--database", required=True, help="sqlite database path")
+    recommend_parser.add_argument("--min-evidence", type=int, default=None,
+                                  help="attempts required for a routing recommendation (default: config)")
+
     args = parser.parse_args(argv)
     if args.command == "report":
         payload = report(args.database, project=args.project, since=args.since)
+    elif args.command == "history":
+        payload = history(args.database, project=args.project)
+    elif args.command == "record-outcome":
+        if args.event == "-":
+            raw = sys.stdin.read()
+        else:
+            with open(args.event, "r") as fh:
+                raw = fh.read()
+        payload = record_outcome(args.database, json.loads(raw))
+    elif args.command == "matrix":
+        payload = matrix(args.database, half_life_days=args.half_life_days, now=args.now)
+        if args.output:
+            _write_atomic(args.output, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    elif args.command == "model-status":
+        payload = model_status(args.database)
+    elif args.command == "kpi":
+        payload = kpi(args.database, project=args.project, since=args.since)
+    elif args.command == "recommend":
+        payload = recommend(args.database, min_evidence=args.min_evidence)
     else:
         payload = history(args.database, project=args.project)
     print(json.dumps(payload, indent=2, sort_keys=True))

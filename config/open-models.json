@@ -3,8 +3,8 @@
   "schema": 1,
   "open": {
     "primary": "vercel/deepseek/deepseek-v4-pro-0813",
-    "fallback": "vercel/alibaba/qwen3-coder-next",
-    "source": "benchmark 2026-09-20 first-pass 20/20, findings high 12, cost 1.12$"
+    "fallback": null,
+    "source": "benchmark 2026-09-20 first-pass 20/20, findings high 12, cost 1.12$; 2026-09-23 spec AOS Adaptive Orchestration: Qwen out of the operational pool, primary exhausted goes straight to premium"
   },
   "model_catalog": {
     "vercel/deepseek/deepseek-v4-pro-0813": {
@@ -43,6 +43,28 @@
       "benchmark_score": null,
       "privacy_status": "configured; provider enforcement not independently verified",
       "availability": "configured",
+      "class": "OPEN",
+      "family": "deepseek",
+      "invocation": "open_worker",
+      "tools": [
+        "files"
+      ],
+      "capabilities": {
+        "coding": 0.9,
+        "debugging": 0.85,
+        "architecture": 0.7,
+        "reasoning": 0.85,
+        "review": 0.6,
+        "security": 0.6,
+        "tool_use": 0.6,
+        "legal": 0.4,
+        "research": 0.6,
+        "writing": 0.6,
+        "data": 0.75,
+        "business": 0.6,
+        "risk_reasoning": 0.55
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured",
       "pricing_source": "https://ai-gateway.vercel.sh/v1/models",
       "pricing_observed_at": "2026-09-22",
       "pricing_details": {
@@ -105,7 +127,30 @@
       "historical_success_rate": null,
       "benchmark_score": null,
       "privacy_status": "configured; provider enforcement not independently verified",
-      "availability": "configured",
+      "availability": false,
+      "removed": "2026-09-23 spec AOS Adaptive Orchestration: Qwen out of the pool",
+      "class": "OPEN",
+      "family": "alibaba",
+      "invocation": "open_worker",
+      "tools": [
+        "files"
+      ],
+      "capabilities": {
+        "coding": 0.8,
+        "debugging": 0.7,
+        "architecture": 0.6,
+        "reasoning": 0.7,
+        "review": 0.6,
+        "security": 0.6,
+        "tool_use": 0.6,
+        "legal": 0.3,
+        "research": 0.5,
+        "writing": 0.5,
+        "data": 0.6,
+        "business": 0.5,
+        "risk_reasoning": 0.5
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured",
       "pricing_source": "https://ai-gateway.vercel.sh/v1/models",
       "pricing_observed_at": "2026-09-22",
       "pricing_details": {
@@ -152,7 +197,33 @@
       "historical_success_rate": null,
       "benchmark_score": null,
       "privacy_status": "configured; provider enforcement not independently verified",
-      "availability": "configured"
+      "availability": "configured",
+      "class": "PREMIUM",
+      "family": "anthropic",
+      "invocation": "host_session",
+      "tools": [
+        "files",
+        "shell",
+        "browser",
+        "subagents",
+        "images"
+      ],
+      "capabilities": {
+        "coding": 0.95,
+        "debugging": 0.95,
+        "architecture": 0.95,
+        "reasoning": 0.95,
+        "review": 0.95,
+        "security": 0.9,
+        "tool_use": 0.9,
+        "legal": 0.85,
+        "research": 0.9,
+        "writing": 0.95,
+        "data": 0.85,
+        "business": 0.85,
+        "risk_reasoning": 0.9
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured"
     },
     "openai/gpt-6-astra": {
       "provider": "openai",
@@ -191,7 +262,32 @@
       "historical_success_rate": null,
       "benchmark_score": null,
       "privacy_status": "configured; provider enforcement not independently verified",
-      "availability": "configured"
+      "availability": "configured",
+      "class": "PREMIUM",
+      "family": "openai",
+      "invocation": "host_session",
+      "tools": [
+        "files",
+        "shell",
+        "subagents",
+        "images"
+      ],
+      "capabilities": {
+        "coding": 0.95,
+        "debugging": 0.95,
+        "architecture": 0.95,
+        "reasoning": 0.95,
+        "review": 0.95,
+        "security": 0.9,
+        "tool_use": 0.85,
+        "legal": 0.85,
+        "research": 0.9,
+        "writing": 0.85,
+        "data": 0.9,
+        "business": 0.85,
+        "risk_reasoning": 0.9
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured"
     },
     "openai/gpt-5.6-sol": {
       "id": "openai/gpt-5.6-sol",
@@ -211,7 +307,8 @@
       "context": 400000,
       "roles": [
         "planner",
-        "reviewer"
+        "reviewer",
+        "executor"
       ],
       "input_cost_per_million": null,
       "output_cost_per_million": null,
@@ -230,7 +327,30 @@
       "privacy_status": "provider account policy; not independently verified",
       "target_context": 80000,
       "historical_success_rate": null,
-      "benchmark_score": null
+      "benchmark_score": null,
+      "class": "MID",
+      "family": "openai",
+      "invocation": "host_subagent",
+      "tools": [
+        "files",
+        "shell"
+      ],
+      "capabilities": {
+        "coding": 0.85,
+        "debugging": 0.8,
+        "architecture": 0.75,
+        "reasoning": 0.8,
+        "review": 0.8,
+        "security": 0.75,
+        "tool_use": 0.8,
+        "legal": 0.7,
+        "research": 0.8,
+        "writing": 0.75,
+        "data": 0.8,
+        "business": 0.75,
+        "risk_reasoning": 0.75
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured"
     },
     "anthropic/sonnet": {
       "id": "anthropic/sonnet",
@@ -250,7 +370,8 @@
       "context": 200000,
       "roles": [
         "planner",
-        "reviewer"
+        "reviewer",
+        "executor"
       ],
       "input_cost_per_million": null,
       "output_cost_per_million": null,
@@ -269,7 +390,156 @@
       "privacy_status": "provider account policy; not independently verified",
       "target_context": 80000,
       "historical_success_rate": null,
-      "benchmark_score": null
+      "benchmark_score": null,
+      "class": "MID",
+      "family": "anthropic",
+      "invocation": "host_subagent",
+      "tools": [
+        "files",
+        "shell",
+        "browser",
+        "images"
+      ],
+      "capabilities": {
+        "coding": 0.85,
+        "debugging": 0.8,
+        "architecture": 0.75,
+        "reasoning": 0.8,
+        "review": 0.8,
+        "security": 0.75,
+        "tool_use": 0.85,
+        "legal": 0.75,
+        "research": 0.8,
+        "writing": 0.85,
+        "data": 0.8,
+        "business": 0.75,
+        "risk_reasoning": 0.75
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured"
+    },
+    "anthropic/haiku": {
+      "id": "anthropic/haiku",
+      "provider": "anthropic",
+      "compatible_runtimes": [
+        "claude-code"
+      ],
+      "cost_class": "CHEAP",
+      "capability_scores": {
+        "coding": 3,
+        "reasoning": 2,
+        "planning": 2,
+        "review": 2,
+        "security": 2,
+        "tool_use": 2
+      },
+      "context": 200000,
+      "roles": [
+        "executor"
+      ],
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "benchmark": {
+        "available": false,
+        "status": "not_compared",
+        "source": "role capability policy; no comparable quality benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "configured subscription runtime; live availability checked separately"
+      },
+      "score_source": "conservative policy thresholds, not measured benchmark scores",
+      "billing": "subscription; marginal token price unknown",
+      "availability": "configured",
+      "privacy_status": "provider account policy; not independently verified",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null,
+      "class": "LOW",
+      "family": "anthropic",
+      "invocation": "host_subagent",
+      "tools": [
+        "files",
+        "shell",
+        "browser",
+        "images"
+      ],
+      "capabilities": {
+        "coding": 0.65,
+        "debugging": 0.55,
+        "architecture": 0.45,
+        "reasoning": 0.6,
+        "review": 0.55,
+        "security": 0.5,
+        "tool_use": 0.75,
+        "legal": 0.5,
+        "research": 0.6,
+        "writing": 0.7,
+        "data": 0.65,
+        "business": 0.6,
+        "risk_reasoning": 0.5
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured"
+    },
+    "openai/gpt-5.6-luna": {
+      "id": "openai/gpt-5.6-luna",
+      "provider": "openai",
+      "compatible_runtimes": [
+        "codex-cli"
+      ],
+      "cost_class": "CHEAP",
+      "capability_scores": {
+        "coding": 3,
+        "reasoning": 2,
+        "planning": 2,
+        "review": 2,
+        "security": 2,
+        "tool_use": 2
+      },
+      "context": 400000,
+      "roles": [
+        "executor"
+      ],
+      "input_cost_per_million": null,
+      "output_cost_per_million": null,
+      "benchmark": {
+        "available": false,
+        "status": "not_compared",
+        "source": "role capability policy; no comparable quality benchmark"
+      },
+      "historical": {
+        "available": true,
+        "source": "configured subscription runtime; live availability checked separately"
+      },
+      "score_source": "conservative policy thresholds, not measured benchmark scores",
+      "billing": "subscription; marginal token price unknown",
+      "availability": "configured",
+      "privacy_status": "provider account policy; not independently verified",
+      "target_context": 80000,
+      "historical_success_rate": null,
+      "benchmark_score": null,
+      "class": "LOW",
+      "family": "openai",
+      "invocation": "host_subagent",
+      "tools": [
+        "files",
+        "shell"
+      ],
+      "capabilities": {
+        "coding": 0.65,
+        "debugging": 0.55,
+        "architecture": 0.45,
+        "reasoning": 0.6,
+        "review": 0.55,
+        "security": 0.5,
+        "tool_use": 0.7,
+        "legal": 0.45,
+        "research": 0.6,
+        "writing": 0.6,
+        "data": 0.65,
+        "business": 0.55,
+        "risk_reasoning": 0.5
+      },
+      "capabilities_source": "declared prior 2026-09-23, low confidence, not measured"
     }
   },
   "premium": {

@@ -1,5 +1,83 @@
 # Changelog
 
+## 3.0.0 — il modello lo sceglie il costo atteso, non il tier — 2026-09-23
+
+**Chiedi un contratto, e DeepSeek non lo scrive.** Prima di oggi una richiesta non di
+codice usciva da AOS con una frase («non è lavoro software»), e dentro AOS il modello
+lo sceglievano tier e rischio: un T1 LOW andava al worker open qualunque cosa fosse.
+Ora `bin/aos-orchestrate.py route` legge la richiesta, la mette in uno o più dei sei
+domini (GENERAL, ENGINEERING, LEGAL_COMPLIANCE, BUSINESS_OPERATIONS, RESEARCH,
+DATA_ANALYTICS), ne ricava un vettore di capacità e scarta chi non le ha: DeepSeek
+dichiara 0,4 di capacità legale, un contratto chiede 1,0, e il router lo rifiuta con
+`capability shortfall legal` prima di calcolargli un punteggio. Fra chi resta sceglie
+il costo atteso più basso sopra la soglia di successo del rischio:
+`iniziale + (1−p)·retry + (1−p)²·escalation`. Un modello economico che sbaglia spesso
+perde contro uno più caro che non sbaglia; senza storico vince il più economico che
+basta. Ogni termine del punteggio esce nel JSON, così puoi controllare perché.
+
+Cosa entra, e dove sta:
+- **Registry.** Ogni voce di `config/open-models.json` ha classe (PREMIUM, HIGH, MID,
+  LOW, OPEN), famiglia, modo d'invocazione, strumenti e capacità dichiarate da 0 a 1
+  (prior a bassa confidenza, non misure). Entrano `anthropic/haiku` e
+  `openai/gpt-5.6-luna` come LOW. HIGH è supportata e vuota: nessun modello verificato.
+- **Qwen esce dal pool.** Resta nel catalogo per lo storico, `availability: false`;
+  la scala open diventa DeepSeek ×2 → premium. Anche `aos-open-executor.py` lo rifiuta
+  se lo chiedi con `--model`.
+- **Tutta la conoscenza in `config/adaptive.json`:** parole chiave IT/EN, vettori per
+  dominio e tipo di task, skill per dominio, controlli deterministici per dominio,
+  tassonomia dei 13 tipi di errore con azione e attribuzione, soglie di scoring,
+  exploration e apprendimento. Il codice non nomina un modello (c'è un test che lo
+  controlla).
+- **Bundle solo quando servono.** Si spezza in requisiti → implementazione → verifica
+  congiunta solo una funzione che attraversa un dominio di requisiti e uno di
+  produzione («costruisci un modulo GDPR»). «Analizza i KPI» resta un lavoro solo.
+- **Reviewer indipendente.** Famiglia opposta all'esecutore (all'host, se l'esecutore è
+  open), premium a HIGH, mai un modello OPEN o LOW come revisore finale; se un reviewer
+  fallisce, l'escalation resta nella sua famiglia.
+- **Escalation per causa.** `escalate --failure-type`: un timeout riprova lo stesso
+  modello e non gli viene addebitato; un errore di ragionamento sale di classe, saltando
+  HIGH vuota; un'ambiguità architetturale va al planner premium; una violazione di
+  sicurezza si ferma e chiede a te.
+- **Exploration.** Al massimo 5%, solo LOW, reversibile, con un controllo osservabile
+  dichiarato (`--verifiable`) e un task id: deterministica, mai su lavoro critico.
+- **Apprendimento.** `aos-learning.py record-outcome | matrix | model-status | kpi |
+  recommend`. La matrice dà punteggio, campione, confidenza e ultimo aggiornamento per
+  modello, capacità, dominio e tipo di task, con decadimento a 30 giorni; conta solo
+  esiti `verified`; un successo con retry, escalation o finding vale meno di uno
+  pulito; un errore di contesto o di infrastruttura non abbassa il modello. Stati NEW,
+  KEEP, WATCH (deriva), PROMOTE, DEMOTE, mai dopo un solo fallimento. `recommend`
+  distingue osservazione, ipotesi e raccomandazione e non applica niente.
+- **Contesto per task.** `aos-context.py zone` stringe la zona ottimale con
+  complessità, incertezza, volume di evidenze e ragionamento profondo; il limite duro
+  non si sposta. `checkpoint when` aspetta il prossimo punto naturale (fine discovery,
+  test verdi, fine bundle…) e compatta subito solo oltre il limite duro; `checkpoint
+  validate` blocca il rilascio del contesto senza obiettivo, stato, decisioni, lavoro
+  aperto, stato della verifica e prossima azione.
+- **Hook.** `bin/aos-prompt-hook.py` su `UserPromptSubmit`, da registrare a mano in
+  Claude Code e Codex (README, «Prompt hook»): una riga con domini, tipo e skill, 35 ms,
+  zero token di modello, sempre exit 0, zitto su saluti, comandi slash e prompt corti;
+  `AOS_PROMPT_HOOK=off` lo spegne. Non stampa tier né esecutore: da parole chiave
+  sarebbero valori di default travestiti da decisione.
+
+**Come ci si è arrivati.** Piano premium, tre bundle eseguiti in parallelo da un worker
+open in tre worktree esterni, poi sei round di review cross-model (il tetto): 21 finding,
+20 accettati e corretti con un test ciascuno, uno confutato. Cinque erano correzioni del
+round prima, sbagliate o incomplete. Dal secondo round in poi stavano tutti nei KPI per
+task: il ledger registra tentativi, i KPI chiedono task, bundle e review, e quella
+struttura è entrata a strati (colonna `bundle`, review legate al loro bundle, task
+distinti per progetto). Il prossimo lavoro sul ledger dovrebbe modellarla per davvero.
+
+Verifiche: suite di 662 test, verde su Python 3.12 e 3.9 (3 skip preesistenti per
+`tomllib`); `aos-security.sh` exit 0; `aos-doctor` pulito salvo la distribuzione;
+hook provato con un prompt reale su Claude (il modello ha riportato la riga).
+Verdetto della review: verificato con riserve, perché l'ultima correzione (round 6) è
+provata dai test e dal comando del reviewer ma non ha avuto un settimo round.
+
+Limiti noti:
+- In Codex l'hook gira solo dopo che ne hai approvato l'hash (`/hooks`).
+- L'hook classifica anche le notifiche di sistema che l'host inietta come prompt.
+- La classe HIGH è vuota finché non c'è un modello verificato da metterci.
+
 ## 2.6.0 — audit completo: 40 bug corretti, un T0 non passa più dal worker — 2026-09-22
 
 **La causa scritta nella 2.5.2 era sbagliata.** Il worker open non poteva scrivere

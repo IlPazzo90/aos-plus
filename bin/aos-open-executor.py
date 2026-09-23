@@ -81,6 +81,14 @@ def resolve(config=None, slot='primary', runtime=None, model=None, provider=None
         # `--model vercel/missing` reached the harness. With a catalog, an unknown
         # reference is a broken routing decision, not a model to run.
         raise ValueError('open model missing from catalog: ' + identity)
+    if isinstance(entry, dict) and entry.get('availability') is False and probe_root is None:
+        # A model taken out of the pool (Qwen, 2026-09-23) stays in the catalog for
+        # history; an explicit --model must not bring it back.
+        raise ValueError('open model is out of the pool (availability false): ' + identity)
+    if isinstance(entry, dict) and entry.get('invocation', 'open_worker') != 'open_worker' and probe_root is None:
+        # 3.0 catalog: host subagents and premium sessions share the runtime name
+        # with the open harness; only an open_worker entry may run here.
+        raise ValueError('catalog entry is not an open worker model: ' + identity)
     if isinstance(entry, dict) and runtime not in entry.get('compatible_runtimes', ()) and probe_root is None:
         # The probe tests a runtime the catalog may have dropped after a failed probe.
         raise ValueError('selected model is not compatible with the requested runtime')

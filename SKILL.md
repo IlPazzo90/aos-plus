@@ -1,8 +1,8 @@
 ---
 name: aos
 metadata:
-  version: "2.6.0"
-description: "Processo di sviluppo per Claude Code e Codex: classifica dimensione e rischio, instrada alle skill, verifica con evidenze. Usa per software, debugging, configurazioni e rilascio; su richiesta esegue audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
+  version: "3.0.0"
+description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
 # AOS — AI Development Operating System
@@ -12,11 +12,15 @@ of effort**, not brevity alone. Never invoke AOS recursively.
 
 ## Scope and authority
 
-Software, scripts, configuration, infrastructure and sites. For documents, content
-or business questions, say once “Non è lavoro software, procedo senza AOS” and use
-the relevant domain workflow. Software documentation and an AOS effectiveness/setup
-audit are in scope. A bounded read-only audit is T1/LOW unless scope/data changes
-that assessment; count its deliverable, not every file inspected.
+Any task with a checkable outcome, in six domains that may combine: GENERAL,
+ENGINEERING, LEGAL_COMPLIANCE, BUSINESS_OPERATIONS, RESEARCH, DATA_ANALYTICS
+(`references/adaptive.md`). A prompt hook adds one classification line to each
+request (`bin/aos-prompt-hook.py`, zero model tokens); it is a hint, the census
+below decides. Chat, a quick factual answer or a one-shot rewrite with nothing to
+verify stay outside: no census, no router. A bounded read-only audit is T1/LOW
+unless scope/data changes that assessment; count its deliverable, not every file
+inspected. Outside ENGINEERING, the domain's own workflow and skills still apply;
+AOS adds routing, verification and measurement, not a second process.
 
 Runtime system/developer instructions win; then explicit user instructions,
 project AGENTS.md **and** CLAUDE.md, AOS, delegated defaults. Existing authorization
@@ -74,6 +78,22 @@ the cost it shows for open runs is catalog price, never billing.
 - `premium`: the session itself when its family matches, otherwise that family's CLI.
 - `pipeline: true`: premium plan, open execution, cross-family review —
   `references/orchestration.md` §Explicit role pipeline.
+
+**Capability routing (3.0).** At T1+ also ask the adaptive router, which picks by
+capability and expected cost instead of by tier:
+
+```bash
+python3 "$AOS_DIR/bin/aos-orchestrate.py" route --text "<request>" --tier T<n> --risk <LEVEL> \
+  --host claude|codex [--matrix <matrix.json>] [--task-id <slug>]
+```
+
+It returns domains, bundles, skills, executor with its score breakdown, planner,
+independent reviewer, domain checks and context zone. Its executor wins inside the
+envelope of `aos-router.py`: it never removes the CRITICAL approval, the T2/T3
+cross-family review or the HIGH ceiling on open workers. A disagreement between the
+two is a routing datapoint: write it in the measure record. No eligible model, or
+`below_threshold`, is reported, never silently replaced. Bundles, thin premium root,
+worker lease, batched fixes, escalation by failure type: `references/adaptive.md`.
 
 Repeat census, announcement and routing only when classification changes.
 HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. If the session
@@ -149,7 +169,9 @@ before dependent work; continue independent authorized work.
   `python3 "$AOS_DIR/bin/aos-context.py" state --model <executor> --tokens <n>` and
   follow `references/context-budget.md` (GREEN → targeted retrieval past target →
   structural compaction → never past the hard limit). Compaction never drops
-  acceptance criteria, open findings or safety constraints.
+  acceptance criteria, open findings or safety constraints. The zone depends on the
+  task (`aos-context.py zone`); compact at the next natural checkpoint
+  (`checkpoint when`) and only after `checkpoint validate` passes.
 
 Installation health: `python3 "$AOS_DIR/bin/aos-doctor.py"` (read-only, on demand).
 Setup/cost audit or requested optimization: `references/token-efficiency.md`.
@@ -158,7 +180,9 @@ File size and RTK estimates do not measure provider billing or session cost.
 ## 4. Route and execute
 
 T0/T1 normally need no additional workflow skill. Reproduce bugs at every tier.
-Choose one skill per need; domain specialists still apply.
+Choose one skill per need; domain specialists still apply. The adaptive router
+names the pertinent skills per bundle (`skill_routes` in `config/adaptive.json`);
+load those, not the catalog.
 
 | Need | Route |
 |------|-------|
@@ -226,6 +250,14 @@ still without a verdict: ask for that line then. Role tokens and ratios come in 
 `references/orchestration.md` §Role measurements). Unavailable provider counters
 stay null; never estimate them or infer cost from counts. No secrets or client
 identities in `--task`.
+
+**Every routed attempt at T1+ is a datapoint** (the real benchmark is real use): record
+it with `bin/aos-learning.py record-outcome` — model, domain, task type, needs, failure
+type from the taxonomy, retries, escalation, findings, tokens by role. `matrix` turns
+the ledger into the performance matrix the router reads; `kpi` and `recommend` report
+it. A failure attributed to AOS or infrastructure (context, routing, tool, timeout)
+never lowers a model's score. Recommendations are proposals: the router's code and
+policy change only through a verified release (`references/adaptive.md` §Learning).
 
 Report outcome, evidence and material limits in Italian; code/comments/commits in
 English. T0: two lines. T1: short, closing with one learning line — the wrong

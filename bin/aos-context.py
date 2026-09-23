@@ -323,6 +323,267 @@ def build_handoff(*, task, acceptance_criteria=None, decisions=None,
     }
 
 
+# Events that mark a natural boundary at which a checkpoint is safe to write.
+CHECKPOINT_EVENTS = frozenset({
+    "none", "discovery_done", "implementation_done", "tests_green",
+    "bundle_done", "decision_done",
+})
+
+
+def _profile_factor(profile):
+    """Factor in [0.4, 1.0] from optional 0..1 profile keys; deep ×0.85.
+
+    Higher complexity, uncertainty and evidence volume shrink the working zone
+    sooner; deep reasoning shrinks it again by a further 15%. The factor is
+    floored at 0.4 so a hard task still gets a meaningful budget.
+    """
+    if profile is None:
+        profile = {}
+    if not isinstance(profile, dict):
+        raise ValueError("profile must be a JSON object of floats 0..1")
+
+    def ratio(key):
+        value = profile.get(key)
+        if value is None:
+            return 0.0
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("profile %r must be a number in 0..1" % (key,))
+        value = float(value)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("profile %r must be in 0..1" % (key,))
+        return value
+
+    factor = (1 - 0.3 * ratio("complexity")
+              - 0.2 * ratio("uncertainty")
+              - 0.1 * ratio("evidence_volume"))
+    reasoning = profile.get("reasoning")
+    if reasoning not in (None, "deep", "shallow"):
+        raise ValueError('profile "reasoning" must be "deep" or "shallow"')
+    if reasoning == "deep":
+        factor *= 0.85
+    return round(max(factor, 0.4), 4)
+
+
+def zone(model_id, profile=None, config_path=None):
+    """Optimal and degradation zones for a model and a task profile.
+
+    The zones are not one universal number: they depend on the model's policy and
+    on how complex, uncertain and evidence-heavy the task is. The hard limit is
+    never scaled and never exceeded — it is the boundary the caller may assume is
+    rigid regardless of the factor.
+    """
+    policy = load_context_policy(model_id, config_path)
+    if policy.soft_limit == 0 and policy.hard_limit == 0:
+        return {
+            "model": model_id,
+            "factor": 0.0,
+            "optimal_until": 0,
+            "degradation_from": 0,
+            "hard_limit": 0,
+            "technical_context_limit": policy.technical_context_limit,
+            "policy_source": policy.source,
+            "enforced": False,
+        }
+    factor = _profile_factor(profile)
+    optimal_until = int(policy.target_context * factor)
+    degradation_from = int(policy.soft_limit * factor)
+    hard_limit = policy.hard_limit
+    # int() truncation must not reorder the zones or push them past the hard limit.
+    optimal_until = min(optimal_until, hard_limit)
+    degradation_from = max(degradation_from, optimal_until)
+    degradation_from = min(degradation_from, hard_limit)
+    return {
+        "model": model_id,
+        "factor": factor,
+        "optimal_until": optimal_until,
+        "degradation_from": degradation_from,
+        "hard_limit": hard_limit,
+        "technical_context_limit": policy.technical_context_limit,
+        "policy_source": policy.source,
+        "enforced": True,
+    }
+
+
+def natural_checkpoint(tokens, zone_result, event):
+    """Action at a token count, deferred until the next natural boundary.
+
+    The zone sets urgency; the event decides whether the work sits at a point
+    where a checkpoint/compaction is safe to make. Only the hard limit flips to
+    compact_now without an event: it is never crossed while waiting.
+    """
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+        raise ValueError("tokens must be a nonnegative integer")
+    if event is None:
+        event = "none"
+    if event not in CHECKPOINT_EVENTS:
+        raise ValueError("unknown event %r" % (event,))
+    if not zone_result.get("enforced", True):
+        return {"position": "optimal", "action": "continue", "event": event, "tokens": tokens}
+    optimal_until = zone_result["optimal_until"]
+    degradation_from = zone_result["degradation_from"]
+    hard_limit = zone_result["hard_limit"]
+    if tokens <= optimal_until:
+        position, action = "optimal", "continue"
+    elif tokens <= degradation_from:
+        position, action = "approaching", "prepare_checkpoint"
+    elif tokens <= hard_limit:
+        if event != "none":
+            position, action = "degradation", "compact_at_checkpoint"
+        else:
+            position, action = "degradation", "wait_for_checkpoint"
+    else:
+        position, action = "over_hard", "compact_now"
+    return {"position": position, "action": action, "event": event, "tokens": tokens}
+
+
+# Fields a checkpoint document carries — all preserved across compaction.
+CHECKPOINT_FIELDS = (
+    "objective",
+    "acceptance_criteria",
+    "constraints",
+    "architecture_decisions",
+    "artifacts_changed",
+    "known_facts",
+    "open_hypotheses",
+    "completed_work",
+    "failed_attempts",
+    "test_evidence",
+    "review_findings",
+    "pending_work",
+    "rollback_state",
+    "next_action",
+)
+
+_CHECKPOINT_STRING_FIELDS = frozenset({"objective", "rollback_state", "next_action"})
+
+
+def checkpoint_template():
+    """An empty checkpoint document: every field present, nothing filled in."""
+    doc = {"schema": 1}
+    for field in CHECKPOINT_FIELDS:
+        doc[field] = "" if field in _CHECKPOINT_STRING_FIELDS else []
+    return doc
+
+
+def validate_checkpoint(doc):
+    """Gate a checkpoint before the old context may be released.
+
+    A key that is missing is an error; a key that is present but empty fails the
+    release gate. The gate names what a successor needs: the goal, some current
+    state, the decisions taken, the work still outstanding (an explicit empty
+    list is allowed only when next_action says the task is complete), some
+    verification evidence, and a next action. Oversized fields are warnings, not
+    errors: raw logs and redundant tool output do not belong in a checkpoint.
+    """
+    missing = []
+    gate = []
+    warnings = []
+    if not isinstance(doc, dict):
+        return {"ok": False, "missing": list(CHECKPOINT_FIELDS),
+                "empty_gate": gate, "warnings": warnings}
+    for field in CHECKPOINT_FIELDS:
+        if field not in doc:
+            missing.append(field)
+            continue
+        value = doc[field]
+        if isinstance(value, str) and len(value) > 4000:
+            warnings.append("field %r is %d characters (limit 4000)" % (field, len(value)))
+        if isinstance(value, (list, tuple)) and len(value) > 200:
+            warnings.append("field %r has %d items (limit 200)" % (field, len(value)))
+    if missing:
+        return {"ok": False, "missing": missing, "empty_gate": gate, "warnings": warnings}
+
+    def nonempty(value):
+        # [""] or [{}] carries nothing: a list counts only through a real item.
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple)):
+            return any(nonempty(item) for item in value)
+        if isinstance(value, dict):
+            return any(nonempty(item) for item in value.values())
+        return value is not None and value is not False
+
+    next_action = doc.get("next_action")
+    next_lower = next_action.strip().lower() if isinstance(next_action, str) else ""
+    complete = next_lower.startswith("done") or next_lower.startswith("completo")
+
+    if not nonempty(doc.get("objective")):
+        gate.append("goal")
+    if not (nonempty(doc.get("completed_work")) or nonempty(doc.get("known_facts"))):
+        gate.append("current_state")
+    if not nonempty(doc.get("architecture_decisions")):
+        gate.append("decisions")
+    if not nonempty(doc.get("pending_work")) and not complete:
+        gate.append("unresolved_work")
+    if not (nonempty(doc.get("test_evidence")) or nonempty(doc.get("review_findings"))):
+        gate.append("verification_state")
+    if not nonempty(next_action):
+        gate.append("next_action")
+
+    return {"ok": not gate, "missing": missing, "empty_gate": gate, "warnings": warnings}
+
+
+def compaction_effectiveness(events):
+    """Judge whether compaction actually helped, from post-compaction events.
+
+    Each event reports whether a resume failed, whether discovery was duplicated,
+    how many information-recovery requests and post-compaction errors occurred,
+    and the before/after token counts. Context saved is clamped per event at
+    zero: compaction can never be credited with saving negative tokens.
+    """
+    if not isinstance(events, (list, tuple)):
+        raise ValueError("events must be a list of objects")
+    if not events:
+        return {
+            "counts": {"resume_failure": 0, "duplicated_discovery": 0,
+                       "information_recovery_requests": 0, "post_compaction_errors": 0},
+            # No compaction observed: a rate is unknown, not zero.
+            "rates": {"resume_failure_rate": None, "duplicated_discovery_rate": None,
+                      "mean_information_recovery_requests": None, "post_compaction_error_rate": None},
+            "context_tokens_saved": 0,
+            "verdict": "no_data",
+        }
+
+    def field(event, key, high=None):
+        value = event.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("event %r must be a nonnegative integer" % (key,))
+        if value < 0 or (high is not None and value > high):
+            raise ValueError("event %r is out of range" % (key,))
+        return value
+
+    n = resume_failures = duplicated = info_total = error_total = saved = 0
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError("each event must be an object")
+        n += 1
+        resume_failures += field(event, "resume_failure", 1)
+        duplicated += field(event, "duplicated_discovery", 1)
+        info_total += field(event, "information_recovery_requests")
+        error_total += field(event, "post_compaction_errors")
+        before = field(event, "tokens_before")
+        after = field(event, "tokens_after")
+        saved += max(before - after, 0)
+
+    resume_failure_rate = round(resume_failures / n, 4)
+    duplicated_discovery_rate = round(duplicated / n, 4)
+    mean_info = round(info_total / n, 4)
+    error_rate = round(error_total / n, 4)
+    verdict = ("ineffective"
+               if resume_failure_rate > 0.3 or duplicated_discovery_rate > 0.3
+               else "effective")
+    return {
+        "counts": {"resume_failure": resume_failures, "duplicated_discovery": duplicated,
+                   "information_recovery_requests": info_total, "post_compaction_errors": error_total},
+        "rates": {"resume_failure_rate": resume_failure_rate,
+                  "duplicated_discovery_rate": duplicated_discovery_rate,
+                  "mean_information_recovery_requests": mean_info,
+                  "post_compaction_error_rate": error_rate},
+        "context_tokens_saved": saved,
+        "verdict": verdict,
+    }
+
+
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config" / "open-models.json"
 
 
@@ -366,6 +627,23 @@ def _main(argv=None):
     cp.add_argument("--json", action="store_true")
     ho = sub.add_parser("handoff", help="build a handoff from a JSON task spec on stdin")
     ho.add_argument("--json", action="store_true")
+    zn = sub.add_parser("zone", help="compute optimal/degradation zones for a model")
+    zn.add_argument("--model", required=True, help="provider/model id as AOS names it")
+    zn.add_argument("--profile", default=None, help="path to a JSON task profile")
+    zn.add_argument("--config", default=str(DEFAULT_CONFIG), help="path to config/open-models.json")
+    ck = sub.add_parser("checkpoint", help="checkpoint documents and the release quality gate")
+    ck_sub = ck.add_subparsers(dest="checkpoint_command")
+    ck_template = ck_sub.add_parser("template", help="print the empty checkpoint template")
+    ck_validate = ck_sub.add_parser("validate", help="validate a checkpoint JSON file")
+    ck_validate.add_argument("file", help="path to the checkpoint JSON document")
+    ck_when = ck_sub.add_parser("when", help="natural_checkpoint over the model's zones")
+    ck_when.add_argument("--model", required=True, help="provider/model id as AOS names it")
+    ck_when.add_argument("--tokens", type=_nonnegative, required=True, help="current token count")
+    ck_when.add_argument("--event", default="none", help="natural boundary reached")
+    ck_when.add_argument("--profile", default=None, help="path to a JSON task profile")
+    ck_when.add_argument("--config", default=str(DEFAULT_CONFIG), help="path to config/open-models.json")
+    ef = sub.add_parser("effectiveness", help="assess compaction effectiveness from a JSON list")
+    ef.add_argument("file", help="path to a JSON list of post-compaction events")
     args = parser.parse_args(argv)
 
     if args.command == "state":
@@ -412,6 +690,53 @@ def _main(argv=None):
         else:
             print(f"handoff: task={result['task']!r}, modified={len(result['modified_files'])}, "
                   f"failed_tests={len(result['tests']['failed'])}, open_issues={len(result['open_issues'])}")
+        return 0
+    if args.command == "zone":
+        profile = None
+        if args.profile:
+            try:
+                profile = json.loads(Path(args.profile).read_text())
+            except (OSError, ValueError) as error:
+                print(f"ERRORE: {error}", file=sys.stderr)
+                return 1
+        result = zone(args.model, profile=profile, config_path=args.config)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "checkpoint":
+        if args.checkpoint_command == "template":
+            print(json.dumps(checkpoint_template(), ensure_ascii=False, indent=2))
+            return 0
+        if args.checkpoint_command == "validate":
+            try:
+                doc = json.loads(Path(args.file).read_text())
+            except (OSError, ValueError) as error:
+                print(f"ERRORE: {error}", file=sys.stderr)
+                return 2
+            result = validate_checkpoint(doc)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result["ok"] else 2
+        if args.checkpoint_command == "when":
+            profile = None
+            if args.profile:
+                try:
+                    profile = json.loads(Path(args.profile).read_text())
+                except (OSError, ValueError) as error:
+                    print(f"ERRORE: {error}", file=sys.stderr)
+                    return 1
+            zr = zone(args.model, profile=profile, config_path=args.config)
+            result = natural_checkpoint(args.tokens, zr, args.event)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        ck.print_help()
+        return 1
+    if args.command == "effectiveness":
+        try:
+            data = json.loads(Path(args.file).read_text())
+        except (OSError, ValueError) as error:
+            print(f"ERRORE: {error}", file=sys.stderr)
+            return 1
+        result = compaction_effectiveness(data)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     parser.print_help()
     return 1

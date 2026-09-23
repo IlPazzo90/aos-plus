@@ -1,0 +1,579 @@
+{
+  "schema": 1,
+  "capabilities": [
+    "coding",
+    "debugging",
+    "architecture",
+    "reasoning",
+    "review",
+    "security",
+    "tool_use",
+    "legal",
+    "research",
+    "writing",
+    "data",
+    "business",
+    "risk_reasoning"
+  ],
+  "class_order": [
+    "LOW",
+    "OPEN",
+    "MID",
+    "HIGH",
+    "PREMIUM"
+  ],
+  "escalation_ladder": {
+    "LOW": "MID",
+    "OPEN": "MID",
+    "MID": "HIGH",
+    "HIGH": "PREMIUM",
+    "PREMIUM": null
+  },
+  "class_cost_units": {
+    "LOW": 1,
+    "OPEN": 1.5,
+    "MID": 3,
+    "HIGH": 6,
+    "PREMIUM": 10
+  },
+  "class_max_risk": {
+    "LOW": "LOW",
+    "OPEN": "MEDIUM",
+    "MID": "MEDIUM",
+    "HIGH": "HIGH",
+    "PREMIUM": "HIGH"
+  },
+  "min_success_probability": {
+    "LOW": 0.6,
+    "MEDIUM": 0.7,
+    "HIGH": 0.8,
+    "CRITICAL": 0.9
+  },
+  "capability_floor": {
+    "need_at_least": 0.7,
+    "max_shortfall": 0.25
+  },
+  "context_tokens_at_full_requirement": 200000,
+  "exploration": {
+    "rate": 0.05,
+    "max_risk": "LOW",
+    "min_reversibility": 0.7,
+    "max_tier": "T2",
+    "max_confidence": 0.5
+  },
+  "domains": {
+    "ENGINEERING": {
+      "keywords": [
+        "correggi questo bug",
+        "costruisci questa funzione",
+        "bug",
+        "crash",
+        "stack trace",
+        "traceback",
+        "debug",
+        "debugging",
+        "refactoring",
+        "refactor",
+        "implementa",
+        "implementazione",
+        "funzione",
+        "feature",
+        "funzionalita",
+        "function",
+        "codice",
+        "code",
+        "compilare",
+        "compila",
+        "compile",
+        "dipendenza",
+        "dependency",
+        "api",
+        "database",
+        "framework",
+        "script",
+        "deploy",
+        "build",
+        "lint",
+        "test",
+        "unit test",
+        "integrazione",
+        "integration",
+        "modulo",
+        "module",
+        "applicazione",
+        "application",
+        "classe",
+        "class",
+        "metodo",
+        "method",
+        "query",
+        "endpoint",
+        "repository",
+        "commit",
+        "merge",
+        "pull request"
+      ],
+      "capabilities": {
+        "coding": 0.9,
+        "debugging": 0.6,
+        "architecture": 0.5,
+        "reasoning": 0.6,
+        "review": 0.5,
+        "security": 0.4,
+        "tool_use": 0.7
+      }
+    },
+    "LEGAL_COMPLIANCE": {
+      "keywords": [
+        "scrivi questo contratto",
+        "scrivimi un contratto di manutenzione",
+        "modulo gdpr",
+        "contratto",
+        "contract",
+        "gdpr",
+        "privacy",
+        "privacy policy",
+        "legale",
+        "legal",
+        "clausola",
+        "clause",
+        "normativa",
+        "norma",
+        "legge",
+        "law",
+        "regolamento",
+        "regulation",
+        "compliance",
+        "conformita",
+        "termini",
+        "terms",
+        "consenso",
+        "consent",
+        "dati personali",
+        "personal data",
+        "accordo",
+        "agreement",
+        "nda",
+        "non disclosure",
+        "responsabilita",
+        "liability",
+        "garanzia",
+        "warranty",
+        "giurisdizione",
+        "jurisdiction",
+        "arbitrato",
+        "parti",
+        "firma",
+        "signature",
+        "licenza",
+        "license"
+      ],
+      "capabilities": {
+        "legal": 0.9,
+        "reasoning": 0.6,
+        "review": 0.5,
+        "writing": 0.7,
+        "risk_reasoning": 0.6
+      }
+    },
+    "BUSINESS_OPERATIONS": {
+      "keywords": [
+        "strategia",
+        "strategy",
+        "incentivi",
+        "incentives",
+        "azienda",
+        "company",
+        "business",
+        "kpi",
+        "budget",
+        "fatturato",
+        "revenue",
+        "costi",
+        "costs",
+        "mercato",
+        "market",
+        "concorrenti",
+        "competitors",
+        "pricing",
+        "prezzi",
+        "vendite",
+        "sales",
+        "marketing",
+        "fornitori",
+        "suppliers",
+        "processo",
+        "process",
+        "operativo",
+        "operations",
+        "organizzazione",
+        "organigramma",
+        "piano aziendale",
+        "business plan",
+        "roadmap",
+        "stakeholder",
+        "clienti",
+        "customers",
+        "go to market"
+      ],
+      "capabilities": {
+        "business": 0.9,
+        "reasoning": 0.6,
+        "writing": 0.6,
+        "data": 0.5,
+        "risk_reasoning": 0.6
+      }
+    },
+    "RESEARCH": {
+      "keywords": [
+        "fammi una ricerca",
+        "ricerca",
+        "research",
+        "cerca",
+        "search",
+        "trova",
+        "find",
+        "fonti",
+        "sources",
+        "primary source",
+        "incentivi",
+        "normativa",
+        "letteratura",
+        "literature",
+        "studio",
+        "study",
+        "paper",
+        "articolo scientifico",
+        "indaga",
+        "investigate",
+        "esplora",
+        "explore",
+        "bibliografia",
+        "references",
+        "cita",
+        "cite",
+        "prove",
+        "evidence",
+        "stato dell'arte",
+        "state of the art",
+        "benchmark",
+        "confronta",
+        "compare",
+        "sintetizza",
+        "synthesize",
+        "approfondisci"
+      ],
+      "capabilities": {
+        "research": 0.9,
+        "reasoning": 0.7,
+        "writing": 0.6,
+        "data": 0.5,
+        "legal": 0.4
+      }
+    },
+    "DATA_ANALYTICS": {
+      "keywords": [
+        "analizza questi dati",
+        "analizza questo excel",
+        "analizza i kpi",
+        "analizza",
+        "analisi",
+        "kpi",
+        "dati",
+        "data",
+        "excel",
+        "spreadsheet",
+        "foglio di calcolo",
+        "csv",
+        "analysis",
+        "statistiche",
+        "statistics",
+        "metriche",
+        "metrics",
+        "dashboard",
+        "grafico",
+        "chart",
+        "report",
+        "dataset",
+        "tabella",
+        "pivot",
+        "sql",
+        "visualizza",
+        "visualization",
+        "correlazione",
+        "cluster",
+        "regressione",
+        "modello predittivo"
+      ],
+      "capabilities": {
+        "data": 0.9,
+        "reasoning": 0.6,
+        "writing": 0.4,
+        "tool_use": 0.5,
+        "business": 0.4
+      }
+    },
+    "GENERAL": {
+      "keywords": [],
+      "capabilities": {
+        "reasoning": 0.5,
+        "writing": 0.5
+      }
+    }
+  },
+  "task_types": {
+    "bug_fix": {
+      "keywords": [
+        "correggi questo bug",
+        "bug",
+        "errore",
+        "crash",
+        "stack trace",
+        "traceback",
+        "fissa",
+        "fix",
+        "debug",
+        "non funziona",
+        "si rompe",
+        "exception",
+        "segfault",
+        "risolvi"
+      ],
+      "capabilities": {
+        "debugging": 0.9
+      }
+    },
+    "feature": {
+      "keywords": [
+        "costruisci questa funzione",
+        "costruisci",
+        "feature",
+        "funzionalita",
+        "implementa",
+        "nuova funzionalita",
+        "nuovo modulo",
+        "aggiungi",
+        "modulo"
+      ],
+      "capabilities": {
+        "coding": 0.8,
+        "architecture": 0.5
+      }
+    },
+    "analysis": {
+      "keywords": [
+        "analizza",
+        "analisi",
+        "analysis",
+        "kpi",
+        "excel",
+        "dati",
+        "report",
+        "metriche",
+        "dashboard",
+        "grafico",
+        "statistiche"
+      ],
+      "capabilities": {
+        "data": 0.8,
+        "reasoning": 0.6
+      }
+    },
+    "drafting": {
+      "keywords": [
+        "scrivi",
+        "redigi",
+        "contratto",
+        "bozza",
+        "draft",
+        "clausola",
+        "documento",
+        "lettera",
+        "accordo",
+        "modulo gdpr"
+      ],
+      "capabilities": {
+        "writing": 0.8
+      }
+    },
+    "research": {
+      "keywords": [
+        "ricerca",
+        "cerca",
+        "trova",
+        "incentivi",
+        "normativa",
+        "fonti",
+        "primary source",
+        "indaga",
+        "studia",
+        "esplora"
+      ],
+      "capabilities": {
+        "research": 0.9
+      }
+    },
+    "review": {
+      "keywords": [
+        "revisione",
+        "review",
+        "controlla",
+        "verifica",
+        "esamina",
+        "valuta",
+        "revisiona"
+      ],
+      "capabilities": {
+        "review": 0.8
+      }
+    }
+  },
+  "requirement_domains": [
+    "LEGAL_COMPLIANCE",
+    "RESEARCH",
+    "BUSINESS_OPERATIONS"
+  ],
+  "production_domains": [
+    "ENGINEERING",
+    "DATA_ANALYTICS"
+  ],
+  "skill_routes": {
+    "ENGINEERING": {
+      "bug_fix": [
+        "superpowers:systematic-debugging"
+      ],
+      "feature": [
+        "superpowers:test-driven-development"
+      ]
+    },
+    "LEGAL_COMPLIANCE": {
+      "drafting": [
+        "anthropic-skills:consulente-legale-fiscale"
+      ],
+      "review": [
+        "revisione-legale"
+      ],
+      "*": [
+        "anthropic-skills:consulente-legale-fiscale"
+      ]
+    },
+    "RESEARCH": {
+      "*": [
+        "research"
+      ]
+    },
+    "DATA_ANALYTICS": {
+      "*": [
+        "anthropic-skills:xlsx"
+      ]
+    },
+    "BUSINESS_OPERATIONS": {},
+    "GENERAL": {}
+  },
+  "writing_skills": {
+    "threshold": 0.7,
+    "skills": [
+      "testo-umano",
+      "humanizer"
+    ]
+  },
+  "verification": {
+    "ENGINEERING": [
+      "project tests",
+      "lint",
+      "build",
+      "aos-security.sh at risk >= MEDIUM"
+    ],
+    "LEGAL_COMPLIANCE": [
+      "document consistency: parties, defined terms, cross references, dates, amounts",
+      "cited norms verified against primary sources"
+    ],
+    "BUSINESS_OPERATIONS": [
+      "every number recomputed from its source"
+    ],
+    "RESEARCH": [
+      "every claim linked to a primary source with date"
+    ],
+    "DATA_ANALYTICS": [
+      "row counts and schema checked",
+      "totals recomputed independently"
+    ],
+    "GENERAL": [
+      "targeted check of the requested outcome"
+    ]
+  },
+  "failure_types": {
+    "reasoning_failure": {
+      "action": "escalate",
+      "attribution": "model"
+    },
+    "implementation_failure": {
+      "action": "retry_then_escalate",
+      "attribution": "model"
+    },
+    "tool_failure": {
+      "action": "retry_same",
+      "attribution": "infra"
+    },
+    "context_failure": {
+      "action": "retry_same_with_more_context",
+      "attribution": "aos"
+    },
+    "instruction_failure": {
+      "action": "retry_same_with_clarified_contract",
+      "attribution": "model"
+    },
+    "hallucination": {
+      "action": "escalate",
+      "attribution": "model"
+    },
+    "test_failure": {
+      "action": "retry_then_escalate",
+      "attribution": "model"
+    },
+    "timeout": {
+      "action": "retry_same",
+      "attribution": "infra"
+    },
+    "routing_failure": {
+      "action": "reroute",
+      "attribution": "aos"
+    },
+    "capability_mismatch": {
+      "action": "reroute",
+      "attribution": "aos"
+    },
+    "review_failure": {
+      "action": "escalate_reviewer",
+      "attribution": "model"
+    },
+    "security_violation": {
+      "action": "stop_and_ask_human",
+      "attribution": "model"
+    },
+    "architecture_ambiguity": {
+      "action": "premium_planner",
+      "attribution": "aos"
+    }
+  },
+  "max_same_model_retries": 1,
+  "decompose_task_types": [
+    "feature"
+  ],
+  "learning": {
+    "half_life_days": 30,
+    "prior_strength": 5,
+    "min_observations": 20,
+    "recent_window": 10,
+    "drift_delta": 0.2,
+    "promote_above": 0.85,
+    "demote_below": 0.5,
+    "min_confidence": 0.6,
+    "recommend_min_evidence": 5,
+    "recommend_failure_rate": 0.6,
+    "retry_credit": 0.8,
+    "escalation_credit": 0.7,
+    "finding_credit": 0.95,
+    "max_counted_findings": 5
+  }
+}

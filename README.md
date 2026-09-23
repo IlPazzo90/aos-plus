@@ -1,11 +1,13 @@
 # AOS Plus — AI Development Operating System
 
-> **2.6.0.** Il router decide anche i task piccoli: un T0 resta sulla sessione host,
-> sul suo subagent economico per rischio (`host_subagents` nella politica), e non passa
-> più dal worker open. La review cross-model vale per ogni T2/T3 a qualsiasi rischio,
-> mai per T0/T1. L'harness open è Claude Code con soli strumenti file sotto seatbelt;
-> rifiuta prima di spendere un repository sotto `.claude/` o `.codex/`, dove ogni
-> scrittura verrebbe negata.
+> **3.0.0.** Chiedi «scrivimi un contratto di manutenzione» e AOS risponde da solo:
+> dominio LEGAL_COMPLIANCE, le skill legali e di scrittura pertinenti, esecutore MID,
+> perché il modello open del catalogo dichiara 0,4 di capacità legale e il router lo
+> scarta prima ancora di dargli un punteggio. Il modello non lo sceglie più il tier:
+> lo sceglie il costo atteso, che conta anche i retry e l'escalation di un modello
+> economico che sbaglia spesso. Sei domini, bundle solo quando servono, un hook che
+> classifica ogni richiesta senza spendere token, una matrice di prestazioni che nasce
+> dall'uso reale. Come funziona: [adaptive](references/adaptive.md).
 
 A reusable process skill for Claude Code and Codex: classify scope and risk, load
 relevant specialist skills, verify work with evidence, and organize context using
@@ -35,6 +37,24 @@ verifies the link; `--host codex --uninstall` removes only the link. Restart the
 session to refresh skill discovery. Invoke `$aos` in Codex or `/aos` in Claude Code. Keep
 host-specific permissions and hooks separate. Installation does not grant deployment
 authority.
+
+## Prompt hook (optional, 3.0.0)
+
+`bin/aos-prompt-hook.py` adds one classification line (domains, task type, pertinent
+skills) to every request, locally, with no model call. It reads the prompt from stdin,
+never runs anything, never touches the network and always exits 0; greetings, slash
+commands and short prompts stay silent, and `AOS_PROMPT_HOOK=off` turns it off. The
+installer does not register it: add a `UserPromptSubmit` entry yourself.
+
+```json
+{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "timeout": 5,
+  "command": "[ ! -f \"$HOME/.claude/skills/aos/bin/aos-prompt-hook.py\" ] || python3 \"$HOME/.claude/skills/aos/bin/aos-prompt-hook.py\""}]}]}}
+```
+
+Claude Code: merge it into `~/.claude/settings.json`. Codex: merge it into
+`~/.codex/hooks.json`; Codex runs a new hook only after you trust its hash (`/hooks` in
+the TUI). The line is a hint: tier, risk and executor come from the census and
+`bin/aos-orchestrate.py route`.
 
 ## The UI/UX role
 

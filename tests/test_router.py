@@ -80,13 +80,18 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(d.manual_model_override)
         self.assertFalse(d.routed_by_aos)
 
-    # 5. DeepSeek unavailable -> Qwen (fallback).
-    def test_primary_unavailable_falls_back_to_qwen(self):
-        d = router.decide("T1", "LOW", config=self.config,
+    # 5. Primary unavailable -> the configured cheap fallback. Qwen left the pool on
+    #    2026-09-23: the shipped policy has no fallback, so the ladder goes to premium.
+    def test_primary_unavailable_falls_back_to_the_configured_fallback(self):
+        config = router.RoutingConfig(open_primary="vendor/primary", open_fallback="vendor/fallback")
+        d = router.decide("T1", "LOW", config=config,
                           open_primary_available=False, open_fallback_available=True)
         self.assertEqual(d.executor, "open")
-        self.assertEqual(d.model, self.config.open_fallback)
+        self.assertEqual(d.model, "vendor/fallback")
         self.assertIn("fallback open", d.rationale)
+        self.assertIsNone(self.config.open_fallback)
+        shipped = router.decide("T1", "LOW", config=self.config, open_primary_available=False)
+        self.assertEqual(shipped.executor, "premium")
 
     # 6. Both open models unavailable -> premium fallback, never a security regression.
     def test_no_open_provider_falls_back_to_premium(self):
@@ -416,9 +421,10 @@ class CommandLineDefaultTests(unittest.TestCase):
 
     def test_open_ladder_never_goes_backwards_from_premium(self):
         config = router.load_config(CONFIG)
-        # An eligible MID (the fallback's model, reused) with the fallback unavailable:
-        # primary twice, then the MID stands in; once the caller reports it ran, premium.
-        config = router.replace(config, open_mid=config.open_fallback)
+        # An eligible MID (the primary's model, reused: the shipped policy has no
+        # fallback since 3.0) with the fallback unavailable: primary twice, then the
+        # MID stands in; once the caller reports it ran, premium.
+        config = router.replace(config, open_mid=config.open_primary)
         seen = [router.decide('T1', 'LOW', config=config, open_fallback_available=False,
                               failed_open_attempts=n) for n in range(3)]
         self.assertEqual([d.model for d in seen[:2]], [config.open_primary] * 2)
@@ -471,10 +477,10 @@ class CommandLineDefaultTests(unittest.TestCase):
                     pipe.fail(state, 'failed')
 
     def test_a_primary_lost_mid_task_does_not_consume_the_fallback(self):
-        config = router.load_config(CONFIG)
+        config = router.RoutingConfig(open_primary='vendor/primary', open_fallback='vendor/fallback')
         d = router.decide('T1', 'LOW', config=config, open_primary_available=False,
                           failed_open_attempts=2)
-        self.assertEqual((d.executor, d.model), ('open', config.open_fallback))
+        self.assertEqual((d.executor, d.model), ('open', 'vendor/fallback'))
 
     def test_no_premium_review_is_promised_without_a_reviewer(self):
         config = router.load_config(CONFIG)

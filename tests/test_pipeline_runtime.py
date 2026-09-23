@@ -220,13 +220,44 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(self.worker_models), 1)
         self.assertEqual(self.state['role'], 'executor')
 
+    def _fallback_policy(self):
+        """The shipped policy with a cheap open fallback restored (3.0 ships none).
+
+        The ladder mechanism outlives the model that used to fill the slot: these
+        tests keep covering it on a policy that still has a fallback.
+        """
+        raw = json.loads((ROOT / 'config/open-models.json').read_text())
+        fallback = 'vercel/alibaba/qwen3-coder-next'
+        raw['open']['fallback'] = fallback
+        raw['model_catalog'][fallback]['availability'] = 'configured'
+        path = self.repo.parent / 'policy-with-fallback.json'
+        path.write_text(json.dumps(raw))
+        self.addCleanup(path.unlink)
+        policy = patch.object(entry, 'POLICY', path)
+        policy.start()
+        self.addCleanup(policy.stop)
+        self.config = entry.router.load_config(path)
+        return fallback
+
+    def test_d_without_fallback_two_open_attempts_then_premium(self):
+        self.assertIsNone(self.config.open_fallback)
+        self.step('plan')
+        for _ in range(2):
+            with patch.object(entry.open_executor, 'run', side_effect=self._failing_worker): self.step('execute')
+        self.assertEqual(self.state['stage'], 'escalate')
+        self.assertEqual(self.worker_models, [self.config.open_primary] * 2)
+        self.step('escalate')
+        self.assertTrue(self.state['premium_execution_used'])
+
     def test_d_retry_then_fallback_then_premium_execution_completes(self):
+        fallback = self._fallback_policy()
+        self.begin('T2')
         self.step('plan')
         for _ in range(4):
             with patch.object(entry.open_executor, 'run', side_effect=self._failing_worker): self.step('execute')
         self.assertEqual(self.state['stage'], 'escalate')
         self.assertFalse(self.state['premium_execution_used'])
-        self.assertEqual(self.worker_models, [self.config.open_primary] * 2 + [self.config.open_fallback] * 2)
+        self.assertEqual(self.worker_models, [self.config.open_primary] * 2 + [fallback] * 2)
         self.step('escalate')
         self.assertTrue(self.state['premium_execution_used'])
         self.checks()
@@ -428,6 +459,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(entry.learning.list_outcomes(self.learning_db), [])
 
     def test_learning_advice_excludes_primary_for_this_pipeline_only(self):
+        self._fallback_policy()
         advice = {'excluded_models': [self.config.open_primary], 'recommendations': []}
         selection = {'runtime': 'claude-code'}
         with patch.object(entry.open_executor, 'resolve', return_value=selection), \
