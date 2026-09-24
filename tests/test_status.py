@@ -460,6 +460,67 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(status.main(["usage", "--from-result", str(payload)]), 0)
 
 
+class SessionModelTests(unittest.TestCase):
+    """The `model` subcommand stores the session model the status line feeds back."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory.name,
+                                               "CLAUDE_CODE_SESSION_ID": "sess-1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.directory.cleanup)
+
+    def record(self, session="sess-1"):
+        return json.loads((Path(self.directory.name) / (session + ".json")).read_text())
+
+    def test_model_stores_session_model(self):
+        status.main(["model", "--model", "claude-fable-5-1"])
+        self.assertEqual(self.record()["session_model"], "claude-fable-5-1")
+
+    def test_same_model_does_not_rewrite_the_file(self):
+        status.main(["model", "--model", "claude-fable-5-1"])
+        with mock.patch.object(status, "write", wraps=status.write) as write:
+            status.main(["model", "--model", "claude-fable-5-1"])
+        write.assert_not_called()
+
+    def test_invalid_session_id_writes_nothing_and_exits_zero(self):
+        code = status.main(["--session", "../evil", "model", "--model", "claude-fable-5-1"])
+        self.assertEqual(code, 0)
+        self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
+
+    def test_invalid_model_writes_nothing_and_exits_zero(self):
+        for bad in ("", "   ", "bad!model", "x" * 81, "@model"):
+            with self.subTest(model=bad):
+                code = status.main(["model", "--model", bad])
+                self.assertEqual(code, 0)
+        self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
+
+    def test_model_is_stripped(self):
+        status.main(["model", "--model", "  claude-fable-5-1  "])
+        self.assertEqual(self.record()["session_model"], "claude-fable-5-1")
+
+    def test_expired_record_drops_routing_and_stores_session_model(self):
+        path = Path(self.directory.name) / "sess-1.json"
+        path.write_text(json.dumps({"tier": "T2", "risk": "HIGH", "routed_at": 1, "expires_at": 1}))
+        status.main(["model", "--model", "claude-fable-5-1"])
+        record = self.record()
+        self.assertNotIn("tier", record)
+        self.assertNotIn("routed_at", record)
+        self.assertEqual(record["session_model"], "claude-fable-5-1")
+
+    def test_set_keeps_session_model(self):
+        status.main(["model", "--model", "claude-fable-5-1"])
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertEqual(self.record()["session_model"], "claude-fable-5-1")
+
+    def test_set_profile_keeps_session_model(self):
+        status.main(["model", "--model", "claude-fable-5-1"])
+        status.set_profile("sess-1", ["ENGINEERING"], "feature")
+        self.assertEqual(self.record()["session_model"], "claude-fable-5-1")
+
+
 class ExecutorHookTests(unittest.TestCase):
     """The open executor publishes usage without letting the bar break a delegation."""
 
@@ -485,6 +546,52 @@ class ExecutorHookTests(unittest.TestCase):
                                               "CLAUDE_CODE_SESSION_ID": ""}):
                 executor.publish_status(DEEPSEEK, {"usage": {"input_tokens": 10, "output_tokens": 5}})
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+
+class SessionModelGuardTests(unittest.TestCase):
+    """set_session_model is public: it validates its own inputs."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory.name,
+                                               "CLAUDE_CODE_SESSION_ID": "real-session"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_unsafe_session_is_refused_by_the_setter(self):
+        with mock.patch.object(status, "write") as write:
+            self.assertEqual(status.set_session_model("../escape", "claude-fable-5-1"), {})
+        write.assert_not_called()
+
+    def test_non_string_model_writes_nothing(self):
+        for model in (True, 123, None):
+            self.assertEqual(status.set_session_model("sess", model), {})
+        self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
+
+    def test_a_held_lock_is_skipped_not_waited_for(self):
+        import fcntl
+        lock = open(Path(self.directory.name) / "sess.lock", "w")
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        self.assertEqual(status.set_session_model("sess", "claude-fable-5-1"), {})
+        self.assertFalse((Path(self.directory.name) / "sess.json").exists())
+
+    def test_brief_contention_still_writes_the_model(self):
+        import fcntl, threading
+        lock = open(Path(self.directory.name) / "sess.lock", "w")
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        threading.Timer(0.1, lambda: fcntl.flock(lock, fcntl.LOCK_UN)).start()
+        status.set_session_model("sess", "claude-fable-5-1")
+        self.assertEqual(self.record_of("sess")["session_model"], "claude-fable-5-1")
+
+    def record_of(self, session):
+        return json.loads((Path(self.directory.name) / (session + ".json")).read_text())
+
+    def test_empty_explicit_session_does_not_fall_back_to_the_environment(self):
+        status.main(["--session", "", "model", "--model", "claude-fable-5-1"])
+        self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
 
 
 if __name__ == "__main__":

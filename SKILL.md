@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "3.4.0"
+  version: "3.5.0"
 description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -117,7 +117,8 @@ worker lease, batched fixes, escalation by failure type: `references/adaptive.md
 Repeat census, announcement and routing when classification changes — and **every new
 task in the same session is a new classification**: a follow-up request that adds a
 feature, a migration or a fix is routed again, never run on the previous task's route.
-The prompt hook reminds a routed Claude session (`tier attivo … da <n> min`).
+The prompt hook reminds a routed Claude session (`tier attivo … da <n> min`) and flags a
+fix or feature prompt in a session with no routing recorded (`nessun routing registrato`).
 HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. The main session
 runs on an accepted model (`premium.session_models`: Opus on Claude, `gpt-6-astra` on
 Codex); Fable plans and reviews through the router, it is not a session model. On a

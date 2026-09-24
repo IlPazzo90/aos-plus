@@ -19,6 +19,7 @@ import math
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -32,6 +33,8 @@ def status_dir():
 
 
 SESSION_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+MODEL_LOCK_WAIT_SECONDS = 0.5
+MODEL_RE = re.compile(r'^[A-Za-z0-9._:/\[\] -]{1,80}$')
 
 
 def session_id(explicit=None):
@@ -69,12 +72,29 @@ def load_live(session):
 
 
 @contextlib.contextmanager
-def locked(session):
-    """Serialize read-modify-write of one session record across processes."""
+def locked(session, wait=None):
+    """Serialize read-modify-write of one session record across processes.
+
+    wait=None blocks until the lock is free. A number of seconds bounds the
+    wait and then raises BlockingIOError: the status line must never freeze on
+    a lock held by a stuck process, but ordinary millisecond contention must
+    not cost it the write either.
+    """
     directory = status_dir()
     directory.mkdir(parents=True, exist_ok=True)
     with open(directory / (session + '.lock'), 'w') as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if wait is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        else:
+            deadline = time.monotonic() + wait
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
         try:
             yield
         finally:
@@ -354,6 +374,34 @@ def set_profile(session, domains, task_type, ttl=DEFAULT_TTL_SECONDS):
         return write(session, state, ttl)
 
 
+def set_session_model(session, model, ttl=DEFAULT_TTL_SECONDS):
+    """Store the model the session is running, keeping every other key.
+
+    The status line calls this on every render, so an unchanged model must not
+    rewrite the file. A record whose expiry is past is not revived: the model is
+    stored on a fresh record with no routing. Any invalid input writes nothing.
+    """
+    # A public entry point: validate here, not only in the CLI wrapper.
+    if not isinstance(session, str) or not session or session_id(session) != session:
+        return {}
+    if not isinstance(model, str):
+        return {}
+    model = model.strip()
+    if not MODEL_RE.match(model):
+        return {}
+    try:
+        # The status line calls this in the foreground: wait at most half a
+        # second for a busy lock, then skip; the next render tries again.
+        with locked(session, wait=MODEL_LOCK_WAIT_SECONDS):
+            state = load_live(session)
+            if state.get('session_model') == model:
+                return {}
+            state['session_model'] = model
+            return write(session, state, ttl)
+    except BlockingIOError:
+        return {}
+
+
 def add_usage(session, model_ref, tokens, ttl):
     if not session:
         return {}
@@ -419,6 +467,17 @@ def cmd_clear(args):
     return ''
 
 
+def cmd_model(args):
+    # An explicit --session must be valid as given: "" or "../x" never falls
+    # back to the environment's session.
+    if args.session is not None and session_id(args.session) != args.session:
+        return {}
+    session = session_id(args.session)
+    if not session:
+        return {}
+    return set_session_model(session, args.model, args.ttl)
+
+
 def _count(value):
     number = int(value)
     if number < 0:
@@ -466,6 +525,10 @@ def main(argv=None):
 
     clear = sub.add_parser('clear', help='drop this session record')
     clear.set_defaults(handler=cmd_clear)
+
+    model = sub.add_parser('model', help='store the model the session is running')
+    model.add_argument('--model', required=True)
+    model.set_defaults(handler=cmd_model)
 
     args = parser.parse_args(argv)
     result = args.handler(args)

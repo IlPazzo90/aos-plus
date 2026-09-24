@@ -504,7 +504,9 @@ reason stays on the Claude status bar. The prompt hook appends the session model
 hint when it is not an accepted session model (`premium.session_models`, read from the
 payload or the transcript tail); a premium planner (Fable) as the session model is told it
 burns premium tokens. Under Claude Code it also reminds a session whose status record
-already carries a tier to route a new task again (`routed_at`, written by `set`), and on
+already carries a tier to route a new task again (`routed_at`, written by `set`), flags a
+fix/feature prompt when no tier is recorded at all, reads the session model from the status
+record (`aos-status.py model`, fed by the status line) when the transcript has none yet, and on
 both hosts it reports an ORANGE/RED context from the transcript's last usage
 (`context_policy`), as a `systemMessage` to the user too under Claude Code.
 

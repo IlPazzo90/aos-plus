@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.5.0 — avviso a chi non ha mai chiesto il router, modello di sessione noto dal primo prompt — 2026-09-24
+
+Dopo la 3.4 il segnale di contesto ha funzionato, ma nessuna sessione ha chiamato il router, e
+il promemoria vuole un tier già registrato. Al primo prompt di una sessione Claude, inoltre, la
+trascrizione non dice ancora il modello, quindi l'avviso sul modello non arrivava.
+
+**Lavoro senza routing.** Un prompt `bug_fix` o `feature` in una sessione Claude senza tier
+valido (record assente, scaduto, corrotto, o tier fuori da T0–T3) riceve `nessun routing
+registrato: censimento, router e aos-status set prima della prima modifica`.
+
+**Modello di sessione dal record.** Nuovo `aos-status.py --session=<id> model --model=<id>`:
+scrive `session_model` sul record vivo solo quando cambia, valida id e modello, attende il lock
+al massimo 0,5 s. Una status line può chiamarlo con `.model.id`; l'hook lo usa quando payload e
+trascrizione non dicono il modello.
+
+Verifiche: suite completa, prova status line → hook, revisione cross-model Codex in 6 round
+(12 finding corretti).
+
 ## 3.4.0 — la sessione lunga rifà il routing e sente quando il contesto è pieno — 2026-09-24
 
 Dopo la 3.3.0, un pomeriggio di sessioni reali: nessun lancio del worker open. Il router era

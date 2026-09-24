@@ -589,6 +589,13 @@ class RerouteReminderTests(unittest.TestCase):
         self.assertIn("tier attivo T2/HIGH: se è un task nuovo", body)
         self.assertLessEqual(len(body), hook.LINE_CAP)
 
+    def test_corrupt_tier_is_not_a_routing(self):
+        for tier in ("BANANA", " "):
+            self.write(tier=tier, risk="HIGH")
+            body = self.body("aggiungi una nuova feature al login")
+            self.assertNotIn("tier attivo", body)
+            self.assertIn("nessun routing registrato", body)
+
     def test_prompt_without_task_type_no_reminder(self):
         self.write(tier="T2", risk="LOW")
         self.assertEqual(hook.reroute_reminder({"session_id": "sess-rr"}, None), "")
@@ -597,6 +604,111 @@ class RerouteReminderTests(unittest.TestCase):
         self.write(tier="T2", risk="LOW")
         os.environ.pop("CLAUDE_PROJECT_DIR", None)
         self.assertNotIn("tier attivo", self.body())
+
+
+class SessionModelFallbackTests(unittest.TestCase):
+    """The status record's session_model reaches the first prompt's model probe."""
+
+    def setUp(self):
+        import tempfile
+        self.registry = hook._load_orchestrate().load_registry()
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory,
+                                               "CLAUDE_PROJECT_DIR": "/x"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, session="sess-sm", **record):
+        record.setdefault("expires_at", time.time() + 3600)
+        (Path(self.directory) / (session + ".json")).write_text(json.dumps(record))
+
+    def test_record_session_model_warns_on_the_first_prompt(self):
+        self.write(session_model="claude-fable-5-1")
+        output = hook.decide({"prompt": "correggi questo bug nel file app.py",
+                              "session_id": "sess-sm"}, self.registry)
+        self.assertIsNotNone(output)
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("sessione su claude-fable-5-1: consuma token premium", body)
+
+    def test_transcript_model_wins_over_the_record(self):
+        self.write(session_model="claude-fable-5-1")
+        path = Path(self.directory) / "t.jsonl"
+        path.write_text('{"type":"assistant","message":{"model":"claude-opus-5-5"}}\n')
+        self.assertEqual(hook.session_model({"session_id": "sess-sm", "transcript_path": str(path)}),
+                         "claude-opus-5-5")
+
+    def test_outside_claude_code_the_record_is_not_read(self):
+        self.write(session_model="claude-fable-5-1")
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.assertIsNone(hook.session_model({"session_id": "sess-sm"}))
+
+    def test_record_without_session_model_returns_none(self):
+        self.write(domains=["ENGINEERING"])
+        self.assertIsNone(hook.session_model({"session_id": "sess-sm"}))
+
+
+class UnroutedNoticeTests(unittest.TestCase):
+    """A work prompt in a session that never routed gets the unrouted notice."""
+
+    def setUp(self):
+        import tempfile
+        self.registry = hook._load_orchestrate().load_registry()
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory,
+                                               "CLAUDE_PROJECT_DIR": "/x"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, session="sess-un", **record):
+        record.setdefault("expires_at", time.time() + 3600)
+        (Path(self.directory) / (session + ".json")).write_text(json.dumps(record))
+
+    def body(self, prompt="correggi questo bug nel file app.py", session="sess-un"):
+        output = hook.decide({"prompt": prompt, "session_id": session}, self.registry)
+        return output["hookSpecificOutput"]["additionalContext"] if output else None
+
+    def test_feature_prompt_with_no_record_gets_the_notice(self):
+        body = self.body("aggiungi una nuova feature al modulo di login")
+        self.assertIn("nessun routing registrato", body)
+
+    def test_bug_fix_prompt_with_a_record_without_tier_gets_the_notice(self):
+        self.write(domains=["ENGINEERING"])
+        self.assertIn("nessun routing registrato", self.body())
+
+    def test_review_prompt_with_no_tier_gets_nothing(self):
+        self.write(domains=["ENGINEERING"])
+        self.assertNotIn("nessun routing registrato",
+                         self.body("controlla e verifica questo codice per la review finale"))
+
+    def test_research_prompt_with_no_tier_gets_nothing(self):
+        self.assertNotIn("nessun routing registrato",
+                         self.body("fammi una ricerca sulle fonti primarie del tema"))
+
+    def test_record_with_tier_keeps_the_existing_reminder(self):
+        self.write(tier="T2", risk="LOW")
+        body = self.body()
+        self.assertIn("tier attivo T2/LOW", body)
+        self.assertNotIn("nessun routing registrato", body)
+
+    def test_codex_gets_nothing(self):
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.write(tier="T2", risk="LOW")
+        body = self.body()
+        self.assertNotIn("nessun routing registrato", body)
+        self.assertNotIn("tier attivo", body)
+
+    def test_expired_record_gets_the_notice(self):
+        self.write(tier="T2", risk="LOW", expires_at=time.time() - 1)
+        self.assertIn("nessun routing registrato", self.body())
+
+    def test_corrupt_expiry_gets_the_notice(self):
+        self.write(tier="T2", risk="LOW", expires_at="corrupt")
+        self.assertIn("nessun routing registrato", self.body())
+
+    def test_prompt_without_task_type_gets_nothing(self):
+        self.assertEqual(hook.reroute_reminder({"session_id": "sess-un"}, None), "")
 
 
 if __name__ == "__main__":

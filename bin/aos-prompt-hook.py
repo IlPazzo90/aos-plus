@@ -36,6 +36,7 @@ TRANSCRIPT_TAIL_BYTES = 256 * 1024
 HOOK_EVENT = "UserPromptSubmit"
 LINE_CAP = 520
 CONTEXT_ALERT_STATES = ("ORANGE", "RED")
+ROUTED_TASK_TYPES = ("bug_fix", "feature")
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config/open-models.json"
 
 
@@ -307,7 +308,9 @@ def reroute_reminder(payload, task_type, now=None):
     """Segment asking a routed session to route a new work prompt again.
 
     Claude Code only: the status record is where the routed tier lives. Read
-    before this prompt's profile is published. Any failure -> "".
+    before this prompt's profile is published. A work prompt (`bug_fix` or
+    `feature`) in a session that never routed gets the unrouted notice instead,
+    so the first prompt already points at the census. Any failure -> "".
     """
     if task_type is None:
         return ""
@@ -321,10 +324,11 @@ def reroute_reminder(payload, task_type, now=None):
         expires = _epoch(record.get("expires_at"))
         # A missing or corrupt expiry is not a live record.
         if expires is None or expires < now:
-            return ""
+            return unrouted_notice(task_type)
         tier = record.get("tier")
-        if not isinstance(tier, str) or not tier:
-            return ""
+        # Only a real tier counts as routed: a corrupt value must not hide the notice.
+        if not isinstance(tier, str) or tier.strip().upper() not in ("T0", "T1", "T2", "T3"):
+            return unrouted_notice(task_type)
         risk = record.get("risk")
         label = tier + ("/" + risk if isinstance(risk, str) and risk else "")
         routed = _epoch(record.get("routed_at"))
@@ -337,20 +341,39 @@ def reroute_reminder(payload, task_type, now=None):
         return ""
 
 
+def unrouted_notice(task_type):
+    """The unrouted-work segment for a work prompt, or "" for other task types."""
+    if task_type not in ROUTED_TASK_TYPES:
+        return ""
+    return " · nessun routing registrato: censimento, router e aos-status set prima della prima modifica"
+
+
 def session_model(payload):
     """The model the session is running, or None when it cannot be read.
 
     Claude Code payloads do not carry the model, so it falls back to the tail of
-    `transcript_path`. Any failure is silent: the hint is never blocked by the
-    model probe.
+    `transcript_path`, then (Claude Code only) to the live status record's
+    `session_model`, which the status line stores on the first prompt before any
+    assistant line exists. Any failure is silent: the hint is never blocked by
+    the model probe.
     """
     model = _model_from_payload(payload)
     if model:
         return model
     path = payload.get("transcript_path") if isinstance(payload, dict) else None
     if isinstance(path, str) and path.strip():
-        return _model_from_transcript(path)
-    return None
+        model = _model_from_transcript(path)
+        if model:
+            return model
+    session = _claude_session(payload)
+    if session is None:
+        return None
+    try:
+        record = _load_status().load_live(session)
+        model = record.get("session_model")
+        return model if isinstance(model, str) and model.strip() else None
+    except Exception:
+        return None
 
 
 def is_premium(model, names):
