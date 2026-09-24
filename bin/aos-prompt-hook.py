@@ -238,17 +238,32 @@ def _tokens_from_line(line):
     return None
 
 
+def _is_compaction(line):
+    """Whether a transcript line marks a context compaction.
+
+    Claude Code: a `system` line with `subtype` `compact_boundary`. Codex: a
+    top-level `type` of `compacted`.
+    """
+    if line.get("type") == "system" and line.get("subtype") == "compact_boundary":
+        return True
+    return line.get("type") == "compacted"
+
+
 def context_tokens(payload):
     """Tokens in the session's context at its last model call, or None.
 
     Claude Code: the last main-thread assistant line's input plus cache reads
     and writes (a cached prompt is still context). Codex: the last
-    `token_count` event's `last_token_usage.input_tokens`.
+    `token_count` event's `last_token_usage.input_tokens`. A compaction marker
+    met before any usage line means the context was just reset and no new call
+    measured it: no signal.
     """
     path = payload.get("transcript_path") if isinstance(payload, dict) else None
     if not isinstance(path, str) or not path.strip():
         return None
     for line in _transcript_tail(path):
+        if _is_compaction(line):
+            return None
         tokens = _tokens_from_line(line)
         if tokens is not None:
             return tokens

@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.1 — dopo `/compact` il segnale di contesto non chiede un'altra compattazione — 2026-09-24
+
+Subito dopo una compattazione la trascrizione non ha ancora una risposta nuova: la lettura dalla
+fine risaliva oltre il confine fino all'ultimo consumo di prima, e la sessione appena compattata
+riceveva di nuovo ORANGE e l'invito a `/compact`.
+
+`context_tokens` ora si ferma al marcatore di compattazione (`system/compact_boundary` di Claude
+Code, `compacted` di Codex): nessun segnale finché una chiamata nuova non misura il contesto. Il
+modello di sessione continua a leggersi oltre il marcatore. Verifiche: suite 870 test OK, 5 nuovi.
+
 ## 3.5.0 — avviso a chi non ha mai chiesto il router, modello di sessione noto dal primo prompt — 2026-09-24
 
 Dopo la 3.4 il segnale di contesto ha funzionato, ma nessuna sessione ha chiamato il router, e

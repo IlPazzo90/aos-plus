@@ -478,6 +478,43 @@ class ContextSignalTests(unittest.TestCase):
         path = self.transcript(_usage_line(50000, pad=pad), _usage_line(330000))
         self.assertEqual(hook.context_tokens({"transcript_path": path}), 330000)
 
+    def _compact_boundary(self):
+        return json.dumps({"type": "system", "subtype": "compact_boundary"})
+
+    def test_compact_boundary_stops_the_scan_with_no_new_usage(self):
+        output = self.decide([_usage_line(300000), self._compact_boundary()])
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("contesto", body)
+        self.assertNotIn("systemMessage", output)
+
+    def test_usage_after_the_compact_boundary_wins(self):
+        # 50k after the reset is GREEN: no signal.
+        green = self.decide([_usage_line(300000), self._compact_boundary(), _usage_line(50000)])
+        self.assertNotIn("contesto", green["hookSpecificOutput"]["additionalContext"])
+        # 250k after the reset is ORANGE: the post-compaction line wins.
+        orange = self.decide([_usage_line(300000), self._compact_boundary(), _usage_line(250000)])
+        self.assertIn("ORANGE", orange["hookSpecificOutput"]["additionalContext"])
+
+    def test_codex_compacted_stops_the_scan(self):
+        lines = [json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}}),
+                 json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                     "last_token_usage": {"input_tokens": 300000, "cached_input_tokens": 290000}}}}),
+                 json.dumps({"type": "compacted"})]
+        output = self.decide(lines, claude=False)
+        self.assertNotIn("contesto", output["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("systemMessage", output)
+
+    def test_a_system_line_with_another_subtype_does_not_stop_the_scan(self):
+        lines = [_usage_line(300000),
+                 json.dumps({"type": "system", "subtype": "init"})]
+        self.assertEqual(hook.context_tokens({"transcript_path": self.transcript(*lines)}), 300000)
+
+    def test_model_warning_survives_a_trailing_compact_boundary(self):
+        lines = [json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5"}}),
+                 self._compact_boundary()]
+        output = self.decide(lines)
+        self.assertIn("sessione su claude-sonnet-5",
+                      output["hookSpecificOutput"]["additionalContext"])
 
     def test_long_hint_keeps_warning_reminder_and_context_whole(self):
         class Module:
