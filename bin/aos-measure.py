@@ -466,6 +466,13 @@ def main():
         end.add_argument("--" + name, type=parse_bool, default=None,
                          metavar="true|false")
     args = parser.parse_args()
+    if args.command == "start" and args.version is not None:
+        actual = default_version()
+        if actual is not None and args.version != actual:
+            # A copied command line carried "3.2.0" into records written on 3.3.
+            print(f"aos-measure: --version {args.version} differs from the skill VERSION {actual}; "
+                  "omit --version", file=sys.stderr)
+            return 2
     try:
         {"start": start, "finish": finish, "judge": judge}[args.command](args)
     except (OSError, ValueError, TypeError) as error:

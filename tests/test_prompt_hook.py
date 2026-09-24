@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import shutil
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -198,7 +199,7 @@ class SessionModelTests(unittest.TestCase):
                 mock.patch.object(hook, "_publish_profile"):
             line = hook._routing_hint(Module(), "valid prompt with enough words", {"adaptive": {}},
                                       {"model": "claude-sonnet-5"})
-        self.assertLessEqual(len(line), 420)
+        self.assertLessEqual(len(line), hook.LINE_CAP)
         self.assertTrue(line.endswith("codex -m gpt-6-astra)"))
 
     def test_model_from_payload(self):
@@ -256,12 +257,18 @@ class SessionModelTests(unittest.TestCase):
         names = hook.premium_names()
         self.assertEqual(names, ("fable", "gpt-6-astra"))
 
-    def test_accepted_session_models_includes_the_session_list(self):
+    def test_accepted_session_models_is_the_session_list_alone(self):
         with mock.patch.object(hook, "_premium", return_value={
                 "claude_model": "fable", "codex_model": "gpt-6-astra",
-                "session_models": ["fable", "opus", "gpt-6-astra"]}):
-            self.assertIn("opus", hook.accepted_session_models())
-            self.assertIn("fable", hook.accepted_session_models())
+                "session_models": ["opus", "gpt-6-astra"]}):
+            self.assertEqual(hook.accepted_session_models(), ("opus", "gpt-6-astra"))
+            self.assertEqual(hook.switch_targets(), ("opus", "gpt-6-astra"))
+
+    def test_switch_targets_fall_back_to_the_premium_pair(self):
+        with mock.patch.object(hook, "_premium", return_value={
+                "claude_model": "fable", "codex_model": "gpt-6-astra",
+                "session_models": ["opus"]}):
+            self.assertEqual(hook.switch_targets(), ("opus", "gpt-6-astra"))
 
     def test_accepted_session_models_ignores_an_invalid_list(self):
         for bad in ("not-a-list", ["", 5], []):
@@ -296,15 +303,22 @@ class NonPremiumHintTests(unittest.TestCase):
         self.assertIsNotNone(output)
         body = output["hookSpecificOutput"]["additionalContext"]
         self.assertIn("sessione su claude-sonnet-5", body)
-        self.assertIn("/model fable", body)
+        self.assertIn("/model opus", body)
         self.assertIn("codex -m gpt-6-astra", body)
 
-    def test_premium_model_produces_no_warning(self):
+    def test_fable_session_is_told_it_burns_premium_tokens(self):
+        # The owner keeps Fable as planner/reviewer, not as the session model.
         output = hook.decide({"prompt": "correggi questo bug nel file app.py",
                               "model": "claude-fable-5-1"}, self.registry)
         self.assertIsNotNone(output)
         body = output["hookSpecificOutput"]["additionalContext"]
-        self.assertNotIn("sessione su", body)
+        self.assertIn("sessione su claude-fable-5-1: consuma token premium", body)
+        self.assertIn("/model opus", body)
+
+    def test_codex_premium_session_model_produces_no_warning(self):
+        output = hook.decide({"prompt": "correggi questo bug nel file app.py",
+                              "model": "gpt-6-astra"}, self.registry)
+        self.assertNotIn("sessione su", output["hookSpecificOutput"]["additionalContext"])
 
     def test_silent_prompt_stays_silent_even_with_non_premium_model(self):
         # GENERAL with no task type -> no hint at all, so no warning alone.
@@ -348,10 +362,6 @@ class NonPremiumHintTests(unittest.TestCase):
         self.assertIn("sessione su claude-opus-5-5", body)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StatusProfileTests(unittest.TestCase):
     """The hook feeds domains and task type to the Claude Code status bar."""
 
@@ -385,3 +395,209 @@ class StatusProfileTests(unittest.TestCase):
         self.run_hook({"AOS_STATUS_DIR": self.directory.name, "CLAUDE_PROJECT_DIR": "/x"},
                       {"prompt": "correggi questo bug nel file app.py", "session_id": "../evil"})
         self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
+
+
+def _usage_line(tokens, **extra):
+    line = {"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": {
+        "input_tokens": 10, "cache_read_input_tokens": tokens - 110,
+        "cache_creation_input_tokens": 100, "output_tokens": 5}}}
+    line.update(extra)
+    return json.dumps(line)
+
+
+class ContextSignalTests(unittest.TestCase):
+    """The context budget reaches the model and, under Claude Code, the user."""
+
+    def setUp(self):
+        import tempfile
+        self.registry = hook._load_orchestrate().load_registry()
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+
+    def transcript(self, *lines):
+        path = Path(self.directory) / "t.jsonl"
+        path.write_text("".join(line + "\n" for line in lines))
+        return str(path)
+
+    def decide(self, lines, prompt="correggi questo bug nel file app.py", claude=True):
+        body = {"prompt": prompt, "transcript_path": self.transcript(*lines), "session_id": "sess-ctx"}
+        env = {"CLAUDE_PROJECT_DIR": "/x"} if claude else {}
+        with mock.patch.dict(os.environ, env):
+            return hook.decide(body, self.registry)
+
+    def test_red_context_reaches_the_model_and_the_user(self):
+        output = self.decide([_usage_line(350000)])
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("contesto 350k token, RED (soft 200k, hard 320k)", body)
+        self.assertIn("/compact", output["systemMessage"])
+        self.assertLessEqual(len(body), hook.LINE_CAP)
+
+    def test_orange_context(self):
+        body = self.decide([_usage_line(250000)])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("ORANGE", body)
+
+    def test_green_context_adds_nothing(self):
+        output = self.decide([_usage_line(100000)])
+        self.assertNotIn("contesto", output["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("systemMessage", output)
+
+    def test_sidechain_and_synthetic_lines_are_skipped(self):
+        self.assertEqual(hook.context_tokens({"transcript_path": self.transcript(
+            _usage_line(300000),
+            _usage_line(20000, isSidechain=True),
+            json.dumps({"type": "assistant", "message": {"model": "<synthetic>",
+                                                         "usage": {"input_tokens": 0}}}),
+        )}), 300000)
+
+    def test_codex_token_count_without_system_message(self):
+        lines = [json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}}),
+                 json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                     "last_token_usage": {"input_tokens": 300000, "cached_input_tokens": 290000}}}})]
+        output = self.decide(lines, claude=False)
+        self.assertIn("RED", output["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("systemMessage", output)
+
+    def test_red_context_speaks_even_when_the_classifier_is_silent(self):
+        output = self.decide([_usage_line(400000)], prompt="zzz quux fnord blarg")
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(body.startswith("AOS · contesto 400k"))
+
+    def test_compact_command_stays_silent(self):
+        self.assertIsNone(self.decide([_usage_line(400000)], prompt="/compact keep the plan"))
+
+    def test_broken_transcript_leaves_the_plain_hint(self):
+        output = self.decide(["{not json", "[]"])
+        self.assertNotIn("contesto", output["hookSpecificOutput"]["additionalContext"])
+
+    def test_only_the_tail_is_read(self):
+        pad = "x" * (hook.TRANSCRIPT_TAIL_BYTES + 1024)
+        path = self.transcript(_usage_line(50000, pad=pad), _usage_line(330000))
+        self.assertEqual(hook.context_tokens({"transcript_path": path}), 330000)
+
+
+    def test_long_hint_keeps_warning_reminder_and_context_whole(self):
+        class Module:
+            def classify(self, prompt, adaptive):
+                return {"domains": ["ENGINEERING"], "task_type": "feature"}
+            def build_profile(self, **kwargs):
+                return {}
+            def decompose(self, profile, adaptive):
+                return range(30)
+            def select_skills(self, bundle, profile, adaptive):
+                return ["skill_%d_%s" % (bundle, "x" * 20)]
+        with mock.patch.object(hook, "reroute_reminder", return_value=" · REMINDER_WHOLE"), \
+                mock.patch.object(hook, "_publish_profile"), \
+                mock.patch.object(hook, "context_signal", return_value=(" · CONTEXT_WHOLE", "m")), \
+                mock.patch.object(hook, "session_model", return_value="claude-sonnet-5"):
+            output = hook.decide({"prompt": "valid prompt with enough words"}, {"adaptive": {}},
+                                 module=Module())
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertLessEqual(len(body), hook.LINE_CAP)
+        self.assertIn("sessione su claude-sonnet-5", body)
+        self.assertIn("REMINDER_WHOLE", body)
+        self.assertTrue(body.endswith("CONTEXT_WHOLE"))
+        self.assertIn("per T1+ censimento", body)
+
+    def test_overflowing_domains_never_cut_the_context_segment(self):
+        class Module:
+            def classify(self, prompt, adaptive):
+                return {"domains": ["D" * 60] * 6, "task_type": "feature"}
+            def build_profile(self, **kwargs):
+                return {}
+            def decompose(self, profile, adaptive):
+                return []
+        segment = " · contesto 400k token, RED (soft 200k, hard 320k): chiudi … /compact al punto di pausa"
+        with mock.patch.object(hook, "reroute_reminder", return_value=" · REMINDER_WHOLE"), \
+                mock.patch.object(hook, "_publish_profile"), \
+                mock.patch.object(hook, "session_model", return_value="claude-" + "x" * 53):
+            line = hook._routing_hint(Module(), "valid prompt with enough words", {"adaptive": {}},
+                                      {}, segment)
+        self.assertEqual(len(line), hook.LINE_CAP)
+        self.assertTrue(line.endswith(segment))
+        self.assertIn("REMINDER_WHOLE", line)
+        self.assertIn(" · per T1+ censimento e route con /aos ($aos in Codex)", line)
+
+    def test_invalid_counters_count_zero_instead_of_older_lines(self):
+        line = json.dumps({"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": {
+            "input_tokens": True, "cache_read_input_tokens": "bad",
+            "cache_creation_input_tokens": None}}})
+        path = self.transcript(_usage_line(350000), line)
+        self.assertEqual(hook.context_tokens({"transcript_path": path}), 0)
+
+    def test_unsafe_session_id_gets_no_system_message(self):
+        body = {"prompt": "correggi questo bug nel file app.py", "session_id": "../evil",
+                "transcript_path": self.transcript(_usage_line(400000))}
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "/x"}):
+            output = hook.decide(body, self.registry)
+        self.assertIn("RED", output["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("systemMessage", output)
+
+
+class RerouteReminderTests(unittest.TestCase):
+    """A session that routed once is reminded to route a new task again."""
+
+    def setUp(self):
+        import tempfile
+        self.registry = hook._load_orchestrate().load_registry()
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory,
+                                               "CLAUDE_PROJECT_DIR": "/x"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, **record):
+        record.setdefault("expires_at", time.time() + 3600)
+        (Path(self.directory) / "sess-rr.json").write_text(json.dumps(record))
+
+    def body(self, prompt="correggi questo bug nel file app.py"):
+        output = hook.decide({"prompt": prompt, "session_id": "sess-rr"}, self.registry)
+        return output["hookSpecificOutput"]["additionalContext"] if output else None
+
+    def test_routed_session_is_reminded_with_minutes(self):
+        self.write(tier="T2", risk="high", routed_at=int(time.time()) - 30 * 60 - 5)
+        self.assertIn("tier attivo T2/high da 30 min: se è un task nuovo", self.body())
+
+    def test_missing_routed_at_omits_minutes(self):
+        self.write(tier="T1", risk="LOW")
+        body = self.body()
+        self.assertIn("tier attivo T1/LOW: se è un task nuovo", body)
+
+    def test_no_tier_no_reminder(self):
+        self.write(domains=["GENERAL"])
+        self.assertNotIn("tier attivo", self.body())
+
+    def test_expired_record_no_reminder(self):
+        self.write(tier="T2", risk="LOW", expires_at=time.time() - 1)
+        self.assertNotIn("tier attivo", self.body())
+        # Publishing the new profile must not revive the expired routing.
+        self.assertNotIn("tier attivo", self.body())
+
+    def test_corrupt_expiry_no_reminder(self):
+        self.write(tier="T2", risk="HIGH", expires_at="corrupt", routed_at=1)
+        self.assertNotIn("tier attivo", self.body())
+
+    def test_non_finite_or_negative_epochs_are_junk(self):
+        self.write(tier="T2", risk="HIGH", expires_at=float("nan"), routed_at=1)
+        self.assertNotIn("tier attivo", self.body())
+        self.write(tier="T2", risk="HIGH", routed_at=-1e300)
+        body = self.body()
+        self.assertIn("tier attivo T2/HIGH: se è un task nuovo", body)
+        self.assertLessEqual(len(body), hook.LINE_CAP)
+
+    def test_prompt_without_task_type_no_reminder(self):
+        self.write(tier="T2", risk="LOW")
+        self.assertEqual(hook.reroute_reminder({"session_id": "sess-rr"}, None), "")
+
+    def test_outside_claude_code_no_reminder(self):
+        self.write(tier="T2", risk="LOW")
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.assertNotIn("tier attivo", self.body())
+
+
+if __name__ == "__main__":
+    unittest.main()

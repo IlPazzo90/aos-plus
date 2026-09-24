@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.4.0 — la sessione lunga rifà il routing e sente quando il contesto è pieno — 2026-09-24
+
+Dopo la 3.3.0, un pomeriggio di sessioni reali: nessun lancio del worker open. Il router era
+stato interrogato una volta per sessione; una sessione ha poi concatenato quattro task senza
+più chiederlo. Sulle compattazioni, 16 in tre giorni: 15 lanciate a mano tra 140k e 970k
+token, una automatica a 969k, contro un `hard_limit` di 320k per la classe claude. Il modello
+non vede il proprio contesto e in Claude Code non può compattare da solo.
+
+**Promemoria di routing.** Sotto Claude Code, se il record di stato della sessione ha già un
+tier e il prompt è lavoro, il suggerimento aggiunge `tier attivo T2/high da 47 min: se è un
+task nuovo rifai censimento, router e aos-status set`. `aos-status.py set` scrive `routed_at`.
+
+**Budget di contesto.** L'hook legge dalla coda della trascrizione l'uso dell'ultima chiamata
+(Claude: input + cache letta + cache scritta dell'ultima riga assistant del thread principale;
+Codex: `token_count.last_token_usage.input_tokens`), lo valuta con `context_policy` e, a
+ORANGE/RED, aggiunge `contesto <n>k token …`, anche quando il classificatore tace. Sotto
+Claude Code arriva anche all'utente come `systemMessage`. Rete di sicurezza consigliata:
+`autoCompactWindow` di Claude Code al limite RED.
+
+**Modelli di sessione.** `premium.session_models`, se valido, sostituisce la coppia premium
+invece di aggiungersi; con `["opus", "gpt-6-astra"]` una sessione su Fable riceve `consuma
+token premium, la sessione va su opus`.
+
+**`aos-measure.py start` rifiuta un `--version` diverso dal file VERSION** (exit 2).
+
+**Record di stato scaduti.** Profilo e consumi non riportano più in vita un record scaduto o
+con scadenza corrotta assegnandogli un TTL nuovo (`load_live`).
+
+Verifiche: suite completa, hook su trascrizioni reali, revisione cross-model Codex in 6 round
+(11 finding corretti, PASS al sesto).
+
 ## 3.3.0 — saltare il worker open a HIGH costa una ragione anche senza check — 2026-09-24
 
 Un giorno di sessioni reali dopo la 3.2.0: cinque task, tutti HIGH, nessun lancio del worker

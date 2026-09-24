@@ -23,7 +23,7 @@ class MeasureTests(unittest.TestCase):
                               capture_output=True, text=True)
 
     def start(self):
-        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x", "--version", "1.2")
+        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x")
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(self.record.read_text())
 
@@ -84,12 +84,26 @@ class MeasureTests(unittest.TestCase):
         self.assertFalse(Path(str(self.record) + '.lock').exists())
         self.assertIsNone(json.loads(self.record.read_text())['finished_at'])
 
+    def test_start_refuses_a_stale_version(self):
+        result = self.run_cli("start", "--task", "t", "--runtime", "claude", "--model", "m",
+                              "--version", "0.0.1-stale")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("differs from the skill VERSION", result.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_start_accepts_the_current_version(self):
+        actual = (SCRIPT.parents[1] / "VERSION").read_text().strip()
+        result = self.run_cli("start", "--task", "t", "--runtime", "claude", "--model", "m",
+                              "--version", actual)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())["version"], actual)
+
     def test_start_records_explicit_identity_and_null_metrics(self):
         data = self.start()
         self.assertEqual(data["schema"], 1)
         self.assertEqual(data["runtime"], "codex")
         self.assertEqual(data["model"], "model-x")
-        self.assertEqual(data["version"], "1.2")
+        self.assertEqual(data["version"], (SCRIPT.parents[1] / "VERSION").read_text().strip())
         self.assertTrue(data["started_at"].endswith("Z"))
         self.assertIsNone(data["provider_metrics"]["input_tokens"])
         self.assertIsNone(data["rtk_estimate"]["saved"])
@@ -105,14 +119,13 @@ class MeasureTests(unittest.TestCase):
         subprocess.run([sys.executable, str(SCRIPT), "judge", "--verdict", "accepted", "--record", str(judged)],
                        capture_output=True, text=True, check=True)
         self.start_then_finish(folder / "2026-09-04-blocked.json", "blocked")
-        subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
-                        "--version", "1", "--record", str(folder / "2026-09-05-open.json")], check=True, capture_output=True)
+        subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m", "--record", str(folder / "2026-09-05-open.json")], check=True, capture_output=True)
         (folder / "notes.json").write_text('{"schema": 1, "outcome": "delivered"}')
         (folder / "broken.json").write_text("{")
         (folder / "shaped.json").write_text(json.dumps({"schema": 1, "task": "t", "runtime": "r", "model": "m",
                                                         "version": "1", "started_at": "2026-09-01T00:00:00Z",
                                                         "finished_at": True, "outcome": "delivered"}))
-        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x", "--version", "1.2")
+        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.record.exists())
         self.assertIn("AVVISO: record consegnati senza verdetto", result.stderr)
@@ -127,29 +140,27 @@ class MeasureTests(unittest.TestCase):
         folder = Path(self.temp.name).resolve() / "docs" / "misure"
         folder.mkdir(parents=True)
         self.start_then_finish(folder / "2026-09-01-old.json", "delivered")
-        result = subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
-                                 "--version", "1", "--record", "docs/misure/2026-09-02-new.json"],
+        result = subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m", "--record", "docs/misure/2026-09-02-new.json"],
                                 capture_output=True, text=True, cwd=str(folder.parents[1]))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("judge --record docs/misure/2026-09-01-old.json --verdict", result.stderr)
 
     def test_start_is_silent_when_every_sibling_is_judged_or_absent(self):
         folder = Path(self.temp.name)
-        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x", "--version", "1.2")
+        result = self.run_cli("start", "--task", "Explicit task", "--runtime", "codex", "--model", "model-x")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("AVVISO", result.stderr)
         judged = self.start_then_finish(folder / "2026-09-03-judged.json", "delivered")
         subprocess.run([sys.executable, str(SCRIPT), "judge", "--verdict", "rejected", "--record", str(judged)],
                        capture_output=True, text=True, check=True)
         other = Path(self.temp.name) / "second.json"
-        result = subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
-                                 "--version", "1", "--record", str(other)], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m", "--record", str(other)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("AVVISO", result.stderr)
 
     def start_then_finish(self, path, outcome):
         base = [sys.executable, str(SCRIPT)]
-        subprocess.run(base + ["start", "--task", "t", "--runtime", "r", "--model", "m", "--version", "1",
+        subprocess.run(base + ["start", "--task", "t", "--runtime", "r", "--model", "m",
                                "--record", str(path)], check=True, capture_output=True)
         subprocess.run(base + ["finish", "--outcome", outcome, "--record", str(path)], check=True, capture_output=True)
         return path
@@ -157,7 +168,7 @@ class MeasureTests(unittest.TestCase):
     def test_start_does_not_overwrite(self):
         self.start()
         before = self.record.read_bytes()
-        result = self.run_cli("start", "--task", "Other", "--runtime", "claude", "--model", "m", "--version", "v")
+        result = self.run_cli("start", "--task", "Other", "--runtime", "claude", "--model", "m")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.record.read_bytes(), before)
 
@@ -378,7 +389,7 @@ class MeasureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as plain:
             record = Path(plain) / "r.json"
             subprocess.run([sys.executable, str(SCRIPT), "start", "--record", str(record), "--task", "t",
-                            "--runtime", "claude", "--model", "m", "--version", "v"], check=True, capture_output=True)
+                            "--runtime", "claude", "--model", "m"], check=True, capture_output=True)
             subprocess.run([sys.executable, str(SCRIPT), "finish", "--record", str(record), "--outcome", "delivered"],
                            check=True, capture_output=True)
             self.assertIsNone(json.loads(record.read_text())["work_observed_after_start"])
@@ -445,7 +456,7 @@ class MeasureTests(unittest.TestCase):
         nested = Path(self.temp.name) / "docs/misure/2026-09-15-task.json"
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "start", "--record", str(nested),
-             "--task", "Explicit task", "--runtime", "claude", "--model", "m", "--version", "v"],
+             "--task", "Explicit task", "--runtime", "claude", "--model", "m"],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(nested.read_text())["schema"], 1)

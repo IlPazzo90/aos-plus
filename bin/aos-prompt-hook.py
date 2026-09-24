@@ -10,13 +10,21 @@ asks for silence, or a classification that says nothing useful produces no
 output at all. It never talks to a provider, never runs a command and never
 reads a secret. Under Claude Code it also stores domains and task type in the
 session's status record (aos-status.py), so the status line can show them.
+
+Two signals turn written rules into visible ones: a session that already routed a
+task is reminded to route again when a new work prompt arrives, and a session
+whose context is past the policy's soft limit (aos-context.py) is told to compact
+at the next breakpoint. Only the user can run /compact, so under Claude Code that
+signal also reaches the user as a systemMessage.
 """
 
 import importlib.util
 import json
+import math
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 # An advisory hook leaves no trace: no __pycache__ next to the modules it imports.
@@ -26,14 +34,20 @@ MAX_STDIN_BYTES = 65536
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 
 HOOK_EVENT = "UserPromptSubmit"
+LINE_CAP = 520
+CONTEXT_ALERT_STATES = ("ORANGE", "RED")
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config/open-models.json"
 
 
-def _load_orchestrate():
-    spec = importlib.util.spec_from_file_location(
-        "aos_orchestrate", Path(__file__).resolve().parent / "aos-orchestrate.py")
+def _load_module(name, filename):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / filename)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_orchestrate():
+    return _load_module("aos_orchestrate", "aos-orchestrate.py")
 
 
 def _prompt_text(payload):
@@ -69,7 +83,7 @@ def silent_reason(prompt):
 def _premium():
     """The policy's premium object, or None when it cannot be read."""
     try:
-        data = json.loads((Path(__file__).resolve().parents[1] / "config/open-models.json").read_text())
+        data = json.loads(CONFIG_PATH.read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -97,19 +111,33 @@ def premium_names():
 def accepted_session_models():
     """Every name a session model may run under without a switch advisory.
 
-    The premium pair plus ``premium.session_models``. An invalid or missing
-    ``session_models`` list (not a list of non-empty strings) is ignored, so the
-    accepted set falls back to the premium pair alone.
+    ``premium.session_models`` when it is a non-empty list of non-empty strings:
+    the owner may keep a premium planner (fable) out of the session on purpose.
+    Otherwise the premium pair, as before the list existed.
     """
     premium = _premium()
     if premium is None:
         return ()
-    names = list(premium_names())
     session_models = premium.get("session_models")
     if isinstance(session_models, list) and session_models and \
             all(isinstance(name, str) and name.strip() for name in session_models):
-        names.extend(session_models)
-    return tuple(names)
+        return tuple(session_models)
+    return premium_names()
+
+
+def switch_targets():
+    """(claude, codex) model names a session should switch to.
+
+    The first accepted name without / with ``gpt``; each falls back to the
+    premium pair's name for that host.
+    """
+    names = premium_names()
+    if not names:
+        return ()
+    accepted = accepted_session_models()
+    claude = next((name for name in accepted if "gpt" not in name), names[0])
+    codex = next((name for name in accepted if "gpt" in name), names[1])
+    return (claude, codex)
 
 
 def _model_from_payload(payload):
@@ -120,38 +148,47 @@ def _model_from_payload(payload):
     return None
 
 
-def _model_from_transcript(path):
-    """Last model named in a transcript JSONL, scanning lines from the end.
+def _transcript_tail(path):
+    """Parsed JSON objects from the tail of a transcript, last line first.
 
-    Reads at most TRANSCRIPT_TAIL_BYTES from the tail of the file. First match
-    wins (last line first): a Claude Code assistant line's `message.model`
-    (skipping "<synthetic>") or a Codex `turn_context` payload's `model`.
-    Any error -> None.
+    Reads at most TRANSCRIPT_TAIL_BYTES. Any error -> [] so a probe never blocks
+    the hint.
     """
     try:
         # Only a regular file: a FIFO or a device would block open() or read()
         # and hang the prompt the hook annotates.
         if not stat.S_ISREG(os.stat(path).st_mode):
-            return None
+            return []
         with open(path, "rb") as stream:
             stream.seek(0, 2)
             size = stream.tell()
             stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
             tail = stream.read(TRANSCRIPT_TAIL_BYTES)
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         # A malformed path (a NUL byte raises ValueError) or an unopenable file
         # must never block the hint.
-        return None
-    lines = tail.split(b"\n")
-    for raw in reversed(lines):
+        return []
+    lines = []
+    for raw in reversed(tail.split(b"\n")):
         if not raw.strip():
             continue
         try:
             line = json.loads(raw.decode("utf-8", errors="replace"))
         except ValueError:
             continue
-        if not isinstance(line, dict):
-            continue
+        if isinstance(line, dict):
+            lines.append(line)
+    return lines
+
+
+def _model_from_transcript(path):
+    """Last model named in a transcript JSONL, scanning lines from the end.
+
+    First match wins (last line first): a Claude Code assistant line's
+    `message.model` (skipping "<synthetic>") or a Codex `turn_context` payload's
+    `model`. Any error -> None.
+    """
+    for line in _transcript_tail(path):
         model = None
         if line.get("type") == "assistant":
             message = line.get("message")
@@ -168,6 +205,136 @@ def _model_from_transcript(path):
         if model:
             return model
     return None
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _tokens_from_line(line):
+    """Context tokens a transcript line reports, or None when it reports none."""
+    if line.get("type") == "assistant" and line.get("isSidechain") is not True:
+        message = line.get("message")
+        if not isinstance(message, dict) or message.get("model") == "<synthetic>":
+            return None
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        if not any(key in usage for key in keys):
+            return None
+        # A present but invalid counter is 0: it must not send the scan back to an
+        # older, larger line.
+        return sum(_count(usage.get(key)) or 0 for key in keys)
+    if line.get("type") == "event_msg":
+        payload = line.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+            return None
+        info = payload.get("info")
+        last = info.get("last_token_usage") if isinstance(info, dict) else None
+        # Codex input_tokens already include the cached part.
+        return _count(last.get("input_tokens")) if isinstance(last, dict) else None
+    return None
+
+
+def context_tokens(payload):
+    """Tokens in the session's context at its last model call, or None.
+
+    Claude Code: the last main-thread assistant line's input plus cache reads
+    and writes (a cached prompt is still context). Codex: the last
+    `token_count` event's `last_token_usage.input_tokens`.
+    """
+    path = payload.get("transcript_path") if isinstance(payload, dict) else None
+    if not isinstance(path, str) or not path.strip():
+        return None
+    for line in _transcript_tail(path):
+        tokens = _tokens_from_line(line)
+        if tokens is not None:
+            return tokens
+    return None
+
+
+def context_signal(payload, model):
+    """(hint segment, user message) when the context is ORANGE/RED, else None."""
+    if not model:
+        return None
+    tokens = context_tokens(payload)
+    if tokens is None:
+        return None
+    # Without an explicit config path aos-context enforces no limits at all.
+    result = _load_module("aos_context", "aos-context.py").evaluate(
+        model, tokens=tokens, config_path=CONFIG_PATH)
+    state = result.get("context_state")
+    if state not in CONTEXT_ALERT_STATES:
+        return None
+    soft, hard = result.get("soft_limit"), result.get("hard_limit")
+    if not isinstance(soft, int) or not isinstance(hard, int):
+        return None
+    segment = (" · contesto %dk token, %s (soft %dk, hard %dk): chiudi il passo in corso "
+               "e chiedi all'utente /compact al punto di pausa"
+               % (tokens // 1000, state, soft // 1000, hard // 1000))
+    message = ("AOS: contesto %dk token (%s, hard %dk) — /compact al prossimo punto di pausa"
+               % (tokens // 1000, state, hard // 1000))
+    return segment, message
+
+
+def _claude_session(payload):
+    """The payload's own session id under Claude Code, else None."""
+    if not isinstance(payload, dict) or not os.environ.get("CLAUDE_PROJECT_DIR"):
+        return None
+    requested = payload.get("session_id")
+    if not isinstance(requested, str) or not requested:
+        return None
+    try:
+        # Same rule as the status file name: an id it would refuse is not a session.
+        return requested if _load_status().session_id(requested) == requested else None
+    except Exception:
+        return None
+
+
+def _epoch(value):
+    """A finite, non-negative epoch in seconds, or None (NaN, bool, junk)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _load_status():
+    return _load_module("aos_status", "aos-status.py")
+
+
+def reroute_reminder(payload, task_type, now=None):
+    """Segment asking a routed session to route a new work prompt again.
+
+    Claude Code only: the status record is where the routed tier lives. Read
+    before this prompt's profile is published. Any failure -> "".
+    """
+    if task_type is None:
+        return ""
+    try:
+        session = _claude_session(payload)
+        if session is None:
+            return ""
+        status = _load_status()
+        record = status.load(session)
+        now = time.time() if now is None else now
+        expires = _epoch(record.get("expires_at"))
+        # A missing or corrupt expiry is not a live record.
+        if expires is None or expires < now:
+            return ""
+        tier = record.get("tier")
+        if not isinstance(tier, str) or not tier:
+            return ""
+        risk = record.get("risk")
+        label = tier + ("/" + risk if isinstance(risk, str) and risk else "")
+        routed = _epoch(record.get("routed_at"))
+        since = ""
+        if routed is not None and routed <= now:
+            since = " da %d min" % int((now - routed) // 60)
+        return (" · tier attivo " + label[:20] + since +
+                ": se è un task nuovo rifai censimento, router e aos-status set")
+    except Exception:
+        return ""
 
 
 def session_model(payload):
@@ -190,7 +357,7 @@ def is_premium(model, names):
     return any(name in model for name in names)
 
 
-def _routing_hint(module, prompt, registry, payload=None):
+def _routing_hint(module, prompt, registry, payload=None, context_segment=""):
     """One line from the keyword classifier: a hint, never a routing decision.
 
     Tier, risk and executor are not printed: from keywords alone they would be
@@ -202,6 +369,7 @@ def _routing_hint(module, prompt, registry, payload=None):
     task_type = cls.get("task_type")
     if domains == ["GENERAL"] and task_type is None:
         return None
+    reminder = reroute_reminder(payload, task_type)
     _publish_profile(payload, domains, task_type)
     profile = module.build_profile(text=prompt, adaptive=adaptive)
     skills = []
@@ -209,19 +377,32 @@ def _routing_hint(module, prompt, registry, payload=None):
         for skill in module.select_skills(bundle, profile, adaptive):
             if skill not in skills:
                 skills.append(skill)
-    line = "AOS · domini: " + "+".join(domains) + " · tipo: " + (task_type or "—")
-    if skills:
-        line += " · skill: " + ", ".join(skills)
-    line += " · per T1+ censimento e route con /aos ($aos in Codex)"
-    model = session_model(payload)
+    head = "AOS · domini: " + "+".join(domains) + " · tipo: " + (task_type or "—")
+    route = " · per T1+ censimento e route con /aos ($aos in Codex)"
+    tail = model_warning(session_model(payload)) + reminder + context_segment
+    # Warning, reminder and context segment are kept whole: a long skill list is
+    # what gets truncated.
+    listing = (" · skill: " + ", ".join(skills)) if skills else ""
+    room = max(0, LINE_CAP - len(head) - len(route) - len(tail))
+    if len(listing) > room:
+        listing = listing[:max(0, room - 1)].rstrip(", ") + "…" if room else ""
+    # The routing instruction and the tail are never cut: when the domains alone
+    # overflow, the front gives way.
+    return (head + listing)[:max(0, LINE_CAP - len(route) - len(tail))] + route + tail
+
+
+def model_warning(model):
+    """Segment naming a session model outside the accepted list, or ""."""
     names = premium_names()
-    warning = ""
-    if model and names and not is_premium(model, accepted_session_models()):
-        claude, codex = names
-        warning = (" · sessione su " + model[:60] + ": a T2+ o rischio HIGH chiedi il cambio "
-                   "(/model " + claude[:30] + " · codex -m " + codex[:30] + ")")
-    # The warning is kept whole: a long skill list is what gets truncated.
-    return line[:420 - len(warning)] + warning
+    targets = switch_targets()
+    if not model or not names or not targets or is_premium(model, accepted_session_models()):
+        return ""
+    claude, codex = targets
+    switch = "(/model " + claude[:30] + " · codex -m " + codex[:30] + ")"
+    if is_premium(model, names):
+        return (" · sessione su " + model[:60] + ": consuma token premium, la sessione va su " +
+                claude[:30] + " " + switch)
+    return " · sessione su " + model[:60] + ": a T2+ o rischio HIGH chiedi il cambio " + switch
 
 
 def _publish_profile(payload, domains, task_type):
@@ -231,17 +412,11 @@ def _publish_profile(payload, domains, task_type):
     a session id in the payload: Codex has no status line to feed. Cosmetic:
     any failure is swallowed.
     """
-    if not isinstance(payload, dict) or not os.environ.get("CLAUDE_PROJECT_DIR"):
+    requested = _claude_session(payload)
+    if requested is None:
         return
     try:
-        spec = importlib.util.spec_from_file_location(
-            "aos_status", Path(__file__).resolve().parent / "aos-status.py")
-        status = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(status)
-        requested = payload.get("session_id")
-        # session_id() falls back to the environment: publish only the payload's own id.
-        if isinstance(requested, str) and status.session_id(requested) == requested:
-            status.set_profile(requested, domains, task_type)
+        _load_status().set_profile(requested, domains, task_type)
     except Exception:
         pass
 
@@ -253,12 +428,25 @@ def decide(payload, registry, module=None):
     if silent_reason(prompt) is not None:
         return None
     try:
-        hint = _routing_hint(module, prompt, registry, payload)
+        signal = context_signal(payload, session_model(payload))
     except Exception:
-        return None
+        signal = None
+    segment = signal[0] if signal is not None else ""
+    try:
+        hint = _routing_hint(module, prompt, registry, payload, segment)
+    except Exception:
+        hint = None
+    if hint is None and segment:
+        # The context segment is emitted even when the classifier has nothing to
+        # say: a full context matters whatever the prompt is about.
+        hint = "AOS" + segment
     if not hint:
         return None
-    return {"hookSpecificOutput": {"hookEventName": HOOK_EVENT, "additionalContext": hint}}
+    output = {"hookSpecificOutput": {"hookEventName": HOOK_EVENT, "additionalContext": hint}}
+    if signal is not None and _claude_session(payload) is not None:
+        # Only the user can run /compact; Codex does not know this field.
+        output["systemMessage"] = signal[1]
+    return output
 
 
 def main(argv=None):

@@ -15,6 +15,7 @@ import contextlib
 import fcntl
 import importlib.util
 import json
+import math
 import os
 import re
 import tempfile
@@ -50,6 +51,21 @@ def load(session):
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def load_live(session):
+    """The record, or {} when its expiry is past, missing or not a finite number.
+
+    Every partial update (profile, usage) starts from this: rewriting a dead
+    record would give its old routing a fresh TTL.
+    """
+    state = load(session)
+    expires = state.get('expires_at')
+    if state and (not isinstance(expires, (int, float)) or isinstance(expires, bool)
+                  or not math.isfinite(expires)
+                  or expires < datetime.now(timezone.utc).timestamp()):
+        return {}
+    return state
 
 
 @contextlib.contextmanager
@@ -320,6 +336,9 @@ def _set(session, args, routed, reason=None, no_check_reason=None):
     else:
         # A check declared (or not HIGH) needs no reason: drop any stale one.
         state.pop('no_check_reason', None)
+    # When this task was routed: the prompt hook reminds a session that keeps
+    # working on an old routing to route the next task again.
+    state['routed_at'] = int(datetime.now(timezone.utc).timestamp())
     state.setdefault('tokens', {'input': 0, 'output': 0, 'cache': 0})
     state.setdefault('cost_usd', None)
     return write(session, state, args.ttl)
@@ -330,7 +349,7 @@ def set_profile(session, domains, task_type, ttl=DEFAULT_TTL_SECONDS):
     if not session:
         return {}
     with locked(session):
-        state = load(session)
+        state = load_live(session)
         state.update(domains=list(domains or []), task_type=task_type)
         return write(session, state, ttl)
 
@@ -343,7 +362,7 @@ def add_usage(session, model_ref, tokens, ttl):
 
 
 def _add_usage(session, model_ref, tokens, ttl):
-    state = load(session)
+    state = load_live(session)
     total = state.get('tokens') or {}
     for key in ('input', 'output', 'cache'):
         total[key] = (total.get(key) or 0) + (tokens.get(key) or 0)

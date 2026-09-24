@@ -93,6 +93,43 @@ class StatusTests(unittest.TestCase):
                      "--model", DEEPSEEK])
         self.assertEqual(self.record()["routed_executor"], "open")
 
+    def test_set_records_when_the_task_was_routed_and_the_profile_keeps_it(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        routed = self.record()["routed_at"]
+        self.assertIsInstance(routed, int)
+        status.set_profile("sess-1", ["ENGINEERING"], "feature")
+        self.assertEqual(self.record()["routed_at"], routed)
+
+    def test_usage_on_an_expired_record_drops_the_old_routing(self):
+        path = Path(self.directory.name) / "sess-1.json"
+        for expires in ("1", '"corrupt"'):
+            path.write_text('{"tier": "T2", "routed_at": 1, "expires_at": %s}' % expires)
+            status.add_usage("sess-1", None, {"input": 1, "output": 0, "cache": 0}, 28800)
+            self.assertNotIn("tier", self.record())
+            self.assertEqual(self.record()["tokens"]["input"], 1)
+
+    def test_profile_on_a_nan_expiry_drops_the_old_routing(self):
+        path = Path(self.directory.name) / "sess-1.json"
+        path.write_text('{"tier": "T2", "routed_at": 1, "expires_at": NaN}')
+        status.set_profile("sess-1", ["ENGINEERING"], "feature")
+        self.assertNotIn("tier", self.record())
+
+    def test_profile_on_a_corrupt_expiry_drops_the_old_routing(self):
+        path = Path(self.directory.name) / "sess-1.json"
+        path.write_text(json.dumps({"tier": "T2", "routed_at": 1, "expires_at": "corrupt"}))
+        status.set_profile("sess-1", ["ENGINEERING"], "feature")
+        self.assertNotIn("tier", self.record())
+
+    def test_profile_on_an_expired_record_drops_the_old_routing(self):
+        path = Path(self.directory.name) / "sess-1.json"
+        path.write_text(json.dumps({"tier": "T2", "risk": "HIGH", "routed_at": 1, "expires_at": 1}))
+        status.set_profile("sess-1", ["ENGINEERING"], "feature")
+        record = self.record()
+        self.assertNotIn("tier", record)
+        self.assertNotIn("routed_at", record)
+        self.assertEqual(record["task_type"], "feature")
+
     def test_set_warns_when_the_open_route_was_published_as_main(self):
         status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
                      "--model", "claude-opus-5", "--override-reason", "manual"])

@@ -57,6 +57,24 @@ became 200 958, because the read-only reviewer reads the repository itself. The
 estimate therefore governs admission of what AOS sends; the observed number is what
 to look at when a role runs out of context.
 
+## Signals on the host session
+
+Measured on 2026-09-24: 16 host compactions in three days, 15 typed by the user between
+140k and 970k tokens, one automatic at 969k; the claude class hard limit is 320k. The
+model does not see its own context size, and in Claude Code only the user can run
+`/compact`. So the rule is carried by two mechanisms, not by this page:
+
+- **Prompt hook** (`bin/aos-prompt-hook.py`, both hosts): reads the last model call's
+  usage from the transcript tail (Claude: input + cache read + cache write of the last
+  main-thread assistant line; Codex: `token_count.last_token_usage.input_tokens`),
+  evaluates it with this policy for the session model and, at ORANGE/RED, appends
+  `contesto <n>k token …` to its hint. Under Claude Code the same line reaches the user
+  as a `systemMessage`. The agent closes the step and asks for `/compact`.
+- **Backstop**: Claude Code `autoCompactWindow` in `~/.claude/settings.json` set to the
+  claude class hard limit (320000), so the automatic compaction fires there instead of
+  near the 1M technical window. Codex auto-compacts near its own 258k window, which is
+  already about the gpt/codex hard limit.
+
 ## Compaction
 
 Compaction is structural, not a free-text summary. Items are `{id, role, content}`,

@@ -501,7 +501,12 @@ record and fills version, tier, risk, routed and published executor and both rea
 Publishing a different executor than the router's `open` needs
 `aos-status.py set ... --override-reason "<why>"` (exit 2 otherwise, on both hosts); the
 reason stays on the Claude status bar. The prompt hook appends the session model to its
-hint when it is not an accepted session model (`premium.session_models`) (read from the payload or the transcript tail).
+hint when it is not an accepted session model (`premium.session_models`, read from the
+payload or the transcript tail); a premium planner (Fable) as the session model is told it
+burns premium tokens. Under Claude Code it also reminds a session whose status record
+already carries a tier to route a new task again (`routed_at`, written by `set`), and on
+both hosts it reports an ORANGE/RED context from the transcript's last usage
+(`context_policy`), as a `systemMessage` to the user too under Claude Code.
 
 For T2/T3, call `aos-entry.py pipeline --directory /path/to/repo` with a JSON
 `start` action and data containing `main_host` (`claude-code` or `codex-cli`),

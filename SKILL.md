@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "3.3.0"
+  version: "3.4.0"
 description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -114,12 +114,15 @@ two is a routing datapoint: write it in the measure record. No eligible model, o
 `below_threshold`, is reported, never silently replaced. Bundles, thin premium root,
 worker lease, batched fixes, escalation by failure type: `references/adaptive.md`.
 
-Repeat census, announcement and routing only when classification changes.
+Repeat census, announcement and routing when classification changes — and **every new
+task in the same session is a new classification**: a follow-up request that adds a
+feature, a migration or a fix is routed again, never run on the previous task's route.
+The prompt hook reminds a routed Claude session (`tier attivo … da <n> min`).
 HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. The main session
-runs on an accepted model (`premium.session_models`: Opus or Fable on Claude,
-`gpt-6-astra` on Codex); the premium plans and reviews through the router. On a weaker
-model at T2+ or HIGH+, say so and ask for the switch before the first change; the prompt
-hook names the session model when it is not an accepted one. Research subagents run on a mid model, never the
+runs on an accepted model (`premium.session_models`: Opus on Claude, `gpt-6-astra` on
+Codex); Fable plans and reviews through the router, it is not a session model. On a
+weaker model at T2+ or HIGH+, or on Fable, say so and ask for the switch before the first
+change; the prompt hook names the session model when it is not an accepted one. Research subagents run on a mid model, never the
 session's premium by inheritance.
 
 ## 2. Orient and define success
@@ -186,7 +189,11 @@ before dependent work; continue independent authorized work.
   Separate verified facts from hypotheses. On resume check changed state, then
   continue pending work. No secrets or narrative transcript in memory. Compact at a
   breakpoint you choose — research done, milestone closed, approach abandoned — not
-  mid-implementation and not at the automatic threshold.
+  mid-implementation and not at the automatic threshold. Only the user can run
+  `/compact`: when the prompt hook reports the context ORANGE/RED (`contesto <n>k
+  token`), close the current step, update the task record and ask the user for
+  `/compact` in the report, one line. Claude's `autoCompactWindow` at the RED limit is
+  the mechanical backstop, not the plan.
 - **Context budget:** before a long T2/T3 and at checkpoints, evaluate
   `python3 "$AOS_DIR/bin/aos-context.py" state --model <executor> --tokens <n>` and
   follow `references/context-budget.md` (GREEN → targeted retrieval past target →
