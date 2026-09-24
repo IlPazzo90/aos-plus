@@ -46,6 +46,7 @@ class RoutingConfig:
     premium_models: dict = field(default_factory=dict)
     open_max_tier: str = "T2"
     open_max_risk: str = "MEDIUM"
+    open_high_tiers: tuple = ("T2",)
     open_t2_high_review: str = "premium"
     open_t2_high_requires_observable_check: bool = True
     retries_before_escalation: int = 2
@@ -56,6 +57,20 @@ class RoutingConfig:
 
 
 RESERVED_OPEN = {"T0", "T1"}
+
+
+def _open_high_tiers(value):
+    """Parse policy "open_high_tiers": a list of tier strings among T0..T3.
+
+    Absent, malformed, or any non-string / out-of-range entry falls back to the
+    default ("T2",), the behavior before the key existed. T0 is accepted but
+    ignored by the caller (T0 is decided before the HIGH step).
+    """
+    if not isinstance(value, (list, tuple)) or not value:
+        return ("T2",)
+    if not all(isinstance(item, str) and item in ("T0", "T1", "T2", "T3") for item in value):
+        return ("T2",)
+    return tuple(value)
 
 
 def _valid_entry(entry):
@@ -120,6 +135,7 @@ def load_config(path=None):
         premium_models=model_refs,
         open_max_tier=(policy or {}).get("open_max_tier", "T2"),
         open_max_risk=(policy or {}).get("open_max_risk", "MEDIUM"),
+        open_high_tiers=_open_high_tiers((policy or {}).get("open_high_tiers")),
         open_t2_high_review=(policy or {}).get("open_t2_high_review", "premium"),
         open_t2_high_requires_observable_check=bool((policy or {}).get(
             "open_t2_high_requires_observable_check", True)),
@@ -376,12 +392,21 @@ def _decide(tier, risk, *, config=None, manual_override=False,
 
     # 4. Risk above the open policy ceiling: premium/main, never open.
     if risk in ("HIGH", "CRITICAL"):
-        open_allowed = tier == "T2" and config.open_t2_high_requires_observable_check and observable_check
+        open_allowed = (tier in config.open_high_tiers
+                        and config.open_t2_high_requires_observable_check
+                        and observable_check and risk == "HIGH")
         if not open_allowed:
             review = _high_review(config, premium_reviewer_available)
             return Decision(executor="premium", verify=review,
                             escalation_target=config.premium_reviewer,
                             rationale=("risk above open ceiling", "mandatory premium review"))
+        if tier == "T1":
+            return _open_decision(config, open_primary_available, open_fallback_available,
+                                  failed_open_attempts, verify="deterministic",
+                                  capability_requirements=capability_requirements, budget=budget,
+                                  runtime=executor_runtime, mid_available=mid_available,
+                                  rationale=("open allowed by policy", "observable check present",
+                                             "HIGH checks inline by the main session"))
         return _open_decision(config, open_primary_available, open_fallback_available,
                               failed_open_attempts, verify="premium_review",
                               capability_requirements=capability_requirements, budget=budget,
@@ -471,8 +496,11 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, host
         candidate_families = (planner,) if planner is not None else families
         candidates = []
         for family in candidate_families:
+            # At HIGH the plan is premium, like the review: it is what makes open
+            # execution of HIGH work acceptable at all.
             model = _select_model_for_role(config, 'planner', family, families, capability_requirements,
-                                           budget, tier, risk, kwargs.get('uncertainty'))
+                                           budget, tier, risk, kwargs.get('uncertainty'),
+                                           premium_only=risk == 'HIGH')
             if model:
                 candidates.append((model, family))
         if candidates:
@@ -497,6 +525,12 @@ def decide(tier, risk, *, config=None, planner=None, premium_families=None, host
                 candidates.append((model, family))
         if candidates:
             reviewer_model, reviewer_family = min(candidates, key=lambda item: _model_sort_key(config, item[0]))
+    if (risk == 'HIGH' and decision.executor == 'open' and needs_plan
+            and not (planner_model and reviewer_model)):
+        # HIGH work reaches the open worker only under a premium plan and a premium
+        # review of the opposite family; without either, the premium executes.
+        return decide(tier, risk, config=config, planner=planner, premium_families=premium_families,
+                      host=host, **dict(kwargs, observable_check=False))
     return replace(decision, planner=planner_family if needs_plan else None,
                    reviewer=reviewer_family if needs_review else None,
                    fixer='open' if decision.executor == 'open' else decision.executor,

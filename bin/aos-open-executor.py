@@ -15,6 +15,7 @@ from functools import lru_cache
 from fnmatch import fnmatchcase
 import tempfile
 from urllib.parse import urlparse
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('aos_open_delegate', ROOT / 'bin/aos-delegate.py')
@@ -479,6 +480,70 @@ def run(repo, model, brief, timeout, allow_dirty, max_cost=None, max_steps=60,
     return result
 
 
+def _git_repo_name(repo):
+    """Name of the main repository the worktree belongs to, or the worktree name."""
+    try:
+        common = subprocess.run(
+            ['git', '-C', str(repo), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+            capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        if common:
+            return Path(common).parent.name
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return Path(repo).name
+
+
+def _load_learning():
+    """Import the learning ledger module the way publish_status imports aos-status."""
+    learning_spec = importlib.util.spec_from_file_location('aos_learning', ROOT / 'bin/aos-learning.py')
+    learning = importlib.util.module_from_spec(learning_spec)
+    learning_spec.loader.exec_module(learning)
+    return learning
+
+
+def _record_open_outcome(repo, brief, task_id, selection, result, tier, risk):
+    """Persist one pending outcome row for a standalone open-worker run.
+
+    Returns ``(event_key, ledger_error)``. ``ledger_error`` is ``None`` on
+    success; any failure here never fails the delegation.
+    """
+    event_key = 'open-' + uuid4().hex
+    database = Path.home() / '.local/state/aos/learning.sqlite3'
+    database.parent.mkdir(parents=True, exist_ok=True)
+    usage = result.get('usage') or {}
+    cost = result.get('cost')
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        cost = None
+    elif cost != cost or cost == float('inf') or cost == float('-inf'):
+        cost = None
+    main_host = None
+    if os.environ.get('CLAUDE_CODE_SESSION_ID'):
+        main_host = 'claude'
+    elif os.environ.get('CODEX_SESSION_ID') or os.environ.get('CODEX_THREAD_ID'):
+        main_host = 'codex'
+    _load_learning().record_outcome(database, {
+        "event_key": event_key,
+        "runtime": selection['runtime'],
+        "provider": selection['provider'],
+        "model": selection['model_ref'],
+        "role": 'executor',
+        "tier": (tier or '').upper() if tier else None,
+        "risk": (risk or '').upper() if risk else None,
+        "worker_exit": result['exit_code'],
+        "error": result.get('error') or None,
+        "cost_class": result.get('cost_class'),
+        "cost": cost,
+        "input_tokens": usage.get('input_tokens'),
+        "output_tokens": usage.get('output_tokens'),
+        "task_id": (task_id or '').strip() or Path(brief).stem,
+        "project": _git_repo_name(repo),
+        "verification_status": 'pending',
+        "test_pass": None,
+        "main_host": main_host,
+    })
+    return event_key, None
+
+
 def publish_status(model_ref, result):
     """Report the tokens this run burned to the host status bar. Cosmetic only:
     a status-bar failure never fails a delegation, and a benchmark or a library
@@ -495,7 +560,7 @@ def publish_status(model_ref, result):
         pass
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--repo', required=True)
     p.add_argument('--brief', required=True)
@@ -505,12 +570,31 @@ def main():
     p.add_argument('--task-id')
     p.add_argument('--timeout', type=int, default=900)
     p.add_argument('--state-file', type=Path)
-    args = p.parse_args()
+    p.add_argument('--tier', type=str.upper, choices=('T0', 'T1', 'T2', 'T3'))
+    p.add_argument('--risk', type=str.upper, choices=('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'))
+    p.add_argument('--no-record', action='store_true', help='do not write a pending ledger outcome')
+    args = p.parse_args(argv)
+    recording = not args.no_record and os.environ.get('AOS_LEARNING') != 'off'
+    # A ledger row without its classification cannot teach the matrix: refuse
+    # before any token is spent rather than record a row nobody can score.
+    if recording and not (args.tier and args.risk):
+        p.error('--tier and --risk are required to record the run (or pass --no-record)')
     try:
         selection = resolve(slot=args.slot, runtime=args.runtime, model=args.model)
         result = run(args.repo, selection['model_ref'], Path(args.brief).read_text(), args.timeout, False,
                      runtime=selection['runtime'], state_file=args.state_file, task_id=args.task_id)
         publish_status(selection['model_ref'], result)
+        if recording:
+            try:
+                event_key, ledger_error = _record_open_outcome(
+                    args.repo, args.brief, args.task_id, selection, result, args.tier, args.risk)
+            except Exception as error:  # noqa: BLE001 - a ledger failure never fails the delegation
+                event_key, ledger_error = None, str(error)
+            result = dict(result, ledger_event_key=event_key)
+            if ledger_error:
+                result['ledger_error'] = ledger_error
+        else:
+            result = dict(result, ledger_event_key=None)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return int(result['exit_code'] != 0 or bool(result['error']))
     except SystemExit as refusal:

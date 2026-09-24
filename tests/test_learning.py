@@ -763,11 +763,11 @@ class ReservationTests(unittest.TestCase):
             L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
         # An outcome without a reservation id settles nothing (round 1 finding: one
         # outcome used to release every hold of the task).
-        L.record_outcome(self.db, {"task_id": "task-a", "worker_exit": 0, "test_pass": True, "cost": 0.1})
+        L.record_outcome(self.db, {"task_id": "task-a", "project": "p", "worker_exit": 0, "test_pass": True, "cost": 0.1})
         with self.assertRaisesRegex(ValueError, "daily_budget exceeded"):
             L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
         # The outcome that names the hold releases exactly that one; its measured cost replaces it.
-        L.record_outcome(self.db, {"task_id": "task-a", "worker_exit": 0, "test_pass": True, "cost": 0.1,
+        L.record_outcome(self.db, {"task_id": "task-a", "project": "p", "worker_exit": 0, "test_pass": True, "cost": 0.1,
                                    "reservation_id": first["reservation_id"]})
         second = L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
         self.assertEqual(second["open_reservations"], 0)
@@ -777,13 +777,13 @@ class ReservationTests(unittest.TestCase):
         policy = {"daily_budget": 1.0}
         a1 = L.reserve_budget(self.db, policy, 0.4, "task-a", self.check)
         L.reserve_budget(self.db, policy, 0.4, "task-a", self.check)
-        L.record_outcome(self.db, {"task_id": "task-a", "worker_exit": 0, "test_pass": True, "cost": 0.4,
+        L.record_outcome(self.db, {"task_id": "task-a", "project": "p", "worker_exit": 0, "test_pass": True, "cost": 0.4,
                                    "reservation_id": a1["reservation_id"]})
         # Committed 0.4 + the sibling hold 0.4 + 0.6 requested = 1.4 > 1.0
         with self.assertRaisesRegex(ValueError, "daily_budget exceeded"):
             L.reserve_budget(self.db, policy, 0.6, "task-b", self.check)
         with self.assertRaisesRegex(ValueError, "reservation_id must be an integer"):
-            L.record_outcome(self.db, {"task_id": "t", "worker_exit": 0, "reservation_id": "7"})
+            L.record_outcome(self.db, {"task_id": "t", "project": "p", "worker_exit": 0, "reservation_id": "7"})
 
     def test_unknown_estimate_admitted_by_check_is_held_as_unknown(self):
         first = L.reserve_budget(self.db, {"daily_budget": 1.0}, None,
@@ -1441,7 +1441,8 @@ class VerifiedOnlyTests(unittest.TestCase):
     def record(self, n, status, success=True):
         for i in range(n):
             L.record_outcome(self.db, {"model": "m", "role": "executor", "worker_exit": 0 if success else 1,
-                                       "test_pass": success, "task_id": "t%d" % i, "domain": "GENERAL",
+                                       "test_pass": success, "task_id": "t%d" % i, "project": "p",
+                                       "domain": "GENERAL",
                                        "task_type": "feature", "verification_status": status})
 
     def test_unverified_outcomes_never_move_a_model(self):
@@ -1463,12 +1464,12 @@ class VerifiedOnlyTests(unittest.TestCase):
 
     def test_tokens_per_verified_task_counts_every_class_and_null_without_data(self):
         L.record_outcome(self.db, {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
-                                   "task_id": "t", "cost_class": "MID", "verification_status": "verified",
+                                   "task_id": "t", "project": "p", "cost_class": "MID", "verification_status": "verified",
                                    "input_tokens": 1000, "output_tokens": 500})
         self.assertEqual(L.kpi(self.db)["tokens_per_verified_task"], 1500)
         other = self.db + ".empty"
         L.record_outcome(other, {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
-                                 "task_id": "t", "verification_status": "verified"})
+                                 "task_id": "t", "project": "p", "verification_status": "verified"})
         self.assertIsNone(L.kpi(other)["tokens_per_verified_task"])
 
 
@@ -1480,7 +1481,7 @@ class ReviewRoundTwoLearningTests(unittest.TestCase):
 
     def record(self, database, **extra):
         event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
-                 "task_id": "t", "verification_status": "verified"}
+                 "task_id": "t", "project": "p", "verification_status": "verified"}
         event.update(extra)
         L.record_outcome(database, event)
 
@@ -1511,7 +1512,7 @@ class ReviewRoundThreeLearningTests(unittest.TestCase):
 
     def record(self, **extra):
         event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
-                 "task_id": "t", "verification_status": "verified"}
+                 "task_id": "t", "project": "p", "verification_status": "verified"}
         event.update(extra)
         if extra.get("success") is False:
             event.pop("success")
@@ -1553,7 +1554,7 @@ class ReviewRoundFourLearningTests(unittest.TestCase):
 
     def record(self, **extra):
         event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
-                 "task_id": "t", "verification_status": "verified"}
+                 "task_id": "t", "project": "p", "verification_status": "verified"}
         event.update(extra)
         L.record_outcome(self.db, event)
 
@@ -1578,6 +1579,7 @@ class ReviewRoundFourLearningTests(unittest.TestCase):
                 for event in ({}, {"role": "reviewer", "verification_status": status}):
                     L.record_outcome(database, dict({"model": "m", "role": "executor", "worker_exit": 0,
                                                      "test_pass": True, "task_id": "t",
+                                                     "project": "p",
                                                      "verification_status": "verified"}, **event))
                 self.assertEqual(L.kpi(database)["verified_success_rate"], 0.0)
 
@@ -1599,7 +1601,7 @@ class ReviewRoundFiveLearningTests(unittest.TestCase):
                 for role, bundle, passed, verification in (("executor", "A", True, "verified"),
                                                             ("reviewer", "A", False, status),
                                                             ("executor", "B", True, "verified")):
-                    L.record_outcome(database, {"task_id": "t", "model": "m", "role": role, "bundle": bundle,
+                    L.record_outcome(database, {"task_id": "t", "project": "p", "model": "m", "role": role, "bundle": bundle,
                                                 "worker_exit": 0 if passed else 1, "test_pass": passed,
                                                 "verification_status": verification})
                 self.assertEqual(L.kpi(database)["verified_success_rate"], 0.0)
@@ -1610,7 +1612,7 @@ class ReviewRoundFiveLearningTests(unittest.TestCase):
         database = str(pathlib.Path(directory) / "ledger.sqlite3")
         for role, bundle, passed in (("executor", "A", True), ("reviewer", "A", False),
                                      ("fixer", "A", True), ("reviewer", "A", True), ("executor", "B", True)):
-            L.record_outcome(database, {"task_id": "t", "model": "m", "role": role, "bundle": bundle,
+            L.record_outcome(database, {"task_id": "t", "project": "p", "model": "m", "role": role, "bundle": bundle,
                                         "worker_exit": 0 if passed else 1, "test_pass": passed,
                                         "verification_status": "verified"})
         self.assertEqual(L.kpi(database)["verified_success_rate"], 1.0)
@@ -1628,6 +1630,220 @@ class ReviewRoundSixLearningTests(unittest.TestCase):
                                         "verification_status": "verified"})
         k = L.kpi(database)
         self.assertEqual((k["tasks"], k["verified_success_rate"], k["retry_rate"]), (2, 0.5, 0.0))
+
+
+class OutcomeIdentityTests(unittest.TestCase):
+    """record_outcome refuses empty or half-present project/task_id identity."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def test_empty_or_blank_project_or_task_id_is_refused(self):
+        for override in ({"project": ""}, {"project": "   "},
+                         {"task_id": ""}, {"task_id": "\t"}):
+            with self.assertRaisesRegex(ValueError, "non-empty strings", msg=override):
+                L.record_outcome(self.db, dict(
+                    {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                     "task_id": "t", "project": "p"}, **override))
+        # Non-string identities are refused too.
+        with self.assertRaisesRegex(ValueError, "non-empty strings"):
+            L.record_outcome(self.db, {"model": "m", "worker_exit": 0, "project": 5, "task_id": "t"})
+
+    def test_exactly_one_none_identity_is_refused(self):
+        for override in ({"project": None}, {"task_id": None}):
+            with self.assertRaisesRegex(ValueError, "non-empty strings", msg=override):
+                L.record_outcome(self.db, dict(
+                    {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                     "task_id": "t", "project": "p"}, **override))
+
+    def test_both_none_identity_is_allowed(self):
+        result = L.record_outcome(self.db, {"model": "m", "role": "executor",
+                                            "worker_exit": 0, "test_pass": True})
+        self.assertIsInstance(result["outcome_id"], int)
+        row = L.list_outcomes(self.db)[0]
+        self.assertIsNone(row["project"])
+        self.assertIsNone(row["task_id"])
+
+
+class VerifyOutcomeTests(unittest.TestCase):
+    """A pending outcome is scored once; a verified record is never rewritten."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def pending(self, **overrides):
+        event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                 "task_id": "t", "project": "p", "event_key": "open-1",
+                 "verification_status": "pending"}
+        event.update(overrides)
+        return event
+
+    def test_pending_to_verified_success_recomputed_true(self):
+        L.record_outcome(self.db, self.pending())
+        result = L.verify_outcome(self.db, "open-1", True)
+        self.assertEqual(result["success"], True)
+        row = L.list_outcomes(self.db)[0]
+        self.assertEqual(row["verification_status"], "verified")
+        self.assertEqual(row["test_pass"], 1)
+        self.assertEqual(row["success"], True)
+        self.assertEqual(result["outcome_id"], row["id"])
+
+    def test_false_test_pass_forces_success_false(self):
+        L.record_outcome(self.db, self.pending())
+        result = L.verify_outcome(self.db, "open-1", False)
+        self.assertFalse(result["success"])
+        self.assertFalse(L.list_outcomes(self.db)[0]["success"])
+
+    def test_failure_type_forces_success_false(self):
+        L.record_outcome(self.db, self.pending())
+        result = L.verify_outcome(self.db, "open-1", True, failure_type="test_failure")
+        self.assertFalse(result["success"])
+        row = L.list_outcomes(self.db)[0]
+        self.assertEqual(row["failure_type"], "test_failure")
+
+    def test_error_forces_success_false(self):
+        L.record_outcome(self.db, self.pending())
+        result = L.verify_outcome(self.db, "open-1", True, error="crashed")
+        self.assertFalse(result["success"])
+        self.assertEqual(L.list_outcomes(self.db)[0]["error"], "crashed")
+
+    def test_verify_keeps_a_stored_worker_error_when_none_is_given(self):
+        # The worker stored an error before handing off; verify must not overwrite
+        # it with NULL, so success stays false and the error survives.
+        L.record_outcome(self.db, self.pending(worker_exit=0, error="delegate failed"))
+        result = L.verify_outcome(self.db, "open-1", True)
+        self.assertFalse(result["success"])
+        self.assertEqual(L.list_outcomes(self.db)[0]["error"], "delegate failed")
+
+    def test_verify_keeps_a_stored_failure_type_when_none_is_given(self):
+        L.record_outcome(self.db, self.pending(worker_exit=0, failure_type="test_failure"))
+        result = L.verify_outcome(self.db, "open-1", True)
+        self.assertFalse(result["success"])
+        self.assertEqual(L.list_outcomes(self.db)[0]["failure_type"], "test_failure")
+
+    def test_verify_prefers_the_explicit_error_over_the_stored_one(self):
+        L.record_outcome(self.db, self.pending(worker_exit=0, error="stale"))
+        result = L.verify_outcome(self.db, "open-1", True, error="fresh")
+        self.assertFalse(result["success"])
+        self.assertEqual(L.list_outcomes(self.db)[0]["error"], "fresh")
+
+    def test_unknown_event_key_is_refused(self):
+        L.record_outcome(self.db, self.pending())
+        with self.assertRaisesRegex(ValueError, "no outcome with that event_key"):
+            L.verify_outcome(self.db, "open-missing", True)
+
+    def test_second_verify_is_refused(self):
+        L.record_outcome(self.db, self.pending())
+        L.verify_outcome(self.db, "open-1", True)
+        with self.assertRaisesRegex(ValueError, "already verified"):
+            L.verify_outcome(self.db, "open-1", True)
+
+    def test_non_pending_row_is_not_verified(self):
+        L.record_outcome(self.db, self.pending(verification_status="verified"))
+        with self.assertRaisesRegex(ValueError, "already verified"):
+            L.verify_outcome(self.db, "open-1", True)
+
+    def test_invalid_failure_type_and_test_pass_are_refused(self):
+        L.record_outcome(self.db, self.pending())
+        with self.assertRaises(ValueError):
+            L.verify_outcome(self.db, "open-1", True, failure_type="not_real")
+        with self.assertRaises(ValueError):
+            L.verify_outcome(self.db, "open-1", 1)
+
+    def test_cli_round_trip(self):
+        L.record_outcome(self.db, self.pending())
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = L.main(["verify-outcome", "--database", self.db,
+                           "--event-key", "open-1", "--test-pass", "true"])
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["success"], True)
+        self.assertIsInstance(payload["outcome_id"], int)
+        self.assertEqual(L.list_outcomes(self.db)[0]["verification_status"], "verified")
+
+    def test_pending_row_does_not_move_matrix_until_verified(self):
+        key = self.db
+        L.record_outcome(self.db, self.pending(worker_exit=0, task_id="t1", event_key="open-t1"))
+        # A pending row never steers the matrix.
+        self.assertNotIn("m", L.matrix(key)["models"])
+        L.verify_outcome(key, "open-t1", True)
+        self.assertIn("m", L.matrix(key)["models"])
+        # A failing verification is visible as a counted failure.
+        L.record_outcome(key, self.pending(worker_exit=1, test_pass=False, task_id="t2", event_key="open-t2"))
+        L.verify_outcome(key, "open-t2", False)
+        entry = L.matrix(key)["models"]["m"]
+        self.assertEqual(entry["overall"]["sample_size"], 2)
+        self.assertLess(entry["overall"]["score"], 1.0)
+
+
+class PendingAggregateTests(unittest.TestCase):
+    """A pending row must not change any aggregate until the host verifies it."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.db = str(pathlib.Path(directory) / "ledger.sqlite3")
+
+    def outcome(self, **overrides):
+        event = {"model": "m", "role": "executor", "worker_exit": 0, "test_pass": True,
+                 "task_id": "t", "project": "p", "verification_status": "verified"}
+        event.update(overrides)
+        return event
+
+    def test_a_pending_run_reopens_a_task_with_a_verified_pipeline_verdict(self):
+        # Review round 4: the explicit task_outcomes branch must see pending rows too.
+        L.record_task(self.db, {"project": "p", "task_id": "t", "outcome": "verified",
+                                "first_pass": True, "failed_attempts": 0, "escalated": False,
+                                "review_rounds": 0, "findings_confirmed": 0,
+                                "findings_refuted": 0, "bundles": 1})
+        L.record_outcome(self.db, self.outcome(task_id="t", event_key="open-1", test_pass=None,
+                                               verification_status="pending"))
+        k = L.kpi(self.db)
+        self.assertEqual(k["pending_outcomes"], 1)
+        self.assertEqual(k["verified_success_rate"], 0.0)
+        L.verify_outcome(self.db, "open-1", True)
+        self.assertEqual(L.kpi(self.db)["verified_success_rate"], 1.0)
+
+    def test_pending_row_does_not_change_kpi_history_or_matrix(self):
+        # One verified success anchors the aggregates.
+        L.record_outcome(self.db, self.outcome(task_id="t1", cost=1.0,
+                                               input_tokens=100, output_tokens=50))
+        kpi_before = L.kpi(self.db)
+        history_before = L.history(self.db)["groups"]
+        matrix_before = L.matrix(self.db)["models"]["m"]["failure_types"]
+
+        # A pending row with its own task, cost, tokens and a failure_type must stay
+        # invisible to every aggregate except the pending_outcomes tally.
+        L.record_outcome(self.db, self.outcome(task_id="t2", cost=9.0,
+                                               input_tokens=999, output_tokens=999,
+                                               failure_type="test_failure",
+                                               verification_status="pending",
+                                               event_key="open-t2"))
+
+        kpi_after = L.kpi(self.db)
+        # KPI keep the pending task as an unverified one (review rounds 4-5): it is
+        # counted, never as a verified success, and pending_outcomes names it.
+        self.assertEqual(kpi_before["pending_outcomes"], 0)
+        self.assertEqual(kpi_after["pending_outcomes"], 1)
+        self.assertEqual(kpi_after["tasks"], 2)
+        self.assertEqual(kpi_before["verified_success_rate"], 1.0)
+        self.assertEqual(kpi_after["verified_success_rate"], 0.5)
+
+        self.assertEqual(L.history(self.db)["groups"], history_before)
+        self.assertEqual(L.matrix(self.db)["models"]["m"]["failure_types"], matrix_before)
+
+        # After verification the pending row counts.
+        L.verify_outcome(self.db, "open-t2", True)
+        self.assertEqual(L.kpi(self.db)["pending_outcomes"], 0)
+        self.assertEqual(L.matrix(self.db)["models"]["m"]["failure_types"],
+                         {"test_failure": 1})
 
 
 if __name__ == "__main__":

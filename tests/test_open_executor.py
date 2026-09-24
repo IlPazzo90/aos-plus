@@ -211,6 +211,139 @@ class OpenExecutorTests(unittest.TestCase):
         self.assertIn('do not escalate', stream.error)
 
 
+class OpenLedgerRecordingTests(unittest.TestCase):
+    """A standalone open-worker run writes one pending outcome row."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / 'home'
+        self.ledger = self.home / '.local/state/aos/learning.sqlite3'
+        self.repo = Path(self.tmp.name) / 'repo'
+        self.repo.mkdir()
+        self.brief = Path(self.tmp.name) / 'task.md'
+        self.brief.write_text('build it\n')
+
+    def fake_result(self, **overrides):
+        result = {'exit_code': 0, 'error': None, 'cost': 1.5,
+                  'usage': {'input_tokens': 10, 'output_tokens': 5},
+                  'cost_class': 'CHEAP', 'reply': ''}
+        result.update(overrides)
+        return result
+
+    def run_main(self, args, home, extra_env=None, fake_result=None, no_default_class=False):
+        import contextlib
+        import io
+        selection = {'runtime': 'claude-code', 'provider': 'vercel',
+                     'model_ref': 'vercel/deepseek/deepseek-v4-pro-0813', 'model': 'deepseek/deepseek-v4-pro-0813'}
+        result = fake_result if fake_result is not None else self.fake_result()
+        buf = io.StringIO()
+        # Start from the real environment without the host/ledger variables, so a
+        # test run inside a Claude or Codex session sees only what the test sets.
+        env = {k: v for k, v in executor.os.environ.items()
+               if k not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'AOS_LEARNING')}
+        if extra_env:
+            env.update(extra_env)
+        argv = ['--repo', str(self.repo), '--brief', str(self.brief), '--model',
+                'vercel/deepseek/deepseek-v4-pro-0813', '--timeout', '1'] + args
+        if '--tier' not in args and '--no-record' not in args and not no_default_class:
+            argv += ['--tier', 'T1', '--risk', 'LOW']
+        with patch.object(executor, 'resolve', return_value=selection), \
+                patch.object(executor, 'run', return_value=result), \
+                patch.object(executor, 'publish_status'), \
+                patch.object(executor.Path, 'home', return_value=home), \
+                patch.dict(executor.os.environ, env, clear=True), \
+                contextlib.redirect_stdout(buf):
+            code = executor.main(argv)
+        return code, buf.getvalue()
+
+    def record(self):
+        import sqlite3
+        conn = sqlite3.connect(str(self.ledger))
+        try:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute('SELECT * FROM outcomes').fetchall()]
+        finally:
+            conn.close()
+
+    def test_recording_without_tier_and_risk_is_refused_before_the_run(self):
+        with patch.object(executor, 'run') as run, \
+                patch.dict(executor.os.environ, {'AOS_LEARNING': ''}), \
+                self.assertRaises(SystemExit) as refusal:
+            executor.main(['--repo', str(self.repo), '--brief', str(self.brief)])
+        self.assertEqual(refusal.exception.code, 2)
+        run.assert_not_called()
+        self.assertFalse(self.ledger.exists())
+
+    def test_an_unknown_tier_is_refused(self):
+        with patch.object(executor, 'run') as run, self.assertRaises(SystemExit) as refusal:
+            executor.main(['--repo', str(self.repo), '--brief', str(self.brief),
+                           '--tier', 'T9', '--risk', 'LOW'])
+        self.assertEqual(refusal.exception.code, 2)
+        run.assert_not_called()
+
+    def test_no_record_needs_no_classification(self):
+        code, out = self.run_main(['--no-record'], self.home)
+        self.assertEqual(code, 0)
+        self.assertIsNone(json.loads(out)['ledger_event_key'])
+
+    def test_writes_one_pending_row_with_model_task_and_project(self):
+        code, out = self.run_main([], self.home, extra_env={'CLAUDE_CODE_SESSION_ID': 's1'})
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertIn('ledger_event_key', payload)
+        self.assertTrue(payload['ledger_event_key'].startswith('open-'))
+        rows = self.record()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['model'], 'vercel/deepseek/deepseek-v4-pro-0813')
+        self.assertEqual(row['task_id'], 'task')  # brief stem when --task-id absent
+        self.assertEqual(row['project'], 'repo')  # worktree name when git common-dir fails
+        self.assertEqual(row['role'], 'executor')
+        self.assertEqual(row['verification_status'], 'pending')
+        self.assertIsNone(row['test_pass'])
+        self.assertEqual(row['worker_exit'], 0)
+        self.assertEqual(row['event_key'], payload['ledger_event_key'])
+        self.assertEqual(row['main_host'], 'claude')
+        self.assertEqual(row['cost'], 1.5)
+        self.assertEqual(row['input_tokens'], 10)
+        self.assertEqual(row['output_tokens'], 5)
+        self.assertEqual(row['cost_class'], 'CHEAP')
+
+    def test_task_id_from_flag_and_tier_risk_uppercased(self):
+        self.run_main(['--task-id', 'real-task', '--tier', 't1', '--risk', 'low'],
+                      self.home, extra_env={'CODEX_SESSION_ID': 'c1'})
+        row = self.record()[0]
+        self.assertEqual(row['task_id'], 'real-task')
+        self.assertEqual(row['tier'], 'T1')
+        self.assertEqual(row['risk'], 'LOW')
+        self.assertEqual(row['main_host'], 'codex')
+
+    def test_no_record_flag_writes_nothing(self):
+        code, out = self.run_main(['--no-record'], self.home)
+        self.assertEqual(code, 0)
+        self.assertFalse(self.ledger.exists())
+        self.assertEqual(json.loads(out)['ledger_event_key'], None)
+
+    def test_aos_learning_off_env_writes_nothing(self):
+        self.run_main([], self.home, extra_env={'AOS_LEARNING': 'off'})
+        self.assertFalse(self.ledger.exists())
+
+    def test_ledger_failure_keeps_exit_code_and_prints_ledger_error(self):
+        class Exploder:
+            def record_outcome(self, *a, **k):
+                raise RuntimeError('ledger exploded')
+        with patch.object(executor, '_load_learning', return_value=Exploder()):
+            code, out = self.run_main([], self.home, extra_env={'CLAUDE_CODE_SESSION_ID': 's'})
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertIn('ledger_error', payload)
+        self.assertIn('ledger exploded', payload['ledger_error'])
+        self.assertEqual(payload['ledger_event_key'], None)
+        self.assertFalse(self.ledger.exists())
+
+
+
 class IsolationTests(unittest.TestCase):
     """Probe bypass is fixture-bound; the seatbelt profile denies before it allows."""
 

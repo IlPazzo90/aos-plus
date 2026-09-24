@@ -126,11 +126,14 @@ Routing defaults (`bin/aos-router.py` decides; config changes policy):
 | T2 | configured premium | open primary | opposite premium | open |
 | T3 | premium architecture/decomposition | open bounded subtasks | opposite premium integration review | open |
 
-HIGH retains the existing risk ceiling: T2 open requires the policy's observable
-check exception; otherwise premium execution is an explicit risk-policy exception.
+HIGH retains the risk ceiling with one exception (3.2.0, `policy.open_high_tiers`):
+at T1, T2 and T3 the open worker may execute HIGH work when an observable check (test,
+build or scripted run) exercises the change; otherwise premium executes. The premium
+still plans, runs the checks and applies anything the worker cannot touch (deploys,
+migrations on a live database, credentials): the worker has file tools only.
 At T2/T3 every risk gets the cross-family review, premium at HIGH; T0/T1 HIGH run the
-extended HIGH checks inline, without an external reviewer. T3 HIGH is not permission to relax that ceiling;
-its bounded subtasks must be classified individually. CRITICAL keeps the existing
+extended HIGH checks inline, without an external reviewer. T3 HIGH bounded subtasks
+are still classified individually. CRITICAL keeps the existing
 human approval path before execution. Manual overrides and host-only capabilities
 retain their existing routes; a CLI cannot promise desktop-only app tools.
 
@@ -455,8 +458,10 @@ without changing the configured model. Runtime availability does not prove provi
 authentication. No selection silently substitutes an OpenAI or Anthropic model.
 
 ```sh
-python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime claude-code
-python3 bin/aos-open-executor.py --repo /path/to/repo --brief /path/to/brief.md --runtime claude-code --slot fallback
+python3 bin/aos-open-executor.py --repo /path/to/worktree --brief /path/to/brief.md \
+  --task-id <slug> --tier T<n> --risk <LEVEL> --runtime claude-code
+python3 bin/aos-open-executor.py --repo /path/to/worktree --brief /path/to/brief.md \
+  --task-id <slug> --tier T<n> --risk <LEVEL> --runtime claude-code --slot fallback
 ```
 
 The brief contains the task, structured premium plan, acceptance criteria, relevant
@@ -464,6 +469,28 @@ files, security constraints and required tests. The CLI emits JSON with the role
 runtime, provider, model reference, executor model, task ID, result, changed files,
 usage, cost, exit code and existing delegate evidence. `tests: []` means no host
 verification has been observed yet. A worker's prose does not constitute a test PASS.
+
+Ledger (3.2.0): each completed CLI run writes one `pending` outcome in
+`~/.local/state/aos/learning.sqlite3` (project = main repository, task = `--task-id` or
+the brief's stem) and prints its `ledger_event_key`. `--tier` and `--risk` are required
+for that, and the run is refused before any token otherwise; `--no-record` or
+`AOS_LEARNING=off` skip it (benchmarks and the pipeline call the library, which does
+not record). After the host checks:
+
+```sh
+python3 bin/aos-learning.py verify-outcome --database ~/.local/state/aos/learning.sqlite3 \
+  --event-key <ledger_event_key> --test-pass true|false [--failure-type <type>] [--error <text>]
+```
+
+A pending row never steers routing, the matrix or history; in KPI it counts as an
+unverified task (`pending_outcomes` tallies them). A failure caused by the brief or by
+AOS takes an AOS-attributed type (`context_failure`, `routing_failure`, ...), so the
+model stays routable.
+
+Publishing a different executor than the router's `open` needs
+`aos-status.py set ... --override-reason "<why>"` (exit 2 otherwise, on both hosts); the
+reason stays on the Claude status bar. The prompt hook appends the session model to its
+hint when it is not the policy's premium (read from the payload or the transcript tail).
 
 For T2/T3, call `aos-entry.py pipeline --directory /path/to/repo` with a JSON
 `start` action and data containing `main_host` (`claude-code` or `codex-cli`),

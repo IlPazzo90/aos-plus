@@ -537,6 +537,16 @@ def record_outcome(database, event):
     if not isinstance(event, dict):
         raise ValueError("event must be a dict")
 
+    # Identity: a project or task_id that is present must be a non-empty string,
+    # and the two travel together (both None only for legacy callers otherwise).
+    project_value = event.get("project")
+    task_id_value = event.get("task_id")
+    for name, value in (("project", project_value), ("task_id", task_id_value)):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError("project and task_id must be non-empty strings")
+    if (project_value is None) != (task_id_value is None):
+        raise ValueError("project and task_id must be non-empty strings")
+
     worker_exit = event.get("worker_exit")
     if worker_exit is not None and (isinstance(worker_exit, bool) or not isinstance(worker_exit, int)):
         raise ValueError("worker_exit must be an integer")
@@ -703,6 +713,53 @@ def record_outcome(database, event):
                              (_now(), reservation_id))
             conn.execute("COMMIT")
             return {"outcome_id": cur.lastrowid, "success": bool(success)}
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def verify_outcome(database, event_key, test_pass, failure_type=None, error=None):
+    """Verify a pending outcome: rewrite it exactly once as a scored verdict.
+
+    Only a row still carrying ``verification_status == 'pending'`` can be
+    verified; a verified record is never rewritten. ``success`` is recomputed
+    with the same rule as ``record_outcome`` rather than taken from the caller.
+    """
+    if not isinstance(event_key, str) or not event_key.strip():
+        raise ValueError("event_key must be a non-empty string")
+    if not isinstance(test_pass, bool):
+        raise ValueError("test_pass must be a boolean")
+    if failure_type is not None and failure_type not in FAILURE_TYPES:
+        raise ValueError("failure_type must be one of FAILURE_TYPES")
+
+    conn = _connect(database)
+    try:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT id, worker_exit, verification_status, error, failure_type"
+                               " FROM outcomes WHERE event_key = ? ORDER BY id LIMIT 1",
+                               (event_key,)).fetchone()
+            if row is None:
+                raise ValueError("no outcome with that event_key")
+            if row["verification_status"] != "pending":
+                raise ValueError("outcome already verified")
+            # The worker measured an error/failure before handing off for scoring:
+            # keep it unless the caller supplies a replacement, and never drop a
+            # stored value for a NULL one.
+            kept_error = error if error else row["error"]
+            kept_failure = failure_type if failure_type else row["failure_type"]
+            success = (row["worker_exit"] == 0) and (test_pass is True) and (not kept_error) \
+                and (kept_failure is None)
+            conn.execute(
+                "UPDATE outcomes SET test_pass = ?, failure_type = ?, error = ?,"
+                " verification_status = 'verified', success = ? WHERE id = ?",
+                (1 if test_pass else 0, kept_failure, kept_error, 1 if success else 0, row["id"]),
+            )
+            conn.execute("COMMIT")
+            return {"outcome_id": row["id"], "success": bool(success)}
         except Exception:
             conn.execute("ROLLBACK")
             raise
@@ -1079,6 +1136,11 @@ def matrix(database, half_life_days=None, now=None, prior_strength=None, min_obs
         if not row["model"]:
             continue
         model = row["model"]
+        # A pending row must not move any aggregate until the host verifies it:
+        # its failure_type is tallied here above the `_scored_outcome` gate, so
+        # exclude it explicitly rather than relying on that gate alone.
+        if row["verification_status"] == "pending":
+            continue
         failure_types.setdefault(model, {})
         if row["failure_type"]:
             ft = failure_types[model]
@@ -1217,7 +1279,10 @@ def kpi(database, project=None, since=None):
     """Group outcomes by task_id and derive operational KPIs.
 
     NULL task_id becomes its own task. Denomators of zero yield ``None`` (never a
-    fabricated zero) across every ratio.
+    fabricated zero) across every ratio. A pending row stays in: a task with an
+    unverified attempt or review is not a verified success (review rounds 4-5), so
+    it lowers the verified rates until someone verifies it. ``pending_outcomes``
+    says how many such rows are in scope.
     """
     rows = list_outcomes(database)
     if project is not None:
@@ -1225,6 +1290,7 @@ def kpi(database, project=None, since=None):
     if since is not None:
         since_moment = _moment(since)
         rows = [r for r in rows if _moment(r["created_at"]) >= since_moment]
+    pending_outcomes = sum(1 for r in rows if r["verification_status"] == "pending")
 
     # Tasks: per task, the earliest row is the first attempt.
     tasks = {}
@@ -1281,7 +1347,10 @@ def kpi(database, project=None, since=None):
             # The pipeline stored the verdict it already knew; never reconstruct it
             # from attempt rows whose recording order is not the event order.
             task_records += 1
-            if explicit["outcome"] == "verified":
+            # A later standalone worker run on the same task, still pending, reopens
+            # it: not a verified success until someone verifies that run.
+            reopened = any(r["verification_status"] == "pending" for r in task_rows)
+            if explicit["outcome"] == "verified" and not reopened:
                 verified_success_count += 1
             if explicit["first_pass"]:
                 first_pass_success_count += 1
@@ -1409,6 +1478,7 @@ def kpi(database, project=None, since=None):
         "tasks": n_tasks,
         "attempts": attempts,
         "task_records": task_records,
+        "pending_outcomes": pending_outcomes,
     }
 
 
@@ -1512,11 +1582,13 @@ def history(database, project=None):
     conn = _connect(database)
     try:
         _ensure_schema(conn)
+        # A pending row must not change any aggregate until the host verifies it.
+        pending = "verification_status IS NULL OR verification_status != 'pending'"
         if project is None:
-            rows = conn.execute("SELECT * FROM outcomes ORDER BY id").fetchall()
+            rows = conn.execute("SELECT * FROM outcomes WHERE %s ORDER BY id" % pending).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM outcomes WHERE project = ? ORDER BY id",
-                                (project,)).fetchall()
+            rows = conn.execute("SELECT * FROM outcomes WHERE project = ? AND %s ORDER BY id"
+                                % pending, (project,)).fetchall()
     finally:
         conn.close()
 
@@ -1775,6 +1847,13 @@ def main(argv=None):
     record_outcome_parser.add_argument("--database", required=True, help="sqlite database path")
     record_outcome_parser.add_argument("--event", required=True, help="path to a JSON event file, or '-' for stdin")
 
+    verify_outcome_parser = sub.add_parser("verify-outcome", help="verify a pending outcome")
+    verify_outcome_parser.add_argument("--database", required=True, help="sqlite database path")
+    verify_outcome_parser.add_argument("--event-key", required=True, help="event_key of the pending outcome")
+    verify_outcome_parser.add_argument("--test-pass", required=True, help="true or false")
+    verify_outcome_parser.add_argument("--failure-type", default=None, help="failure_type from FAILURE_TYPES")
+    verify_outcome_parser.add_argument("--error", default=None, help="optional error text")
+
     record_task_parser = sub.add_parser("record-task", help="store one pipeline terminal verdict")
     record_task_parser.add_argument("--database", required=True, help="sqlite database path")
     record_task_parser.add_argument("--event", default=None,
@@ -1816,6 +1895,12 @@ def main(argv=None):
             with open(args.event, "r") as fh:
                 raw = fh.read()
         payload = record_outcome(args.database, json.loads(raw))
+    elif args.command == "verify-outcome":
+        if args.test_pass.lower() not in ("true", "false"):
+            raise ValueError("--test-pass must be true or false")
+        payload = verify_outcome(args.database, args.event_key,
+                                 args.test_pass.lower() == "true",
+                                 failure_type=args.failure_type, error=args.error)
     elif args.command == "record-task":
         if args.event is None or args.event == "-":
             raw = sys.stdin.read()

@@ -57,12 +57,30 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.record()["segment"], "🤖 RES")
 
     def test_spent_money_beats_subscription_and_silences_the_warning(self):
-        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "main"])
+        # A record without a stored reason keeps the old bare-marker rule: money
+        # spent silences the bare `⚠ open` marker.
+        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "main",
+                     "--model", "claude-opus-5", "--override-reason", "manual"])
+        # Drop the override_reason so the record is reason-less, as written by an
+        # older version.
+        path = Path(self.directory.name) / "sess-1.json"
+        state = json.loads(path.read_text())
+        state.pop("override_reason")
+        path.write_text(json.dumps(state))
         status.main(["usage", "--model", DEEPSEEK, "--input", "1000", "--output", "1000"])
         segment = self.record()["segment"]
         self.assertIn("$", segment)
         self.assertNotIn("sub", segment)
         self.assertNotIn("⚠", segment)
+
+    def test_override_reason_remains_visible_even_with_a_cost(self):
+        # A real override stores a reason; a spent cost must not hide it.
+        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "main",
+                     "--override-reason", "manual"])
+        status.main(["usage", "--model", DEEPSEEK, "--input", "1000", "--output", "1000"])
+        segment = self.record()["segment"]
+        self.assertIn("$", segment)
+        self.assertIn("⚠ open: manual", segment)
 
     def test_premium_executor_shows_subscription_not_money(self):
         status.main(["set", "--tier", "T3", "--risk", "HIGH", "--executor", "premium",
@@ -77,7 +95,7 @@ class StatusTests(unittest.TestCase):
 
     def test_set_warns_when_the_open_route_was_published_as_main(self):
         status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
-                     "--model", "claude-opus-5"])
+                     "--model", "claude-opus-5", "--override-reason", "manual"])
         self.assertIn("⚠ open", self.record()["segment"])
 
     def test_set_does_not_warn_when_the_open_route_was_followed(self):
@@ -89,6 +107,95 @@ class StatusTests(unittest.TestCase):
         status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "main",
                      "--model", "claude-opus-5"])
         self.assertNotIn("⚠", self.record()["segment"])
+
+    def test_override_without_reason_is_refused_and_writes_nothing(self):
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
+                             "--model", "claude-opus-5"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("the router chose open for T2/LOW", stderr.getvalue())
+        self.assertFalse((Path(self.directory.name) / "sess-1.json").exists())
+
+    def test_premium_after_an_exhausted_open_worker_is_not_an_override(self):
+        # Review round 5: the router's own fallback to premium needs no reason.
+        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "premium",
+                     "--failed-open-attempts", "2"])
+        self.assertNotIn("⚠", self.record()["segment"])
+        status.main(["set", "--tier", "T1", "--risk", "LOW", "--executor", "premium",
+                     "--no-open-primary", "--no-open-fallback"])
+        self.assertNotIn("⚠", self.record()["segment"])
+
+    def test_override_with_reason_is_accepted_and_shown(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
+                     "--model", "claude-opus-5", "--override-reason", "legacy host"])
+        record = self.record()
+        self.assertIn("override_reason", record)
+        self.assertIn("⚠ open: legacy host", record["segment"])
+
+    def test_override_reason_is_stripped_and_capped(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
+                     "--model", "claude-opus-5",
+                     "--override-reason", "  " + ("x" * 200) + "  "])
+        self.assertEqual(self.record()["override_reason"], "x" * 120)
+
+    def test_override_is_refused_with_no_session_id(self):
+        import contextlib
+        import io
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
+                                 "--model", "claude-opus-5"])
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertIn("the router chose open for T2/LOW", stderr.getvalue())
+        self.assertEqual(list(Path(self.directory.name).iterdir()), [])
+
+    def test_open_executor_needs_no_reason(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertNotIn("override_reason", self.record())
+
+    def test_premium_routed_t1_high_needs_no_reason(self):
+        status.main(["set", "--tier", "T1", "--risk", "HIGH", "--executor", "premium",
+                     "--model", "claude-fable-5-1"])
+        self.assertNotIn("override_reason", self.record())
+
+    def test_executor_matching_route_drops_a_stale_reason(self):
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "main",
+                     "--override-reason", "manual"])
+        self.assertIn("override_reason", self.record())
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertNotIn("override_reason", self.record())
+
+    def test_observable_check_turns_t2_high_into_open_and_requires_a_reason(self):
+        # T2 HIGH routes to premium without an observable check (open is against
+        # policy), but with --observable-check it routes to open, so an override
+        # to premium then needs a reason.
+        status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                     "--model", "claude-fable-5-1"])
+        self.assertNotIn("override_reason", self.record())
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                             "--model", "claude-fable-5-1", "--observable-check"])
+        self.assertIn("the router chose open for T2/HIGH", stderr.getvalue())
+
+    def test_observable_check_reaches_the_router(self):
+        with mock.patch.object(status, "routed_executor", wraps=status.routed_executor) as routed:
+            status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                         "--model", "claude-fable-5-1", "--observable-check",
+                         "--override-reason", "manual"])
+        routed.assert_called_once_with("T2", "HIGH", observable_check=True, failed_open_attempts=0,
+                                       open_primary_available=True, open_fallback_available=True)
 
     def test_routed_executor_matches_the_router_for_t2_low(self):
         self.assertEqual(status.routed_executor("T2", "LOW"), "open")
@@ -200,7 +307,6 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(flock.called)
         self.assertTrue((Path(self.directory.name) / "sess-1.lock").exists())
 
-
     def test_concurrent_usage_loses_no_tokens(self):
         import subprocess
         import sys
@@ -215,7 +321,7 @@ class StatusTests(unittest.TestCase):
         for bad in ("../escaped", "a/b", ".hidden", "x..y"):
             self.assertEqual(status.session_id(bad), "")
         status.main(["--session", "../escaped", "set", "--tier", "T1", "--risk", "LOW",
-                     "--executor", "main"])
+                     "--executor", "main", "--override-reason", "manual"])
         self.assertFalse((Path(self.directory.name).parent / "escaped.json").exists())
 
     def test_negative_token_count_is_rejected(self):

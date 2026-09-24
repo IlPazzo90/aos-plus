@@ -15,6 +15,7 @@ session's status record (aos-status.py), so the status line can show them.
 import importlib.util
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 MAX_STDIN_BYTES = 65536
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
 
 HOOK_EVENT = "UserPromptSubmit"
 
@@ -64,6 +66,106 @@ def silent_reason(prompt):
     return None
 
 
+def premium_names():
+    """The policy's premium model names: claude_model, codex_model.
+
+    Loaded relative to the script (ROOT/config/open-models.json). Missing file or
+    keys return () so the caller stays silent about the session model.
+    """
+    try:
+        data = json.loads((Path(__file__).resolve().parents[1] / "config/open-models.json").read_text())
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    premium = data.get("premium")
+    if not isinstance(premium, dict):
+        return ()
+    claude = premium.get("claude_model")
+    codex = premium.get("codex_model")
+    if not (isinstance(claude, str) and claude.strip() and isinstance(codex, str) and codex.strip()):
+        return ()
+    return (claude, codex)
+
+
+def _model_from_payload(payload):
+    if isinstance(payload, dict):
+        model = payload.get("model")
+        if isinstance(model, str) and model.strip():
+            return model
+    return None
+
+
+def _model_from_transcript(path):
+    """Last model named in a transcript JSONL, scanning lines from the end.
+
+    Reads at most TRANSCRIPT_TAIL_BYTES from the tail of the file. First match
+    wins (last line first): a Claude Code assistant line's `message.model`
+    (skipping "<synthetic>") or a Codex `turn_context` payload's `model`.
+    Any error -> None.
+    """
+    try:
+        # Only a regular file: a FIFO or a device would block open() or read()
+        # and hang the prompt the hook annotates.
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+        with open(path, "rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            tail = stream.read(TRANSCRIPT_TAIL_BYTES)
+    except (OSError, ValueError):
+        # A malformed path (a NUL byte raises ValueError) or an unopenable file
+        # must never block the hint.
+        return None
+    lines = tail.split(b"\n")
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        try:
+            line = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            continue
+        if not isinstance(line, dict):
+            continue
+        model = None
+        if line.get("type") == "assistant":
+            message = line.get("message")
+            if isinstance(message, dict):
+                candidate = message.get("model")
+                if isinstance(candidate, str) and candidate.strip() and candidate != "<synthetic>":
+                    model = candidate
+        elif line.get("type") == "turn_context":
+            payload = line.get("payload")
+            if isinstance(payload, dict):
+                candidate = payload.get("model")
+                if isinstance(candidate, str) and candidate.strip():
+                    model = candidate
+        if model:
+            return model
+    return None
+
+
+def session_model(payload):
+    """The model the session is running, or None when it cannot be read.
+
+    Claude Code payloads do not carry the model, so it falls back to the tail of
+    `transcript_path`. Any failure is silent: the hint is never blocked by the
+    model probe.
+    """
+    model = _model_from_payload(payload)
+    if model:
+        return model
+    path = payload.get("transcript_path") if isinstance(payload, dict) else None
+    if isinstance(path, str) and path.strip():
+        return _model_from_transcript(path)
+    return None
+
+
+def is_premium(model, names):
+    return any(name in model for name in names)
+
+
 def _routing_hint(module, prompt, registry, payload=None):
     """One line from the keyword classifier: a hint, never a routing decision.
 
@@ -87,7 +189,15 @@ def _routing_hint(module, prompt, registry, payload=None):
     if skills:
         line += " · skill: " + ", ".join(skills)
     line += " · per T1+ censimento e route con /aos ($aos in Codex)"
-    return line[:300]
+    model = session_model(payload)
+    names = premium_names()
+    warning = ""
+    if model and names and not is_premium(model, names):
+        claude, codex = names
+        warning = (" · sessione su " + model[:60] + ": a T2+ o rischio HIGH chiedi il cambio "
+                   "(/model " + claude[:30] + " · codex -m " + codex[:30] + ")")
+    # The warning is kept whole: a long skill list is what gets truncated.
+    return line[:420 - len(warning)] + warning
 
 
 def _publish_profile(payload, domains, task_type):

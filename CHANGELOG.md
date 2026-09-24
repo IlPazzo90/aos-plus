@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.2.0 — il worker open lavora di più, e scavalcarlo costa una ragione — 2026-09-23
+
+Un controllo su tre giorni di sessioni reali ha contato una dozzina di lanci del worker
+open, tutti su un solo progetto. Le cause erano nel processo, non nel modello.
+
+**A rischio HIGH il worker open esegue anche a T1 e T3, con un check osservabile.** Prima
+lo faceva solo a T2. Nuova chiave di policy `open_high_tiers` (assente = solo T2, come
+prima). Serve un piano e una review premium della famiglia opposta: senza uno dei due
+esegue il premium. Il premium continua a fare i controlli HIGH e ad applicare quello che il
+worker non può toccare (deploy, migrazioni sul database vivo, credenziali). CRITICAL resta
+fuori. SKILL.md dice di passare `--observable-check` ogni volta che un test, una build o
+uno script esercita la modifica.
+
+**Pubblicare un esecutore diverso da quello del router richiede `--override-reason`.**
+`aos-status.py set` esce con 2 senza scrivere niente quando il router ha scelto `open` e si
+pubblica altro senza una ragione, anche in Codex; accetta gli stessi flag del router
+(`--observable-check`, `--failed-open-attempts`, `--no-open-primary`, `--no-open-fallback`),
+così il ripiego del router stesso sul premium non conta come override. La barra mostra
+`⚠ open: <ragione>`.
+
+**Ogni lancio di `aos-open-executor.py` lascia un outcome nel ledger.** La riga nasce
+`pending` e non orienta routing, matrice né history; nei KPI conta come task non verificato
+(`pending_outcomes` le conta). Dopo i check, `aos-learning.py verify-outcome --database …
+--event-key … --test-pass true|false` la rende `verified`. `--tier` e `--risk` sono
+obbligatori per registrare; `--no-record` o `AOS_LEARNING=off` saltano la registrazione; un
+errore del ledger non cambia l'esito della delega. `record_outcome` rifiuta progetto e task
+vuoti.
+
+**L'hook del prompt dice su che modello gira la sessione, quando non è il premium.** Claude
+Code non passa il modello all'hook: lo legge dalla coda della trascrizione (al massimo
+256 KiB, solo file regolari), Codex dal payload o dal `turn_context`.
+
+**Consiglio per Claude Code**: `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` nell'`env` delle
+impostazioni evita che i subagenti di ricerca ereditino il modello premium della sessione;
+una chiamata con un `model` esplicito vince comunque.
+
+Verifiche: suite 767 test OK (3 skip); review cross-model in sei round, dodici finding,
+undici accettati e corretti, verificato con riserve.
+
 ## 3.1.1 — il reviewer gira sul modello scelto dal router — 2026-09-23
 
 **Il gate esterno chiama il reviewer con `--model`.** Il router sceglie il modello del

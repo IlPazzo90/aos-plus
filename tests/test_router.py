@@ -170,6 +170,68 @@ class RouterTests(unittest.TestCase):
         d = router.decide("T2", "HIGH", config=strict, observable_check=True)
         self.assertEqual(d.executor, "premium")
 
+    # 7c. T1/T3 HIGH follow the T2 HIGH rule: with an observable check the open
+    #     worker executes; without it, premium. T0 is decided before this step.
+    def test_t1_high_with_observable_check_routes_open(self):
+        d = router.decide("T1", "HIGH", config=self.config, observable_check=True)
+        self.assertEqual(d.executor, "open")
+        self.assertEqual(d.model, self.config.open_primary)
+        self.assertFalse(d.pipeline)
+        self.assertIsNone(d.reviewer)
+        self.assertIn("HIGH checks inline by the main session", d.rationale)
+
+    def test_t1_high_without_observable_check_stays_premium(self):
+        d = router.decide("T1", "HIGH", config=self.config, observable_check=False)
+        self.assertEqual(d.executor, "premium")
+
+    def test_t3_high_with_observable_check_routes_open_with_premium_pipeline(self):
+        d = router.decide("T3", "HIGH", config=self.config, observable_check=True)
+        self.assertEqual(d.executor, "open")
+        self.assertTrue(d.pipeline)
+        self.assertIn(d.planner, ('codex', 'claude'))
+        self.assertIsNotNone(d.planner_model)
+        self.assertIsNotNone(d.reviewer_model)
+        self.assertEqual(self.config.catalog[d.reviewer_model]['cost_class'], 'PREMIUM')
+        family_of = lambda model: 'anthropic' if model.startswith('anthropic') else 'openai'
+        planner_family = family_of(d.planner_model)
+        self.assertEqual(family_of(d.reviewer_model), 'anthropic' if planner_family == 'openai' else 'openai')
+
+    def test_t3_high_without_observable_check_stays_premium(self):
+        d = router.decide("T3", "HIGH", config=self.config, observable_check=False)
+        self.assertEqual(d.executor, "premium")
+
+    def test_critical_high_never_routes_open_at_any_tier(self):
+        for tier in ('T0', 'T1', 'T2', 'T3'):
+            d = router.decide(tier, 'CRITICAL', config=self.config, observable_check=True)
+            self.assertEqual(d.executor, 'main', tier)
+            self.assertEqual(d.verify, 'needs_approval', tier)
+
+    def test_invalid_open_high_tiers_falls_back_to_default(self):
+        base = {'schema': 1, 'open': {'primary': 'x/y'},
+                'policy': {'role_pipeline': False}}
+        for bad in ('T1', [1], ['T9'], ['T1', 2], []):
+            with self.subTest(bad=bad):
+                payload = json.loads(json.dumps(base))
+                payload['policy']['open_high_tiers'] = bad
+                path = Path(self.temp.name) / 'policy.json'
+                path.write_text(json.dumps(payload))
+                config = router.load_config(path)
+                self.assertEqual(config.open_high_tiers, ('T2',), bad)
+                # T2 remains open with a check (the default), T1 stays premium.
+                self.assertEqual(router.decide('T2', 'HIGH', config=config, observable_check=True).executor, 'open', bad)
+                self.assertEqual(router.decide('T1', 'HIGH', config=config, observable_check=True).executor, 'premium', bad)
+
+    def test_config_without_open_high_tiers_keeps_t1_t3_high_premium(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'policy.json'
+            path.write_text(json.dumps({'schema': 1, 'open': {'primary': 'x/y'},
+                                        'policy': {'role_pipeline': True}}))
+            config = router.load_config(path)
+            self.assertEqual(config.open_high_tiers, ('T2',))
+            for tier in ('T1', 'T3'):
+                d = router.decide(tier, 'HIGH', config=config, observable_check=True)
+                self.assertEqual(d.executor, 'premium', tier)
+
     def test_t1_high_gets_inline_checks_not_an_external_reviewer(self):
         # External cross-model review is for T2/T3 (HIGH included); T0/T1 HIGH
         # run the extended HIGH checks inline.
@@ -393,6 +455,10 @@ class CommandLineDefaultTests(unittest.TestCase):
         self.assertEqual(decision['model'], json.loads(CONFIG.read_text())['open']['primary'])
         self.assertTrue(decision['routed_by_aos'])
 
+    def test_cli_t1_high_with_observable_check_prints_open(self):
+        decision = self.run_cli('--tier', 'T1', '--risk', 'HIGH', '--observable-check', '--json')
+        self.assertEqual(decision['executor'], 'open')
+
     def test_the_default_policy_is_found_from_an_unrelated_working_directory(self):
         origin = os.getcwd()
         with tempfile.TemporaryDirectory() as elsewhere:
@@ -497,6 +563,33 @@ class CommandLineDefaultTests(unittest.TestCase):
             path = Path(directory) / 'policy.json'
             path.write_text(json.dumps(data))
             self.assertEqual(router.load_config(path), router.RoutingConfig())
+
+class HighOpenNeedsPremiumReviewTests(unittest.TestCase):
+    """Review round 3: HIGH open work needs a premium plan and review."""
+
+    def setUp(self):
+        self.config = router.load_config(CONFIG)
+
+    def test_no_premium_reviewer_keeps_t2_and_t3_high_on_premium(self):
+        for tier in ("T2", "T3"):
+            d = router.decide(tier, "HIGH", config=self.config, observable_check=True,
+                              premium_reviewer_available=False, host="claude")
+            self.assertEqual(d.executor, "premium", tier)
+            self.assertFalse(d.pipeline, tier)
+
+    def test_t1_high_does_not_need_an_external_reviewer(self):
+        d = router.decide("T1", "HIGH", config=self.config, observable_check=True,
+                          premium_reviewer_available=False, host="claude")
+        self.assertEqual(d.executor, "open")
+
+    def test_with_premium_available_t3_high_still_opens(self):
+        d = router.decide("T3", "HIGH", config=self.config, observable_check=True, host="claude")
+        self.assertEqual(d.executor, "open")
+        self.assertTrue(d.planner_model and d.reviewer_model)
+        # Review round 6: the plan is premium at HIGH, like the review.
+        self.assertEqual(self.config.catalog[d.planner_model]["cost_class"], "PREMIUM")
+        self.assertEqual(self.config.catalog[d.reviewer_model]["cost_class"], "PREMIUM")
+
 
 if __name__ == "__main__":
     unittest.main()

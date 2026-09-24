@@ -571,6 +571,7 @@
   "policy": {
     "open_max_risk": "MEDIUM",
     "open_max_tier": "T3",
+    "open_high_tiers": ["T1", "T2", "T3"],
     "open_t2_high_review": "premium",
     "open_t2_high_requires_observable_check": true,
     "retries_before_escalation": 2,

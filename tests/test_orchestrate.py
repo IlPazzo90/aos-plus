@@ -579,7 +579,7 @@ class LearningLoopTests(unittest.TestCase):
             for n in range(25):
                 learning.record_outcome(database, {
                     "model": DEEPSEEK, "provider": "vercel", "role": "executor", "tier": "T1",
-                    "risk": "LOW", "worker_exit": 1, "test_pass": False, "task_id": "t%d" % n,
+                    "risk": "LOW", "worker_exit": 1, "test_pass": False, "project": "p", "task_id": "t%d" % n,
                     "domain": "ENGINEERING", "capabilities": {"coding": 0.9},
                     "failure_type": "implementation_failure", "verification_status": "verified"})
             matrix = learning.matrix(database)
@@ -597,7 +597,7 @@ class LearningLoopTests(unittest.TestCase):
             for n in range(25):
                 learning.record_outcome(database, {
                     "model": DEEPSEEK, "role": "executor", "worker_exit": 1, "test_pass": False,
-                    "task_id": "t%d" % n, "failure_type": "context_failure",
+                    "project": "p", "task_id": "t%d" % n, "failure_type": "context_failure",
                     "verification_status": "verified"})
             matrix = learning.matrix(database)
         self.assertNotIn(DEEPSEEK, {m for m, e in matrix["models"].items() if e["status"] == "DEMOTE"})

@@ -177,12 +177,21 @@ def render(state):
     # silent: the main session already runs a premium-grade model, so that
     # warning would fire on nearly every HIGH task and train the reader to
     # ignore the symbol.
-    if state.get('routed_executor') == 'open' and executor != 'open' and state.get('cost_usd') is None:
-        segment += ' ⚠ open'
+    if state.get('routed_executor') == 'open' and executor != 'open':
+        reason = state.get('override_reason')
+        if reason:
+            # A real override (router said open, executor is not open) has a
+            # stored reason: show it even once money has been spent, the cost
+            # must not hide why the open route was overridden.
+            segment += ' ⚠ open: ' + reason[:40]
+        elif state.get('cost_usd') is None:
+            # Records written by older versions carry no reason: the bare marker
+            # is all we have, and money spent silences it as before.
+            segment += ' ⚠ open'
     return segment
 
 
-def routed_executor(tier, risk):
+def routed_executor(tier, risk, observable_check=False, **router_state):
     """What the router would pick for this classification, or None.
 
     Cosmetic: any failure here must leave the bar exactly as it was, so the
@@ -197,7 +206,7 @@ def routed_executor(tier, risk):
         router = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(router)
         config = router.load_config(ROOT / 'config/open-models.json')
-        decision = router.decide(tier, risk, config=config)
+        decision = router.decide(tier, risk, config=config, observable_check=observable_check, **router_state)
         return decision.executor
     except Exception:  # noqa: BLE001 - the bar is cosmetic, the router failing is not
         # The bar is cosmetic: a router that failed to load or to answer must
@@ -228,21 +237,38 @@ def write(session, state, ttl):
 
 
 def cmd_set(args):
+    # Check the router BEFORE the session gate: Codex has no session id, but an
+    # override still costs a reason. Nothing is written on refusal.
+    # The same inputs the router was given: after an exhausted or unavailable open
+    # worker the router itself says premium, and that is not an override.
+    routed = routed_executor(args.tier, args.risk, observable_check=args.observable_check,
+                             failed_open_attempts=args.failed_open_attempts,
+                             open_primary_available=not args.no_open_primary,
+                             open_fallback_available=not args.no_open_fallback)
+    reason = (args.override_reason or '').strip()
+    if (routed == 'open' and args.executor != 'open' and not reason):
+        print('aos-status: the router chose open for %s/%s; run the open worker or '
+              'pass --override-reason "<why>"' % (args.tier, args.risk), file=sys.stderr)
+        raise SystemExit(2)
     session = session_id(args.session)
     if not session:
         return {}
-    routed = routed_executor(args.tier, args.risk)
     with locked(session):
-        return _set(session, args, routed)
+        return _set(session, args, routed, reason)
 
 
-def _set(session, args, routed):
+def _set(session, args, routed, reason=None):
     state = load(session)
     # A new classification replaces the routing but keeps the tokens already spent
     # in this session: the bar shows the session's cost, not the last task's.
     state.update(tier=args.tier, risk=args.risk, executor=args.executor, model=args.model,
                  planner=args.planner, reviewer=args.reviewer,
                  routed_executor=routed)
+    if reason and routed == 'open' and args.executor != 'open':
+        state['override_reason'] = reason[:120]
+    else:
+        # An executor that matches the route needs no reason: drop any stale one.
+        state.pop('override_reason', None)
     state.setdefault('tokens', {'input': 0, 'output': 0, 'cache': 0})
     state.setdefault('cost_usd', None)
     return write(session, state, args.ttl)
@@ -344,6 +370,13 @@ def main(argv=None):
     setter.add_argument('--model')
     setter.add_argument('--planner')
     setter.add_argument('--reviewer')
+    setter.add_argument('--override-reason', help='why the router\'s open route is being overridden')
+    setter.add_argument('--observable-check', action='store_true',
+                        help='pass observable_check to the router')
+    setter.add_argument('--failed-open-attempts', type=_count, default=0,
+                        help='as given to aos-router.py')
+    setter.add_argument('--no-open-primary', action='store_true', help='as given to aos-router.py')
+    setter.add_argument('--no-open-fallback', action='store_true', help='as given to aos-router.py')
     setter.set_defaults(handler=cmd_set)
 
     usage = sub.add_parser('usage', help='add the tokens an open worker burned')
