@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -34,6 +35,9 @@ def status_dir():
 
 SESSION_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 MODEL_LOCK_WAIT_SECONDS = 0.5
+# The edit hook runs before every file edit: one try, no wait. A busy lock skips
+# the notice without claiming it, so the next edit tries again.
+CLAIM_LOCK_WAIT_SECONDS = 0
 MODEL_RE = re.compile(r'^[A-Za-z0-9._:/\[\] -]{1,80}$')
 
 
@@ -82,7 +86,18 @@ def locked(session, wait=None):
     """
     directory = status_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    with open(directory / (session + '.lock'), 'w') as handle:
+    # No symlink follow (a link must not truncate its target), no blocking open
+    # (a FIFO would hang the caller before the lock is even tried), regular
+    # file only.
+    fd = os.open(directory / (session + '.lock'),
+                 os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError('status lock is not a regular file')
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, 'w') as handle:
         if wait is None:
             fcntl.flock(handle, fcntl.LOCK_EX)
         else:
@@ -400,6 +415,35 @@ def set_session_model(session, model, ttl=DEFAULT_TTL_SECONDS):
             return write(session, state, ttl)
     except BlockingIOError:
         return {}
+
+
+def claim_unrouted_notice(session, ttl=DEFAULT_TTL_SECONDS):
+    """True only when the caller should emit the unrouted notice right now.
+
+    The first file edit is a reliable signal that a session is doing software
+    work without routing: the keyword classifier alone misses real prompts that
+    tag GENERAL with no task type. The notice fires once per live record: a
+    session that already routed (a valid tier) or already claimed it stays
+    silent. Any invalid input or a busy lock writes nothing and returns False.
+    """
+    # A public entry point: validate here, as set_session_model does.
+    if not isinstance(session, str) or not session or session_id(session) != session:
+        return False
+    try:
+        with locked(session, wait=CLAIM_LOCK_WAIT_SECONDS):
+            state = load_live(session)
+            tier = state.get('tier')
+            if isinstance(tier, str) and tier.strip().upper() in ('T0', 'T1', 'T2', 'T3'):
+                return False
+            if 'unrouted_notice_at' in state:
+                return False
+            state['unrouted_notice_at'] = int(time.time())
+            write(session, state, ttl)
+            return True
+    except BlockingIOError:
+        return False
+    except Exception:  # noqa: BLE001 - advisory; a failure must not block the edit
+        return False
 
 
 def add_usage(session, model_ref, tokens, ttl):

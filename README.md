@@ -56,6 +56,15 @@ Claude Code: merge it into `~/.claude/settings.json`. Codex: merge it into
 the TUI). The line is a hint: tier, risk and executor come from the census and
 `bin/aos-orchestrate.py route`.
 
+Claude Code only: the same script, registered as a `PreToolUse` hook, warns once at the
+first file edit of a session with no routing recorded, whatever the prompt said. It never
+blocks the edit. Codex needs no entry: it has no status record, and the hook stays silent.
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "timeout": 5,
+  "command": "[ ! -f \"$HOME/.claude/skills/aos/bin/aos-prompt-hook.py\" ] || python3 \"$HOME/.claude/skills/aos/bin/aos-prompt-hook.py\""}]}]}}
+```
+
 ## The UI/UX role
 
 When a change is something a person looks at, `references/design.md` adds a designer to

@@ -748,5 +748,106 @@ class UnroutedNoticeTests(unittest.TestCase):
         self.assertEqual(hook.reroute_reminder({"session_id": "sess-un"}, None), "")
 
 
+class PreToolUseTests(unittest.TestCase):
+    """The first file edit in an unrouted Claude Code session claims the notice."""
+
+    def setUp(self):
+        import tempfile
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory,
+                                               "CLAUDE_PROJECT_DIR": "/x",
+                                               "HOME": self.directory})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def record(self, session="sess-edit"):
+        path = Path(self.directory) / (session + ".json")
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def payload(self, tool_name="Edit", file_path=None, session="sess-edit", **extra):
+        body = {"hook_event_name": "PreToolUse", "tool_name": tool_name,
+                "tool_input": {"file_path": file_path}, "session_id": session}
+        body.update(extra)
+        return body
+
+    def test_edit_in_a_repo_path_claims_the_notice(self):
+        output = hook.decide_tool(self.payload(file_path="/repo/app.py"))
+        self.assertIsNotNone(output)
+        body = output["hookSpecificOutput"]
+        self.assertEqual(body["hookEventName"], "PreToolUse")
+        self.assertEqual(body["additionalContext"], hook.UNROUTED_EDIT_NOTICE)
+        self.assertEqual(output["systemMessage"], "AOS: prima modifica senza routing registrato")
+        self.assertIn("unrouted_notice_at", self.record())
+
+    def test_second_edit_returns_none(self):
+        self.assertIsNotNone(hook.decide_tool(self.payload(file_path="/repo/app.py")))
+        self.assertIsNone(hook.decide_tool(self.payload(file_path="/repo/app.py")))
+
+    def test_routed_record_returns_none(self):
+        (Path(self.directory) / "sess-edit.json").write_text(
+            json.dumps({"tier": "T2", "risk": "LOW", "expires_at": time.time() + 3600}))
+        self.assertIsNone(hook.decide_tool(self.payload(file_path="/repo/app.py")))
+        self.assertNotIn("unrouted_notice_at", self.record())
+
+    def test_codex_returns_none(self):
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.assertIsNone(hook.decide_tool(self.payload(file_path="/repo/app.py")))
+        self.assertFalse((Path(self.directory) / "sess-edit.json").exists())
+
+    def test_agent_id_returns_none_and_claims_nothing(self):
+        self.assertIsNone(hook.decide_tool(self.payload(file_path="/repo/app.py", agent_id="sub")))
+        self.assertFalse((Path(self.directory) / "sess-edit.json").exists())
+
+    def test_non_edit_tools_return_none(self):
+        for tool in ("Read", "Bash"):
+            self.assertIsNone(hook.decide_tool(self.payload(tool_name=tool, file_path="/repo/app.py")))
+        self.assertFalse((Path(self.directory) / "sess-edit.json").exists())
+
+    def test_scratch_paths_return_none_and_claim_nothing(self):
+        for path in ("/private/tmp/x.py", "/tmp/x.py", "/var/folders/x.py",
+                     self.directory + "/.claude/projects/p/memory/m.md",
+                     self.directory + "/.claude/plans/p.md"):
+            with self.subTest(path=path):
+                self.assertIsNone(hook.decide_tool(self.payload(file_path=path)))
+        self.assertFalse((Path(self.directory) / "sess-edit.json").exists())
+
+    def test_tmpfoo_is_not_under_tmp(self):
+        self.assertIsNotNone(hook.decide_tool(self.payload(file_path="/tmpfoo/x.py")))
+        self.assertIn("unrouted_notice_at", self.record())
+
+    def test_notebook_edit_with_notebook_path_claims(self):
+        body = {"hook_event_name": "PreToolUse", "tool_name": "NotebookEdit",
+                "tool_input": {"notebook_path": "/repo/nb.ipynb"}, "session_id": "sess-edit"}
+        output = hook.decide_tool(body)
+        self.assertIsNotNone(output)
+        self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+
+    def test_missing_file_path_returns_none(self):
+        self.assertIsNone(hook.decide_tool(self.payload(file_path=None)))
+        self.assertIsNone(hook.decide_tool(self.payload(file_path="  ")))
+        self.assertFalse((Path(self.directory) / "sess-edit.json").exists())
+
+    def test_pretooluse_through_main_prints_json_and_never_the_prompt_hint(self):
+        import contextlib
+        import io
+        body = json.dumps(self.payload(file_path="/repo/app.py"))
+        fake_stdin = mock.Mock()
+        fake_stdin.buffer.read = mock.Mock(return_value=body.encode("utf-8"))
+        out = io.StringIO()
+        with mock.patch("sys.stdin", fake_stdin), contextlib.redirect_stdout(out):
+            code = hook.main()
+        self.assertEqual(code, 0)
+        value = json.loads(out.getvalue())
+        self.assertEqual(value["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+        self.assertNotIn("UserPromptSubmit", out.getvalue())
+        self.assertNotIn("censimento e route", out.getvalue())
+
+    def test_claim_raising_returns_none(self):
+        with mock.patch.object(hook, "_load_status") as load:
+            load.return_value.claim_unrouted_notice = mock.Mock(side_effect=RuntimeError("boom"))
+            self.assertIsNone(hook.decide_tool(self.payload(file_path="/repo/app.py")))
+
+
 if __name__ == "__main__":
     unittest.main()

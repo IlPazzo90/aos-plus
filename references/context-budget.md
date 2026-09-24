@@ -69,7 +69,9 @@ model does not see its own context size, and in Claude Code only the user can ru
   main-thread assistant line; Codex: `token_count.last_token_usage.input_tokens`),
   evaluates it with this policy for the session model and, at ORANGE/RED, appends
   `contesto <n>k token …` to its hint. Under Claude Code the same line reaches the user
-  as a `systemMessage`. The agent closes the step and asks for `/compact`.
+  as a `systemMessage`. The agent closes the step and asks for `/compact`. The scan
+  stops at the last compaction marker (Claude `compact_boundary`, Codex `compacted`):
+  right after `/compact` there is no signal until a new call measures the context.
 - **Backstop**: Claude Code `autoCompactWindow` in `~/.claude/settings.json` set to the
   claude class hard limit (320000), so the automatic compaction fires there instead of
   near the 1M technical window. Codex auto-compacts near its own 258k window, which is

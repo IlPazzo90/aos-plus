@@ -38,6 +38,10 @@ LINE_CAP = 520
 CONTEXT_ALERT_STATES = ("ORANGE", "RED")
 ROUTED_TASK_TYPES = ("bug_fix", "feature")
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config/open-models.json"
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+UNROUTED_EDIT_NOTICE = ("AOS · prima modifica senza routing registrato: se è lavoro software "
+                        "fai censimento, router e aos-status set prima di continuare; "
+                        "altrimenti ignora")
 
 
 def _load_module(name, filename):
@@ -319,6 +323,71 @@ def _load_status():
     return _load_module("aos_status", "aos-status.py")
 
 
+def _scratch_path(path):
+    """Whether a resolved path lives under a scratch location that is not work.
+
+    Transcripts, memory and plans under ~/.claude, plus the OS temp dirs, are
+    the host's own bookkeeping: editing them is not the session's software work.
+    """
+    home = Path.home()
+    # Resolved like the path: a symlinked home must not hide the roots.
+    roots = tuple(root.resolve() for root in (home / ".claude/projects", home / ".claude/plans"))
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError, TypeError):
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            pass
+    for root in (Path("/tmp"), Path("/private/tmp"), Path("/var/folders"),
+                 Path("/private/var/folders")):
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def decide_tool(payload, now=None):
+    """The output object for a PreToolUse edit, or None to stay silent.
+
+    The first file edit in a Claude Code session that never routed claims the
+    unrouted notice once. Subagents, non-edit tools, scratch paths and Codex
+    (no CLAUDE_PROJECT_DIR) never claim it. Any failure -> None.
+    """
+    try:
+        session = _claude_session(payload)
+        if session is None:
+            return None
+        if payload.get("agent_id"):
+            return None
+        tool_name = payload.get("tool_name")
+        if tool_name not in EDIT_TOOLS:
+            return None
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            return None
+        if tool_name == "NotebookEdit":
+            path = tool_input.get("notebook_path")
+        else:
+            path = tool_input.get("file_path")
+        if not isinstance(path, str) or not path.strip():
+            return None
+        if _scratch_path(os.path.realpath(os.path.expanduser(path))):
+            return None
+        if not _load_status().claim_unrouted_notice(session):
+            return None
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "additionalContext": UNROUTED_EDIT_NOTICE},
+                "systemMessage": "AOS: prima modifica senza routing registrato"}
+    except Exception:
+        return None
+
+
 def reroute_reminder(payload, task_type, now=None):
     """Segment asking a routed session to route a new work prompt again.
 
@@ -505,6 +574,13 @@ def _main():
     try:
         payload = json.loads(data.decode("utf-8", errors="replace"))
     except ValueError:
+        return 0
+    # PreToolUse is a different signal (the first edit), dispatched before the
+    # prompt path: it never runs the classifier.
+    if isinstance(payload, dict) and payload.get("hook_event_name") == "PreToolUse":
+        output = decide_tool(payload)
+        if output is not None:
+            print(json.dumps(output, ensure_ascii=False))
         return 0
     # Decide silence before loading any module or configuration file.
     if silent_reason(_prompt_text(payload)) is not None:

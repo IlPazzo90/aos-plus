@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -592,6 +593,97 @@ class SessionModelGuardTests(unittest.TestCase):
     def test_empty_explicit_session_does_not_fall_back_to_the_environment(self):
         status.main(["--session", "", "model", "--model", "claude-fable-5-1"])
         self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
+
+
+class UnroutedNoticeTests(unittest.TestCase):
+    """claim_unrouted_notice fires once per live record, before the first edit."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory.name,
+                                               "CLAUDE_CODE_SESSION_ID": "sess-un"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def record(self, session="sess-un"):
+        return json.loads((Path(self.directory.name) / (session + ".json")).read_text())
+
+    def test_claim_on_no_record_returns_true_and_stores_the_marker(self):
+        self.assertTrue(status.claim_unrouted_notice("sess-un"))
+        record = self.record()
+        self.assertIn("unrouted_notice_at", record)
+        self.assertIsInstance(record["unrouted_notice_at"], int)
+
+    def test_second_claim_returns_false(self):
+        self.assertTrue(status.claim_unrouted_notice("sess-un"))
+        self.assertFalse(status.claim_unrouted_notice("sess-un"))
+
+    def test_record_with_a_tier_returns_false_and_is_unchanged(self):
+        path = Path(self.directory.name) / "sess-un.json"
+        path.write_text(json.dumps({"tier": "T2", "risk": "LOW", "expires_at": time.time() + 3600}))
+        before = path.read_text()
+        self.assertFalse(status.claim_unrouted_notice("sess-un"))
+        self.assertEqual(path.read_text(), before)
+
+    def test_expired_record_with_a_tier_claims_again(self):
+        # Routing is not revived: an expired record has no live tier, so the
+        # notice fires on the next edit.
+        path = Path(self.directory.name) / "sess-un.json"
+        path.write_text(json.dumps({"tier": "T2", "risk": "LOW", "expires_at": 1}))
+        self.assertTrue(status.claim_unrouted_notice("sess-un"))
+        record = self.record()
+        self.assertIn("unrouted_notice_at", record)
+        self.assertNotIn("tier", record)
+
+    def test_invalid_session_writes_nothing(self):
+        for bad in ("../evil", "a/b", "", 123):
+            with self.subTest(session=bad):
+                self.assertFalse(status.claim_unrouted_notice(bad))
+        self.assertEqual(list(Path(self.directory.name).glob("*.json")), [])
+
+    def test_busy_lock_returns_false(self):
+        import fcntl
+        lock = open(Path(self.directory.name) / "sess-un.lock", "w")
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        started = time.monotonic()
+        self.assertFalse(status.claim_unrouted_notice("sess-un"))
+        # The edit hook must not wait on a busy lock.
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertFalse((Path(self.directory.name) / "sess-un.json").exists())
+        lock.close()
+        # Not claimed: the next edit gets the notice.
+        self.assertTrue(status.claim_unrouted_notice("sess-un"))
+
+    def test_fifo_lock_does_not_hang(self):
+        import subprocess, sys
+        os.mkfifo(Path(self.directory.name) / "sess-un.lock")
+        code = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('s',%r);"
+                "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                "print(m.claim_unrouted_notice('sess-un'))" % str(SCRIPT))
+        env = dict(os.environ, AOS_STATUS_DIR=self.directory.name)
+        result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                                text=True, timeout=5)
+        self.assertEqual(result.stdout.strip(), "False")
+
+    def test_symlinked_lock_does_not_truncate_its_target(self):
+        target = Path(self.directory.name) / "precious.txt"
+        target.write_text("keep me")
+        os.symlink(target, Path(self.directory.name) / "sess-un.lock")
+        self.assertFalse(status.claim_unrouted_notice("sess-un"))
+        self.assertEqual(target.read_text(), "keep me")
+
+    def test_set_profile_keeps_the_marker(self):
+        self.assertTrue(status.claim_unrouted_notice("sess-un"))
+        status.set_profile("sess-un", ["ENGINEERING"], "feature")
+        self.assertIn("unrouted_notice_at", self.record())
+
+    def test_set_keeps_the_marker(self):
+        self.assertTrue(status.claim_unrouted_notice("sess-un"))
+        status.main(["set", "--tier", "T2", "--risk", "LOW", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertIn("unrouted_notice_at", self.record())
 
 
 if __name__ == "__main__":

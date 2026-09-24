@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.6.0 — la prima modifica di una sessione senza routing riceve l'avviso, qualunque sia il prompt — 2026-09-24
+
+L'avviso «nessun routing registrato» della 3.5 scatta solo quando il classificatore a parole
+chiave marca il prompt `bug_fix` o `feature`; i prompt reali («correggi…», «riprendi…»,
+«procedi…») escono GENERAL senza tipo, e una sessione può lavorare a lungo senza router.
+
+- `bin/aos-prompt-hook.py`: modalità `PreToolUse`. Alla prima Edit/Write/MultiEdit/NotebookEdit
+  di una sessione Claude senza tier valido: `additionalContext` «prima modifica senza routing
+  registrato…» e `systemMessage`. Mai blocco né `permissionDecision`. Esclusi subagent, altri
+  strumenti e percorsi temporanei (`/tmp`, `/var/folders`, `~/.claude/projects`,
+  `~/.claude/plans`). Codex: silenzioso.
+- `bin/aos-status.py`: `claim_unrouted_notice`, una volta per record vivo, senza attesa sul lock.
+  `locked()` apre il lock senza seguire link simbolici, in modo non bloccante e solo se è un file
+  regolare.
+- Registrazione in Claude Code: voce `PreToolUse` in `~/.claude/settings.json`, matcher
+  `Edit|Write|MultiEdit|NotebookEdit`, stesso comando dell'hook del prompt.
+- Verifiche: suite 892 test OK; revisione cross-model in 3 round, 2 MAJOR corretti, PASS.
+
 ## 3.5.1 — dopo `/compact` il segnale di contesto non chiede un'altra compattazione — 2026-09-24
 
 Subito dopo una compattazione la trascrizione non ha ancora una risposta nuova: la lettura dalla
