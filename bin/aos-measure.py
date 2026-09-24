@@ -5,6 +5,7 @@ import importlib.util
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -63,13 +64,67 @@ def atomic_write(path, data, exclusive=False):
         temporary.unlink(missing_ok=True)
 
 
+def default_version():
+    """The skill version from <skill root>/VERSION, or None when unreadable."""
+    skill_root = Path(__file__).resolve().parent.parent
+    try:
+        return skill_root.joinpath("VERSION").read_text().strip()
+    except OSError:
+        return None
+
+
+def status_record():
+    """The session's status record, or {} when unavailable.
+
+    Same directory rule as aos-status.status_dir(): AOS_STATUS_DIR or
+    ~/.claude/aos-status, keyed by CLAUDE_CODE_SESSION_ID.
+    """
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    # Same rule as aos-status.session_id(): the id becomes a file name, so
+    # anything that could leave the status directory means no session.
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", session) or ".." in session:
+        return {}
+    directory = Path(os.environ.get("AOS_STATUS_DIR") or (Path.home() / ".claude/aos-status"))
+    try:
+        data = json.loads((directory / (session + ".json")).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # An expired record belongs to an earlier task: better no defaults than wrong ones.
+    expires = data.get("expires_at")
+    if isinstance(expires, (int, float)) and expires < utc_now().timestamp():
+        return {}
+    return data
+
+
 def start(args):
+    status = status_record()
+    version = args.version if args.version is not None else default_version()
+    # Routing identity defaults from the session status record, so a record no
+    # longer carries a hand-typed --version or a routed_by_aos that contradicts
+    # the router call. Explicit CLI arguments always win over these defaults.
+    routed_by_aos = args.routed_by_aos
+    manual_model_override = args.manual_model_override
+    executor = status.get("executor")
+    routed_executor = status.get("routed_executor")
+    if isinstance(executor, str) and executor.strip() and \
+            isinstance(routed_executor, str) and routed_executor.strip():
+        derived = executor == routed_executor
+        if routed_by_aos is None:
+            routed_by_aos = derived
+        if manual_model_override is None:
+            manual_model_override = not derived
+    main_executor_model = args.main_executor_model or args.model
+    if args.main_executor_model is None and status.get("executor") == "open" and \
+            isinstance(status.get("model"), str) and status["model"].strip():
+        main_executor_model = status["model"]
     data = {
         "schema": 1,
         "task": args.task,
         "runtime": args.runtime,
         "model": args.model,
-        "version": args.version,
+        "version": version,
         "started_at": timestamp(utc_now()),
         "finished_at": None,
         "elapsed_seconds": None,
@@ -79,13 +134,19 @@ def start(args):
                              "cached_input_tokens": None, "source": None},
         "rtk_estimate": {"saved": None, "source": None},
         # Routing identity (AOS router): which model actually executed the task,
-        # whether AOS routed it, and open vs premium contribution. All explicit;
-        # executor identity is known at start, token counts and ratios at finish.
+        # whether AOS routed it, and open vs premium contribution. The executor
+        # identity is known at start, token counts and ratios at finish.
         "main_executor_runtime": args.main_executor_runtime or args.runtime,
-        "main_executor_model": args.main_executor_model or args.model,
+        "main_executor_model": main_executor_model,
         "main_executor_provider": args.main_executor_provider,
-        "routed_by_aos": args.routed_by_aos,
-        "manual_model_override": args.manual_model_override,
+        "routed_by_aos": routed_by_aos,
+        "manual_model_override": manual_model_override,
+        "tier": status.get("tier"),
+        "risk": status.get("risk"),
+        "routed_executor": routed_executor,
+        "executor": executor,
+        "override_reason": status.get("override_reason"),
+        "no_check_reason": status.get("no_check_reason"),
         "delegated_open_tasks": None,
         "open_executor_tokens": None,
         "premium_executor_tokens": None,
@@ -375,8 +436,11 @@ def main():
     verdict = commands.add_parser("judge", help="registra una volta il verdetto dell'utente su un record completato")
     for command in (begin, end, verdict):
         command.add_argument("--record", required=True, type=Path)
-    for name in ("task", "runtime", "model", "version"):
+    for name in ("task", "runtime", "model"):
         begin.add_argument("--" + name, required=True, type=text_value)
+    # --version defaults to the skill's VERSION file; a hand-typed value went stale
+    # (a "2.6.0" on a 3.2 install), so the caller may omit it.
+    begin.add_argument("--version", type=text_value, default=None)
     for name in ("main-executor-runtime", "main-executor-model", "main-executor-provider"):
         begin.add_argument("--" + name, type=text_value, default=None)
     for name in ("routed-by-aos", "manual-model-override"):

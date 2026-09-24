@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "3.2.0"
+  version: "3.3.0"
 description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -64,24 +64,32 @@ Risk independently determines verification, **including T0**:
 Then ask the router — AOS decides the executor, not the session's own model:
 
 ```bash
-python3 "$AOS_DIR/bin/aos-router.py" --tier T<n> --risk <LEVEL> --host claude|codex [--observable-check] --json
+python3 "$AOS_DIR/bin/aos-router.py" --tier T<n> --risk <LEVEL> --host claude|codex [--observable-check | --no-observable-check "<why>"] --json
 ```
 
 `--observable-check` whenever a test, build or scripted run of the project exercises the
 change: with it, HIGH work at T1–T3 goes to the open worker under premium plan and
-checks. Then publish what it returned (the host bar shows the session model, not the
+checks. At T1–T3 HIGH one of the two is mandatory: a project with a test suite, a build
+or a script that runs the change has a check; `--no-observable-check "<why>"` is for the
+rest, and the reason stays on the bar. Then publish what it returned (the host bar shows the session model, not the
 routed one):
 `python3 "$AOS_DIR/bin/aos-status.py" set --tier T<n> --risk <level> --executor <executor>
 [--model <model>] [--planner <planner>] [--reviewer <reviewer>]` plus the same router flags
-(`--observable-check`, `--failed-open-attempts`, `--no-open-primary`, `--no-open-fallback`).
+(`--observable-check` or `--no-observable-check`, `--failed-open-attempts`,
+`--no-open-primary`, `--no-open-fallback`).
 The router's executor is the default, not a suggestion: publishing anything else where
 it chose `open` is refused without `--override-reason "<why>"`, and the reason stays on
-the bar. The cost it shows for open runs is catalog price, never billing.
+the bar. Valid reasons: the change is under ~20 lines, it is prose or legal copy, or
+its context cannot be written in a brief. Production is **not** a reason: the worker
+never touches it, it writes code and migrations in a worktree and the host applies,
+deploys and measures. The cost it shows for open runs is catalog price, never billing.
 
 - `main` with a `model`: T0 on the host's cheaper subagent (Claude `Agent` with that
   model, Codex `spawn_agent`); `main` without one: the session model does it.
-- `open`: a bounded worker through `bin/aos-open-executor.py --tier --risk --task-id`
-  from a worktree outside `.claude`/`.codex`; the host runs the checks. Each run leaves
+- `open`: a bounded worker through `bin/aos-open-executor.py --repo <project> --worktree
+  auto --brief <file> --tier --risk --task-id`: it branches a fresh worktree from `HEAD`
+  (commit first what the worker needs) and prints `worktree`, `branch` and `cleanup`; the
+  host reviews the diff, runs the checks, merges. Each run leaves
   a `pending` outcome in the ledger (`ledger_event_key` in its JSON); after the checks
   `python3 "$AOS_DIR/bin/aos-learning.py" verify-outcome --database
   ~/.local/state/aos/learning.sqlite3 --event-key <key> --test-pass true|false
@@ -107,10 +115,11 @@ two is a routing datapoint: write it in the measure record. No eligible model, o
 worker lease, batched fixes, escalation by failure type: `references/adaptive.md`.
 
 Repeat census, announcement and routing only when classification changes.
-HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. If the session
-runs on a weaker model than the policy's premium and the task is T2+ or HIGH+, say
-so and ask for the switch before the first change; the prompt hook names the session
-model when it is not the premium. Research subagents run on a mid model, never the
+HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. The main session
+runs on an accepted model (`premium.session_models`: Opus or Fable on Claude,
+`gpt-6-astra` on Codex); the premium plans and reviews through the router. On a weaker
+model at T2+ or HIGH+, say so and ask for the switch before the first change; the prompt
+hook names the session model when it is not an accepted one. Research subagents run on a mid model, never the
 session's premium by inheritance.
 
 ## 2. Orient and define success

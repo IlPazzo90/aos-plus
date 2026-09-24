@@ -84,7 +84,7 @@ class StatusTests(unittest.TestCase):
 
     def test_premium_executor_shows_subscription_not_money(self):
         status.main(["set", "--tier", "T3", "--risk", "HIGH", "--executor", "premium",
-                     "--model", "claude-fable-5-1"])
+                     "--model", "claude-fable-5-1", "--no-observable-check", "premium"])
         self.assertIn("sub", self.record()["segment"])
         self.assertNotIn("$", self.record()["segment"])
 
@@ -105,8 +105,8 @@ class StatusTests(unittest.TestCase):
 
     def test_set_does_not_warn_on_premium_route_published_as_main(self):
         status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "main",
-                     "--model", "claude-opus-5"])
-        self.assertNotIn("⚠", self.record()["segment"])
+                     "--model", "claude-opus-5", "--no-observable-check", "manual"])
+        self.assertNotIn("⚠ open", self.record()["segment"])
 
     def test_override_without_reason_is_refused_and_writes_nothing(self):
         import contextlib
@@ -162,7 +162,7 @@ class StatusTests(unittest.TestCase):
 
     def test_premium_routed_t1_high_needs_no_reason(self):
         status.main(["set", "--tier", "T1", "--risk", "HIGH", "--executor", "premium",
-                     "--model", "claude-fable-5-1"])
+                     "--model", "claude-fable-5-1", "--no-observable-check", "manual"])
         self.assertNotIn("override_reason", self.record())
 
     def test_executor_matching_route_drops_a_stale_reason(self):
@@ -178,7 +178,7 @@ class StatusTests(unittest.TestCase):
         # policy), but with --observable-check it routes to open, so an override
         # to premium then needs a reason.
         status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
-                     "--model", "claude-fable-5-1"])
+                     "--model", "claude-fable-5-1", "--no-observable-check", "manual"])
         self.assertNotIn("override_reason", self.record())
         import contextlib
         import io
@@ -196,6 +196,93 @@ class StatusTests(unittest.TestCase):
                          "--override-reason", "manual"])
         routed.assert_called_once_with("T2", "HIGH", observable_check=True, failed_open_attempts=0,
                                        open_primary_available=True, open_fallback_available=True)
+
+    def test_high_open_tier_without_either_option_is_refused(self):
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                             "--model", "claude-fable-5-1"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("aos-status: at T2/HIGH declare --observable-check or "
+                      '--no-observable-check "<why>"', stderr.getvalue())
+        self.assertEqual(list(Path(self.directory.name).iterdir()), [])
+
+    def test_an_unloadable_router_still_requires_the_declaration(self):
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with mock.patch.object(status, "_load_router", side_effect=OSError("policy unreadable")), \
+                contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                             "--model", "claude-fable-5-1"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(list(Path(self.directory.name).iterdir()), [])
+
+    def test_an_unreadable_policy_still_requires_the_declaration_at_t1(self):
+        import contextlib
+        import io
+        router = status._load_router()
+        with mock.patch.object(router, "load_config", return_value=router.RoutingConfig()), \
+                mock.patch.object(status, "_load_router", return_value=router), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                status.main(["set", "--tier", "T1", "--risk", "HIGH", "--executor", "premium"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_high_open_tier_refusal_applies_without_a_session_id(self):
+        import contextlib
+        import io
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                                 "--model", "claude-fable-5-1"])
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertIn("aos-status: at T2/HIGH declare", stderr.getvalue())
+        self.assertEqual(list(Path(self.directory.name).iterdir()), [])
+
+    def test_risk_is_compared_case_insensitively(self):
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                status.main(["set", "--tier", "T2", "--risk", "high", "--executor", "premium",
+                             "--model", "claude-fable-5-1"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("aos-status: at T2/HIGH declare", stderr.getvalue())
+
+    def test_no_observable_check_stores_the_reason_and_renders_it(self):
+        status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                     "--model", "claude-fable-5-1", "--no-observable-check", "  no suite  "])
+        record = self.record()
+        self.assertEqual(record["no_check_reason"], "no suite")
+        self.assertIn("⚠ no check: no suite", record["segment"])
+
+    def test_no_check_reason_is_capped_at_120_chars(self):
+        status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                     "--model", "claude-fable-5-1", "--no-observable-check", "x" * 200])
+        self.assertEqual(self.record()["no_check_reason"], "x" * 120)
+
+    def test_later_observable_check_drops_the_stale_no_check_reason(self):
+        status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "premium",
+                     "--model", "claude-fable-5-1", "--no-observable-check", "no suite"])
+        self.assertIn("no_check_reason", self.record())
+        status.main(["set", "--tier", "T2", "--risk", "HIGH", "--executor", "open",
+                     "--model", DEEPSEEK, "--observable-check"])
+        record = self.record()
+        self.assertNotIn("no_check_reason", record)
+        self.assertNotIn("⚠ no check", record["segment"])
+
+    def test_medium_needs_neither_option(self):
+        status.main(["set", "--tier", "T2", "--risk", "MEDIUM", "--executor", "open",
+                     "--model", DEEPSEEK])
+        self.assertNotIn("no_check_reason", self.record())
 
     def test_routed_executor_matches_the_router_for_t2_low(self):
         self.assertEqual(status.routed_executor("T2", "LOW"), "open")

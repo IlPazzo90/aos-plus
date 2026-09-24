@@ -188,6 +188,10 @@ def render(state):
             # Records written by older versions carry no reason: the bare marker
             # is all we have, and money spent silences it as before.
             segment += ' ⚠ open'
+    if state.get('no_check_reason'):
+        # The caller skipped the open route at HIGH without an observable check:
+        # show the stored reason, after the open-override marker if any.
+        segment += ' ⚠ no check: ' + state['no_check_reason'][:40]
     return segment
 
 
@@ -202,15 +206,39 @@ def routed_executor(tier, risk, observable_check=False, **router_state):
     if tier not in ('T0', 'T1', 'T2', 'T3') or risk not in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'):
         return None
     try:
-        spec = importlib.util.spec_from_file_location('aos_router', ROOT / 'bin/aos-router.py')
-        router = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(router)
+        router = _load_router()
         config = router.load_config(ROOT / 'config/open-models.json')
         decision = router.decide(tier, risk, config=config, observable_check=observable_check, **router_state)
         return decision.executor
     except Exception:  # noqa: BLE001 - the bar is cosmetic, the router failing is not
         # The bar is cosmetic: a router that failed to load or to answer must
         # not change what the bar shows.
+        return None
+
+
+def _load_router():
+    """Import the router module the same way routed_executor does."""
+    spec = importlib.util.spec_from_file_location('aos_router', ROOT / 'bin/aos-router.py')
+    router = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(router)
+    return router
+
+
+def open_high_tiers():
+    """The router's open_high_tiers, or None when the router cannot load.
+
+    Used by cmd_set to gate the HIGH/observable-check requirement on the same
+    policy the router actually applies.
+    """
+    try:
+        router = _load_router()
+        config = router.load_config(ROOT / 'config/open-models.json')
+        # load_config answers an unreadable policy with the bare defaults, as the
+        # router CLI knows: treat that as no policy, so the caller fails closed.
+        if config == router.RoutingConfig():
+            return None
+        return config.open_high_tiers
+    except Exception:  # noqa: BLE001 - cosmetic; skip the check when the router is gone
         return None
 
 
@@ -237,6 +265,24 @@ def write(session, state, ttl):
 
 
 def cmd_set(args):
+    # At HIGH in an open tier the open route is the premium path: skipping it
+    # without a reason is the same silent premium as omitting the flag. This
+    # check runs BEFORE the override check and BEFORE the session gate, so it
+    # applies on Codex (no session id) too. Nothing is written on refusal.
+    no_check_reason = (args.no_observable_check or '').strip()
+    tiers = open_high_tiers()
+    if tiers is None:
+        # Fail closed: an unreadable policy must not turn the declaration off.
+        tiers = ('T1', 'T2', 'T3')
+    high_open_tier = ((args.risk or '').upper() == 'HIGH'
+                      and (args.tier or '').upper() in tiers)
+    if not high_open_tier:
+        # Only a skipped open route at HIGH is worth a marker on the bar.
+        no_check_reason = ''
+    if high_open_tier and not args.observable_check and not no_check_reason:
+        print('aos-status: at %s/HIGH declare --observable-check or '
+              '--no-observable-check "<why>"' % (args.tier or '').upper(), file=sys.stderr)
+        raise SystemExit(2)
     # Check the router BEFORE the session gate: Codex has no session id, but an
     # override still costs a reason. Nothing is written on refusal.
     # The same inputs the router was given: after an exhausted or unavailable open
@@ -254,10 +300,10 @@ def cmd_set(args):
     if not session:
         return {}
     with locked(session):
-        return _set(session, args, routed, reason)
+        return _set(session, args, routed, reason, no_check_reason)
 
 
-def _set(session, args, routed, reason=None):
+def _set(session, args, routed, reason=None, no_check_reason=None):
     state = load(session)
     # A new classification replaces the routing but keeps the tokens already spent
     # in this session: the bar shows the session's cost, not the last task's.
@@ -269,6 +315,11 @@ def _set(session, args, routed, reason=None):
     else:
         # An executor that matches the route needs no reason: drop any stale one.
         state.pop('override_reason', None)
+    if no_check_reason:
+        state['no_check_reason'] = no_check_reason[:120]
+    else:
+        # A check declared (or not HIGH) needs no reason: drop any stale one.
+        state.pop('no_check_reason', None)
     state.setdefault('tokens', {'input': 0, 'output': 0, 'cache': 0})
     state.setdefault('cost_usd', None)
     return write(session, state, args.ttl)
@@ -371,8 +422,12 @@ def main(argv=None):
     setter.add_argument('--planner')
     setter.add_argument('--reviewer')
     setter.add_argument('--override-reason', help='why the router\'s open route is being overridden')
-    setter.add_argument('--observable-check', action='store_true',
-                        help='pass observable_check to the router')
+    check = setter.add_mutually_exclusive_group()
+    check.add_argument('--observable-check', action='store_true',
+                       help='pass observable_check to the router')
+    check.add_argument('--no-observable-check', metavar='REASON',
+                       help='why the open route is skipped: at HIGH in an open tier '
+                            'one of the two must be given')
     setter.add_argument('--failed-open-attempts', type=_count, default=0,
                         help='as given to aos-router.py')
     setter.add_argument('--no-open-primary', action='store_true', help='as given to aos-router.py')

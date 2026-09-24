@@ -632,7 +632,11 @@ def main(argv=None):
     parser.add_argument("--no-open-fallback", action="store_true")
     parser.add_argument("--no-open-mid", action="store_true",
                         help="the MID model already ran (or is down): do not offer it again")
-    parser.add_argument("--observable-check", action="store_true")
+    check = parser.add_mutually_exclusive_group()
+    check.add_argument("--observable-check", action="store_true")
+    check.add_argument("--no-observable-check", metavar="REASON",
+                       help="why the open route is skipped: at HIGH in an open tier "
+                            "one of the two must be given")
     parser.add_argument("--failed-open-attempts", type=int, default=0)
     parser.add_argument("--host", choices=["claude", "codex"],
                         help="resolve a T0 host subagent class to this host's model name")
@@ -643,6 +647,14 @@ def main(argv=None):
         # An unusable policy routes everything to main: the most plausible wrong
         # answer. Say so instead of printing it.
         print(f"ERRORE: politica di routing non utilizzabile: {args.config}", file=sys.stderr)
+        return 2
+    no_check_reason = (args.no_observable_check or '').strip()
+    if (args.risk == 'HIGH' and args.tier in config.open_high_tiers
+            and not args.observable_check and not no_check_reason):
+        # At HIGH in an open tier the open route is the premium path; skipping it
+        # without saying why is the same silent premium as omitting the flag.
+        print(f"aos-router: at {args.tier}/HIGH declare --observable-check or "
+              f"--no-observable-check \"<why>\"", file=sys.stderr)
         return 2
     decision = decide(
         args.tier, args.risk,
@@ -656,7 +668,10 @@ def main(argv=None):
         host=args.host,
     )
     if args.json:
-        print(json.dumps(asdict(decision), indent=2))
+        payload = asdict(decision)
+        if no_check_reason:
+            payload["no_observable_check_reason"] = no_check_reason[:120]
+        print(json.dumps(payload, indent=2))
     else:
         print(f"executor={decision.executor} model={decision.model} verify={decision.verify} "
               f"escalation={decision.escalation_target}")

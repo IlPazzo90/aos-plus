@@ -194,9 +194,10 @@ class SessionModelTests(unittest.TestCase):
             def select_skills(self, bundle, profile, adaptive):
                 return ["skill_%d_%s" % (bundle, "x" * 20)]
         with mock.patch.object(hook, "premium_names", return_value=("fable", "gpt-6-astra")), \
+                mock.patch.object(hook, "accepted_session_models", return_value=("fable", "gpt-6-astra")), \
                 mock.patch.object(hook, "_publish_profile"):
             line = hook._routing_hint(Module(), "valid prompt with enough words", {"adaptive": {}},
-                                      {"model": "claude-opus-5-5"})
+                                      {"model": "claude-sonnet-5"})
         self.assertLessEqual(len(line), 420)
         self.assertTrue(line.endswith("codex -m gpt-6-astra)"))
 
@@ -255,6 +256,25 @@ class SessionModelTests(unittest.TestCase):
         names = hook.premium_names()
         self.assertEqual(names, ("fable", "gpt-6-astra"))
 
+    def test_accepted_session_models_includes_the_session_list(self):
+        with mock.patch.object(hook, "_premium", return_value={
+                "claude_model": "fable", "codex_model": "gpt-6-astra",
+                "session_models": ["fable", "opus", "gpt-6-astra"]}):
+            self.assertIn("opus", hook.accepted_session_models())
+            self.assertIn("fable", hook.accepted_session_models())
+
+    def test_accepted_session_models_ignores_an_invalid_list(self):
+        for bad in ("not-a-list", ["", 5], []):
+            with mock.patch.object(hook, "_premium", return_value={
+                    "claude_model": "fable", "codex_model": "gpt-6-astra",
+                    "session_models": bad}):
+                self.assertEqual(hook.accepted_session_models(), ("fable", "gpt-6-astra"))
+
+    def test_accepted_session_models_without_the_key_is_the_premium_pair(self):
+        with mock.patch.object(hook, "_premium", return_value={
+                "claude_model": "fable", "codex_model": "gpt-6-astra"}):
+            self.assertEqual(hook.accepted_session_models(), ("fable", "gpt-6-astra"))
+
     def test_is_premium_substring_match(self):
         names = ("fable", "gpt-6-astra")
         self.assertTrue(hook.is_premium("claude-fable-5-1", names))
@@ -272,10 +292,10 @@ class NonPremiumHintTests(unittest.TestCase):
 
     def test_non_premium_model_appends_warning_to_a_real_hint(self):
         output = hook.decide({"prompt": "correggi questo bug nel file app.py",
-                              "model": "claude-opus-5-5"}, self.registry)
+                              "model": "claude-sonnet-5"}, self.registry)
         self.assertIsNotNone(output)
         body = output["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("sessione su claude-opus-5-5", body)
+        self.assertIn("sessione su claude-sonnet-5", body)
         self.assertIn("/model fable", body)
         self.assertIn("codex -m gpt-6-astra", body)
 
@@ -291,6 +311,41 @@ class NonPremiumHintTests(unittest.TestCase):
         output = hook.decide({"prompt": "zzz quux fnord blarg", "model": "claude-opus-5-5"},
                              self.registry)
         self.assertIsNone(output)
+
+    def test_opus_session_model_is_accepted_with_the_repo_config(self):
+        # The owner runs the main session on Opus by choice: the hook must stop
+        # asking for a switch then, but still warn on weaker models.
+        output = hook.decide({"prompt": "correggi questo bug nel file app.py",
+                              "model": "claude-opus-5-5"}, self.registry)
+        self.assertIsNotNone(output)
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("sessione su", body)
+
+    def test_sonnet_session_model_still_warns(self):
+        output = hook.decide({"prompt": "correggi questo bug nel file app.py",
+                              "model": "claude-sonnet-5"}, self.registry)
+        self.assertIsNotNone(output)
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("sessione su claude-sonnet-5", body)
+
+    def test_config_without_session_models_warns_on_opus_again(self):
+        with mock.patch.object(hook, "_premium", return_value={
+                "claude_model": "fable", "codex_model": "gpt-6-astra"}):
+            output = hook.decide({"prompt": "correggi questo bug nel file app.py",
+                                  "model": "claude-opus-5-5"}, self.registry)
+        self.assertIsNotNone(output)
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("sessione su claude-opus-5-5", body)
+
+    def test_an_invalid_session_models_value_is_ignored(self):
+        with mock.patch.object(hook, "_premium", return_value={
+                "claude_model": "fable", "codex_model": "gpt-6-astra",
+                "session_models": "opus"}):
+            output = hook.decide({"prompt": "correggi questo bug nel file app.py",
+                                  "model": "claude-opus-5-5"}, self.registry)
+        self.assertIsNotNone(output)
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("sessione su claude-opus-5-5", body)
 
 
 if __name__ == "__main__":

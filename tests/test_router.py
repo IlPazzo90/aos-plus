@@ -564,6 +564,84 @@ class CommandLineDefaultTests(unittest.TestCase):
             path.write_text(json.dumps(data))
             self.assertEqual(router.load_config(path), router.RoutingConfig())
 
+class ObservableCheckGateTests(unittest.TestCase):
+    """At HIGH in an open tier the CLI demands a declared check or a written reason.
+
+    Skipping the open route silently was the same premium as omitting the flag;
+    the CLI now refuses to answer until the caller says which one they mean.
+    """
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = router.main(list(argv))
+            except SystemExit as exc:  # argparse errors exit rather than return
+                code = exc.code if isinstance(exc.code, int) else 1
+        return code, out.getvalue(), err.getvalue()
+
+    def test_high_open_tier_without_either_option_is_refused(self):
+        for tier in ('T1', 'T2', 'T3'):
+            with self.subTest(tier=tier):
+                code, out, err = self.run_cli('--tier', tier, '--risk', 'HIGH', '--json')
+                self.assertEqual(code, 2, tier)
+                self.assertEqual(out, '', tier)
+                self.assertIn('aos-router: at %s/HIGH declare --observable-check or '
+                              '--no-observable-check "<why>"' % tier, err)
+
+    def test_blank_reason_is_treated_as_absent(self):
+        code, out, err = self.run_cli('--tier', 'T2', '--risk', 'HIGH',
+                                      '--no-observable-check', '   ', '--json')
+        self.assertEqual(code, 2)
+        self.assertEqual(out, '')
+        self.assertIn('aos-router: at T2/HIGH declare', err)
+
+    def test_observable_check_routes_open_as_before(self):
+        code, out, err = self.run_cli('--tier', 'T2', '--risk', 'HIGH',
+                                      '--observable-check', '--json')
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)['executor'], 'open')
+
+    def test_no_observable_check_routes_premium_and_json_carries_the_reason(self):
+        code, out, err = self.run_cli('--tier', 'T2', '--risk', 'HIGH',
+                                      '--no-observable-check', '  no suite here  ', '--json')
+        self.assertEqual(code, 0)
+        decision = json.loads(out)
+        self.assertEqual(decision['executor'], 'premium')
+        self.assertEqual(decision['no_observable_check_reason'], 'no suite here')
+
+    def test_reason_is_capped_at_120_chars(self):
+        code, out, err = self.run_cli('--tier', 'T2', '--risk', 'HIGH',
+                                      '--no-observable-check', 'x' * 200, '--json')
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)['no_observable_check_reason'], 'x' * 120)
+
+    def test_both_options_together_is_an_argparse_error(self):
+        code, out, err = self.run_cli('--tier', 'T2', '--risk', 'HIGH',
+                                      '--observable-check', '--no-observable-check', 'x')
+        self.assertEqual(code, 2)
+        self.assertIn('not allowed with', err)
+
+    def test_non_high_or_non_open_tier_is_unchanged(self):
+        for tier, risk in (('T2', 'MEDIUM'), ('T0', 'HIGH'), ('T2', 'CRITICAL')):
+            with self.subTest(tier=tier, risk=risk):
+                code, out, err = self.run_cli('--tier', tier, '--risk', risk, '--json')
+                self.assertEqual(code, 0, (tier, risk))
+                self.assertIn('executor', json.loads(out))
+
+    def test_tier_outside_open_high_tiers_is_not_refused(self):
+        # A policy whose open_high_tiers is only ["T2"] leaves T1 HIGH alone.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'policy.json'
+            path.write_text(json.dumps({'schema': 1, 'open': {'primary': 'x/y'},
+                                        'policy': {'role_pipeline': False,
+                                                   'open_high_tiers': ['T2']}}))
+            code, out, err = self.run_cli('--tier', 'T1', '--risk', 'HIGH',
+                                          '--config', str(path), '--json')
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out)['executor'], 'premium')
+
+
 class HighOpenNeedsPremiumReviewTests(unittest.TestCase):
     """Review round 3: HIGH open work needs a premium plan and review."""
 

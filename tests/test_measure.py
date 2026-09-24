@@ -1,6 +1,7 @@
 """Explicit measurement records; no automatic provider/history collection."""
 import json
 import importlib.util
+import os
 from unittest import mock
 from pathlib import Path
 import subprocess
@@ -466,6 +467,115 @@ class MeasureTests(unittest.TestCase):
         result = self.run_cli("finish", "--outcome", "delivered", "--context-budget", str(budget))
         self.assertEqual(result.returncode, 1)
         self.assertIn("oggetto JSON", result.stderr)
+
+
+class MeasureStartDefaultsTests(unittest.TestCase):
+    """`start` fills version and routing identity from VERSION and the status record."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.record = Path(self.temp.name) / "record.json"
+        self.status_dir = Path(self.temp.name) / "status"
+        self.status_dir.mkdir()
+
+    def clean_env(self, **extra):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("CLAUDE_CODE_SESSION_ID", "AOS_STATUS_DIR")}
+        env.update(extra)
+        return env
+
+    def run_start(self, env, *args):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "start", "--task", "t", "--runtime", "r", "--model", "m",
+             "--record", str(self.record), *args],
+            capture_output=True, text=True, env=env)
+
+    def write_status(self, sid, state):
+        (self.status_dir / (sid + ".json")).write_text(json.dumps(state))
+
+    def test_version_defaults_to_the_version_file(self):
+        result = self.run_start(self.clean_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        expected = (SCRIPT.parents[1] / "VERSION").read_text().strip()
+        self.assertEqual(data["version"], expected)
+
+    def test_status_with_main_routed_open_sets_routing_defaults(self):
+        sid = "sess-1"
+        self.write_status(sid, {"tier": "T2", "risk": "HIGH", "executor": "main",
+                                "routed_executor": "open", "override_reason": "quota exhausted",
+                                "model": "claude-opus-5-5"})
+        result = self.run_start(self.clean_env(CLAUDE_CODE_SESSION_ID=sid, AOS_STATUS_DIR=str(self.status_dir)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertIs(data["routed_by_aos"], False)
+        self.assertIs(data["manual_model_override"], True)
+        self.assertEqual(data["override_reason"], "quota exhausted")
+        self.assertEqual(data["tier"], "T2")
+        self.assertEqual(data["risk"], "HIGH")
+        self.assertEqual(data["executor"], "main")
+        self.assertEqual(data["routed_executor"], "open")
+        # executor is main, not open: the status model must not become the executor model.
+        self.assertEqual(data["main_executor_model"], "m")
+
+    def test_explicit_routed_by_aos_wins_over_the_status_default(self):
+        sid = "sess-1"
+        self.write_status(sid, {"executor": "main", "routed_executor": "open"})
+        result = self.run_start(self.clean_env(CLAUDE_CODE_SESSION_ID=sid, AOS_STATUS_DIR=str(self.status_dir)),
+                                "--routed-by-aos", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertIs(data["routed_by_aos"], True)
+
+    def test_no_session_id_leaves_the_new_keys_null(self):
+        result = self.run_start(self.clean_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        for key in ("tier", "risk", "routed_executor", "executor", "override_reason", "no_check_reason"):
+            self.assertIsNone(data[key], key)
+        self.assertIsNone(data["routed_by_aos"])
+        self.assertIsNone(data["manual_model_override"])
+
+    def test_open_executor_model_comes_from_the_status(self):
+        sid = "sess-1"
+        self.write_status(sid, {"executor": "open", "routed_executor": "open",
+                                "model": "vercel/deepseek/deepseek-v4-pro-0813"})
+        result = self.run_start(self.clean_env(CLAUDE_CODE_SESSION_ID=sid, AOS_STATUS_DIR=str(self.status_dir)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertEqual(data["main_executor_model"], "vercel/deepseek/deepseek-v4-pro-0813")
+        self.assertIs(data["routed_by_aos"], True)
+        self.assertIs(data["manual_model_override"], False)
+
+    def test_an_expired_status_record_is_ignored(self):
+        sid = "sess-1"
+        self.write_status(sid, {"tier": "T3", "executor": "main", "routed_executor": "open",
+                                "expires_at": 1})
+        result = self.run_start(self.clean_env(CLAUDE_CODE_SESSION_ID=sid, AOS_STATUS_DIR=str(self.status_dir)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertIsNone(data["tier"])
+        self.assertIsNone(data["routed_by_aos"])
+
+    def test_a_session_id_leaving_the_status_dir_is_ignored(self):
+        (self.status_dir.parent / "victim.json").write_text(
+            json.dumps({"tier": "T3", "executor": "main", "routed_executor": "open"}))
+        result = self.run_start(self.clean_env(CLAUDE_CODE_SESSION_ID="../victim",
+                                               AOS_STATUS_DIR=str(self.status_dir)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertIsNone(data["tier"])
+        self.assertIsNone(data["routed_by_aos"])
+
+    def test_an_unreadable_status_record_is_ignored(self):
+        sid = "sess-1"
+        (self.status_dir / (sid + ".json")).write_text("{not json")
+        result = self.run_start(self.clean_env(CLAUDE_CODE_SESSION_ID=sid, AOS_STATUS_DIR=str(self.status_dir)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.record.read_text())
+        self.assertIsNone(data["tier"])
+        self.assertIsNone(data["routed_by_aos"])
 
 
 if __name__ == "__main__":

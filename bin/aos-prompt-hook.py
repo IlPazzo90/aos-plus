@@ -66,26 +66,50 @@ def silent_reason(prompt):
     return None
 
 
+def _premium():
+    """The policy's premium object, or None when it cannot be read."""
+    try:
+        data = json.loads((Path(__file__).resolve().parents[1] / "config/open-models.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    premium = data.get("premium")
+    return premium if isinstance(premium, dict) else None
+
+
 def premium_names():
     """The policy's premium model names: claude_model, codex_model.
 
     Loaded relative to the script (ROOT/config/open-models.json). Missing file or
     keys return () so the caller stays silent about the session model.
     """
-    try:
-        data = json.loads((Path(__file__).resolve().parents[1] / "config/open-models.json").read_text())
-    except (OSError, ValueError):
-        return ()
-    if not isinstance(data, dict):
-        return ()
-    premium = data.get("premium")
-    if not isinstance(premium, dict):
+    premium = _premium()
+    if premium is None:
         return ()
     claude = premium.get("claude_model")
     codex = premium.get("codex_model")
     if not (isinstance(claude, str) and claude.strip() and isinstance(codex, str) and codex.strip()):
         return ()
     return (claude, codex)
+
+
+def accepted_session_models():
+    """Every name a session model may run under without a switch advisory.
+
+    The premium pair plus ``premium.session_models``. An invalid or missing
+    ``session_models`` list (not a list of non-empty strings) is ignored, so the
+    accepted set falls back to the premium pair alone.
+    """
+    premium = _premium()
+    if premium is None:
+        return ()
+    names = list(premium_names())
+    session_models = premium.get("session_models")
+    if isinstance(session_models, list) and session_models and \
+            all(isinstance(name, str) and name.strip() for name in session_models):
+        names.extend(session_models)
+    return tuple(names)
 
 
 def _model_from_payload(payload):
@@ -192,7 +216,7 @@ def _routing_hint(module, prompt, registry, payload=None):
     model = session_model(payload)
     names = premium_names()
     warning = ""
-    if model and names and not is_premium(model, names):
+    if model and names and not is_premium(model, accepted_session_models()):
         claude, codex = names
         warning = (" · sessione su " + model[:60] + ": a T2+ o rischio HIGH chiedi il cambio "
                    "(/model " + claude[:30] + " · codex -m " + codex[:30] + ")")

@@ -545,6 +545,7 @@
   "premium": {
     "claude_model": "fable",
     "codex_model": "gpt-6-astra",
+    "session_models": ["fable", "opus", "gpt-6-astra"],
     "model_refs": {
       "claude": "anthropic/fable",
       "codex": "openai/gpt-6-astra"

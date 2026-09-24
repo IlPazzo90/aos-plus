@@ -458,7 +458,7 @@ without changing the configured model. Runtime availability does not prove provi
 authentication. No selection silently substitutes an OpenAI or Anthropic model.
 
 ```sh
-python3 bin/aos-open-executor.py --repo /path/to/worktree --brief /path/to/brief.md \
+python3 bin/aos-open-executor.py --repo /path/to/project --worktree auto --brief /path/to/brief.md \
   --task-id <slug> --tier T<n> --risk <LEVEL> --runtime claude-code
 python3 bin/aos-open-executor.py --repo /path/to/worktree --brief /path/to/brief.md \
   --task-id <slug> --tier T<n> --risk <LEVEL> --runtime claude-code --slot fallback
@@ -487,10 +487,21 @@ unverified task (`pending_outcomes` tallies them). A failure caused by the brief
 AOS takes an AOS-attributed type (`context_failure`, `routing_failure`, ...), so the
 model stays routable.
 
+`--worktree auto` (3.3.0) branches `aos-open-<task>-<hex>` from the repository's `HEAD`
+under `$AOS_WORKTREE_ROOT`, else `~/Progetti/Worktree`, else the system temp directory,
+and runs the worker there; `source_dirty: true` warns that uncommitted work stayed
+behind. The worktree is never removed by the executor: the result carries `worktree`,
+`branch` and the `cleanup` command for after the merge.
+
+At T1–T3 HIGH the router and `aos-status.py set` refuse (exit 2) unless the caller
+declares `--observable-check` or `--no-observable-check "<why>"` (3.3.0): omitting the
+flag used to route to premium silently. `aos-measure.py start` reads the session's status
+record and fills version, tier, risk, routed and published executor and both reasons.
+
 Publishing a different executor than the router's `open` needs
 `aos-status.py set ... --override-reason "<why>"` (exit 2 otherwise, on both hosts); the
 reason stays on the Claude status bar. The prompt hook appends the session model to its
-hint when it is not the policy's premium (read from the payload or the transcript tail).
+hint when it is not an accepted session model (`premium.session_models`) (read from the payload or the transcript tail).
 
 For T2/T3, call `aos-entry.py pipeline --directory /path/to/repo` with a JSON
 `start` action and data containing `main_host` (`claude-code` or `codex-cli`),

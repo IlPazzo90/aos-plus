@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import os
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -620,6 +621,151 @@ class IsolationProbeTests(unittest.TestCase):
             finally:
                 Path(state['home_canary']).unlink(missing_ok=True)
 
+
+
+class AutoWorktreeTests(unittest.TestCase):
+    """`--worktree auto` delegates from a clean worktree on a new branch."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name) / 'repo'
+        self.repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
+        subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=T', '-c', 'user.email=t@t',
+                        'commit', '--allow-empty', '-qm', 'fixture'], check=True)
+        self.brief = Path(self.tmp.name) / 'task.md'
+        self.brief.write_text('build it\n')
+        self.root = Path(self.tmp.name) / 'worktrees'
+        self.root.mkdir()
+
+    def test_worktree_name_slug_from_task_id_and_brief_stem(self):
+        name = executor._worktree_name('My Task! 123', 'ignored.md')
+        self.assertTrue(name.startswith('aos-open-my-task-123-'), name)
+        self.assertEqual(len(name.rsplit('-', 1)[1]), 6)
+        # Without --task-id the brief stem is the slug.
+        name2 = executor._worktree_name(None, '/some/dir/my brief.md')
+        self.assertTrue(name2.startswith('aos-open-my-brief-'), name2)
+        # A slug longer than 40 chars is truncated.
+        name3 = executor._worktree_name('x' * 60, 'ignored.md')
+        self.assertLessEqual(len(name3.split('-', 2)[2].rsplit('-', 1)[0]), 40)
+
+    def test_auto_worktree_creates_a_branch_and_reports_source_dirty(self):
+        (self.repo / 'dirty.txt').write_text('x')
+        with patch.dict(executor.os.environ, {'AOS_WORKTREE_ROOT': str(self.root)}):
+            path, branch, source_dirty = executor._auto_worktree(self.repo, 'task-id', str(self.brief))
+        self.assertTrue(path.is_dir())
+        self.assertTrue((path / '.git').exists())
+        self.assertTrue(source_dirty)
+        branches = subprocess.run(['git', '-C', str(self.repo), 'branch', '--list', branch],
+                                  capture_output=True, text=True).stdout
+        self.assertIn(branch, branches)
+
+    def test_auto_worktree_reports_a_clean_source(self):
+        with patch.dict(executor.os.environ, {'AOS_WORKTREE_ROOT': str(self.root)}):
+            path, branch, source_dirty = executor._auto_worktree(self.repo, 'task-id', str(self.brief))
+        self.assertIs(source_dirty, False)
+
+    def test_auto_worktree_git_timeout_is_a_value_error(self):
+        with patch.object(executor.subprocess, 'run',
+                          side_effect=subprocess.TimeoutExpired(['git'], 10)):
+            with self.assertRaisesRegex(ValueError, 'timed out'):
+                executor._auto_worktree(self.repo, 'task', str(self.brief))
+
+    def test_auto_worktree_unreadable_status_blocks_before_creating_anything(self):
+        real = subprocess.run
+        calls = []
+
+        def fake(argv, **kwargs):
+            calls.append(argv)
+            if 'status' in argv:
+                return subprocess.CompletedProcess(argv, 128, '', 'fatal: broken')
+            return real(argv, **kwargs)
+
+        with patch.dict(executor.os.environ, {'AOS_WORKTREE_ROOT': str(self.root)}), \
+                patch.object(executor.subprocess, 'run', side_effect=fake):
+            with self.assertRaisesRegex(ValueError, 'git status failed'):
+                executor._auto_worktree(self.repo, 'task', str(self.brief))
+        self.assertFalse(any('worktree' in argv for argv in calls))
+
+    def test_a_relative_worktree_root_is_taken_from_the_callers_cwd(self):
+        cwd = Path(self.tmp.name) / 'caller'
+        cwd.mkdir()
+        previous = os.getcwd()
+        os.chdir(str(cwd))
+        try:
+            with patch.dict(executor.os.environ, {'AOS_WORKTREE_ROOT': 'wt'}):
+                path, branch, _ = executor._auto_worktree(self.repo, 'task', str(self.brief))
+        finally:
+            os.chdir(previous)
+        self.assertTrue(path.is_absolute())
+        self.assertTrue(path.is_dir())
+        self.assertEqual(path.parent.resolve(), (cwd / 'wt').resolve())
+
+    def test_auto_worktree_refuses_a_repo_outside_git(self):
+        outside = Path(self.tmp.name) / 'plain'
+        outside.mkdir()
+        with patch.dict(executor.os.environ, {'AOS_WORKTREE_ROOT': str(self.root)}):
+            with self.assertRaisesRegex(ValueError, 'inside a git repository'):
+                executor._auto_worktree(outside, 'task', str(self.brief))
+
+    def test_worktree_auto_delegates_to_the_new_worktree_and_prints_metadata(self):
+        import contextlib
+        import io
+        selection = {'runtime': 'claude-code', 'provider': 'vercel',
+                     'model_ref': 'vercel/deepseek/deepseek-v4-pro-0813', 'model': 'deepseek/deepseek-v4-pro-0813'}
+        result = {'exit_code': 0, 'error': None, 'cost': 1.5,
+                  'usage': {'input_tokens': 10, 'output_tokens': 5},
+                  'cost_class': 'CHEAP', 'reply': ''}
+        buf = io.StringIO()
+        env = {k: v for k, v in executor.os.environ.items()
+               if k not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'AOS_LEARNING')}
+        env['AOS_WORKTREE_ROOT'] = str(self.root)
+        argv = ['--repo', str(self.repo), '--brief', str(self.brief), '--model',
+                'vercel/deepseek/deepseek-v4-pro-0813', '--timeout', '1', '--worktree', 'auto',
+                '--no-record']
+        with patch.object(executor, 'resolve', return_value=selection), \
+                patch.object(executor, 'run', return_value=result) as run, \
+                patch.object(executor, 'publish_status'), \
+                patch.dict(executor.os.environ, env, clear=True), \
+                contextlib.redirect_stdout(buf):
+            code = executor.main(argv)
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        # The worker ran in the worktree, not the source repo.
+        self.assertEqual(payload['worktree'], str(run.call_args[0][0]))
+        self.assertTrue(payload['worktree'].startswith(str(self.root)))
+        self.assertTrue(Path(payload['worktree']).is_dir())
+        self.assertTrue(payload['branch'].startswith('aos-open-'))
+        self.assertIs(payload['source_dirty'], False)
+        self.assertIn('worktree remove', payload['cleanup'])
+        self.assertIn('branch -D', payload['cleanup'])
+        self.assertIn(str(self.repo), payload['cleanup'])
+
+    def test_worktree_auto_outside_git_prints_blocked_json_and_exits_2(self):
+        import contextlib
+        import io
+        outside = Path(self.tmp.name) / 'plain'
+        outside.mkdir()
+        buf = io.StringIO()
+        env = {k: v for k, v in executor.os.environ.items()
+               if k not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'AOS_LEARNING')}
+        env['AOS_WORKTREE_ROOT'] = str(self.root)
+        argv = ['--repo', str(outside), '--brief', str(self.brief), '--model',
+                'vercel/deepseek/deepseek-v4-pro-0813', '--timeout', '1', '--worktree', 'auto',
+                '--no-record']
+        with patch.object(executor, 'resolve', return_value={'runtime': 'claude-code', 'provider': 'vercel',
+                                                             'model_ref': 'vercel/deepseek/deepseek-v4-pro-0813',
+                                                             'model': 'deepseek/deepseek-v4-pro-0813'}), \
+                patch.object(executor, 'run') as run, \
+                patch.dict(executor.os.environ, env, clear=True), \
+                contextlib.redirect_stdout(buf):
+            code = executor.main(argv)
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload['blocked'])
+        self.assertIn('inside a git repository', payload['error'])
+        run.assert_not_called()
 
 
 class InstallManifestTests(unittest.TestCase):

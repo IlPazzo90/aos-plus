@@ -493,6 +493,61 @@ def _git_repo_name(repo):
     return Path(repo).name
 
 
+def _worktree_name(task_id, brief):
+    """Branch/worktree name: aos-open-<slug>-<6 hex>, slug from the task id or brief stem."""
+    stem = task_id or Path(brief).stem
+    slug = re.sub(r'[^a-z0-9-]+', '-', stem.lower()).strip('-')[:40] or 'task'
+    return 'aos-open-%s-%s' % (slug, uuid4().hex[:6])
+
+
+def _worktree_root():
+    """Where auto worktrees live: AOS_WORKTREE_ROOT, the host's Worktree dir, or a temp dir."""
+    configured = os.environ.get('AOS_WORKTREE_ROOT')
+    if configured:
+        # Absolute against the caller's cwd: git -C would read a relative path
+        # against the repository, run() against the cwd. Not resolve(): keep symlinks.
+        return Path(configured).expanduser().absolute()
+    projects = Path.home() / 'Progetti/Worktree'
+    if projects.is_dir():
+        return projects
+    root = Path(tempfile.gettempdir()) / 'aos-worktrees'
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _auto_worktree(repo, task_id, brief):
+    """Create a clean worktree on a new branch from HEAD for open delegation.
+
+    Returns ``(worktree_path, branch, source_dirty)``. The worktree is never
+    removed here: the host reviews and merges the branch. Every git failure,
+    timeouts included, is a ValueError so the caller prints the blocked JSON.
+    """
+    repo = Path(repo).resolve()
+
+    def git(*argv, seconds=10):
+        try:
+            return subprocess.run(['git', '-C', str(repo), *argv],
+                                  capture_output=True, text=True, timeout=seconds)
+        except subprocess.TimeoutExpired:
+            raise ValueError('git %s timed out' % argv[0]) from None
+
+    inside = git('rev-parse', '--is-inside-work-tree')
+    if inside.returncode != 0 or inside.stdout.strip() != 'true':
+        raise ValueError('--worktree auto needs --repo inside a git repository')
+    # Read the source state before creating anything: a failure here leaves no
+    # orphan worktree behind, and an unreadable status is never reported as clean.
+    status = git('status', '--porcelain')
+    if status.returncode != 0:
+        raise ValueError('git status failed: ' + (status.stderr.strip() or 'exit %d' % status.returncode)[:300])
+    branch = _worktree_name(task_id, brief)
+    path = _worktree_root() / branch
+    added = git('worktree', 'add', '-b', branch, str(path), 'HEAD', seconds=30)
+    if added.returncode != 0:
+        # Surface git's own reason in the blocked JSON instead of a traceback.
+        raise ValueError('git worktree add failed: ' + (added.stderr.strip() or 'exit %d' % added.returncode)[:300])
+    return path, branch, bool(status.stdout.strip())
+
+
 def _load_learning():
     """Import the learning ledger module the way publish_status imports aos-status."""
     learning_spec = importlib.util.spec_from_file_location('aos_learning', ROOT / 'bin/aos-learning.py')
@@ -568,6 +623,7 @@ def main(argv=None):
     p.add_argument('--slot', choices=('primary', 'fallback'), default='primary')
     p.add_argument('--model')
     p.add_argument('--task-id')
+    p.add_argument('--worktree', choices=('auto',), help='delegate from a clean worktree on a new branch')
     p.add_argument('--timeout', type=int, default=900)
     p.add_argument('--state-file', type=Path)
     p.add_argument('--tier', type=str.upper, choices=('T0', 'T1', 'T2', 'T3'))
@@ -579,10 +635,21 @@ def main(argv=None):
     # before any token is spent rather than record a row nobody can score.
     if recording and not (args.tier and args.risk):
         p.error('--tier and --risk are required to record the run (or pass --no-record)')
+    worktree = None
     try:
         selection = resolve(slot=args.slot, runtime=args.runtime, model=args.model)
-        result = run(args.repo, selection['model_ref'], Path(args.brief).read_text(), args.timeout, False,
+        repo = args.repo
+        if args.worktree == 'auto':
+            worktree_path, branch, source_dirty = _auto_worktree(args.repo, args.task_id, args.brief)
+            repo = worktree_path
+            source = shlex.quote(str(Path(args.repo).resolve()))
+            worktree = dict(worktree=str(worktree_path), branch=branch, source_dirty=source_dirty,
+                            cleanup='git -C %s worktree remove %s && git -C %s branch -D %s'
+                                    % (source, shlex.quote(str(worktree_path)), source, shlex.quote(branch)))
+        result = run(repo, selection['model_ref'], Path(args.brief).read_text(), args.timeout, False,
                      runtime=selection['runtime'], state_file=args.state_file, task_id=args.task_id)
+        if worktree:
+            result.update(worktree)
         publish_status(selection['model_ref'], result)
         if recording:
             try:
@@ -598,11 +665,12 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return int(result['exit_code'] != 0 or bool(result['error']))
     except SystemExit as refusal:
+        # A refused run still leaves the auto worktree behind: say where and how to remove it.
         print(json.dumps({'error': 'delegate refused the task', 'blocked': True,
-                          'exit_code': refusal.code, 'runtime': args.runtime}))
+                          'exit_code': refusal.code, 'runtime': args.runtime, **(worktree or {})}))
         return refusal.code
     except (ValueError, OSError) as error:
-        print(json.dumps({'error': str(error), 'blocked': True}))
+        print(json.dumps({'error': str(error), 'blocked': True, **(worktree or {})}))
         return 2
 
 

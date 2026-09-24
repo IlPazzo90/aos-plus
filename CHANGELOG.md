@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.3.0 — saltare il worker open a HIGH costa una ragione anche senza check — 2026-09-24
+
+Un giorno di sessioni reali dopo la 3.2.0: cinque task, tutti HIGH, nessun lancio del worker
+open. Tre volte il router l'aveva scelto e la sessione l'ha scavalcato con una riga di
+motivo; una volta `--observable-check` non è stato passato e il router ha risposto premium
+senza lasciare traccia, su un progetto con i test.
+
+**A T1–T3 HIGH il check si dichiara.** `aos-router.py` e `aos-status.py set` escono con 2 se
+mancano sia `--observable-check` sia `--no-observable-check "<perché>"`; il motivo va nel JSON
+del router e sulla barra (`⚠ no check: …`). Con la policy illeggibile `set` rifiuta comunque.
+
+**Motivi validi per scavalcare il worker, in SKILL.md:** modifica sotto le ~20 righe, testo o
+copy legale, contesto che non entra in un brief. La produzione non lo è: il worker scrive in
+un worktree, l'host applica, distribuisce e misura.
+
+**`aos-open-executor.py --worktree auto`** crea ramo e worktree `aos-open-<task>-<hex>` da
+`HEAD` (in `$AOS_WORKTREE_ROOT`, altrimenti `~/Progetti/Worktree` se esiste, altrimenti la
+cartella temporanea), ci fa lavorare il worker e stampa `worktree`, `branch`, `source_dirty`
+e il comando di `cleanup`. Non cancella niente.
+
+**Modelli di sessione ammessi:** nuova chiave `premium.session_models` (`fable`, `opus`,
+`gpt-6-astra`). L'hook non chiede il cambio per questi e avvisa ancora sui modelli più
+deboli; il premium resta planner e reviewer tramite il router.
+
+**`aos-measure.py start`** legge `VERSION` quando `--version` manca e prende dal record di
+stato della sessione tier, rischio, executor del router e pubblicato e i due motivi, da cui
+ricava `routed_by_aos` e `manual_model_override`. Gli argomenti espliciti vincono; record
+scaduti e id di sessione che escono dalla cartella vengono ignorati.
+
+Verifiche: suite completa verde; gate cross-model in 5 round, 5 finding MAJOR accettati,
+PASS finale.
+
 ## 3.2.0 — il worker open lavora di più, e scavalcarlo costa una ragione — 2026-09-23
 
 Un controllo su tre giorni di sessioni reali ha contato una dozzina di lanci del worker
