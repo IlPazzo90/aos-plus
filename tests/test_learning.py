@@ -1391,6 +1391,85 @@ class LearningCliTests(unittest.TestCase):
         self.assertEqual(rows[0]["task_id"], "t")
 
 
+class RecordOutcomeCliIdentityTests(unittest.TestCase):
+    """The hand-recorded outcome CLI demands an identity and defaults verification."""
+
+    MESSAGE = ("record-outcome needs project, task_id, worker_exit "
+               "(0 when the session did the work itself) and test_pass")
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db = str(pathlib.Path(self.temp.name) / "learn.db")
+
+    def base(self, **overrides):
+        event = {"worker_exit": 0, "test_pass": True, "project": "p", "task_id": "t"}
+        event.update(overrides)
+        return event
+
+    def run_cli(self, event):
+        import contextlib
+        import io
+        path = pathlib.Path(self.temp.name) / "event.json"
+        path.write_text(json.dumps(event))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = L.main(["record-outcome", "--database", self.db, "--event", str(path)])
+        return code, buf.getvalue()
+
+    def test_missing_required_fields_are_refused_without_a_row(self):
+        for missing in ("project", "task_id", "worker_exit", "test_pass"):
+            with self.subTest(missing=missing):
+                event = {"worker_exit": 0, "test_pass": True, "project": "p", "task_id": "t"}
+                event.pop(missing)
+                with self.assertRaises(ValueError) as ctx:
+                    self.run_cli(event)
+                self.assertEqual(str(ctx.exception), self.MESSAGE)
+        self.assertFalse(pathlib.Path(self.db).exists())
+
+    def test_event_file_that_is_not_an_object_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.run_cli([1, 2, 3])
+        self.assertEqual(str(ctx.exception), self.MESSAGE)
+        self.assertFalse(pathlib.Path(self.db).exists())
+
+    def test_non_string_identity_and_bad_exit_and_test_pass_are_refused(self):
+        for override in ({"project": 5}, {"task_id": ""}, {"task_id": "  "},
+                         {"worker_exit": True}, {"worker_exit": 0.0}, {"test_pass": 1}):
+            with self.subTest(override=override):
+                with self.assertRaises(ValueError) as ctx:
+                    self.run_cli(self.base(**override))
+                self.assertEqual(str(ctx.exception), self.MESSAGE)
+        self.assertFalse(pathlib.Path(self.db).exists())
+
+    def test_valid_event_defaults_verification_to_verified(self):
+        code, out = self.run_cli(self.base())
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["success"])
+        row = L.list_outcomes(self.db)[0]
+        self.assertEqual((row["project"], row["task_id"], row["worker_exit"], row["test_pass"]),
+                         ("p", "t", 0, 1))
+        self.assertEqual(row["verification_status"], "verified")
+        self.assertTrue(row["success"])
+
+    def test_valid_event_keeps_the_derived_success_rule(self):
+        # A hand record that says the work failed keeps success off, identity intact.
+        code, out = self.run_cli(self.base(worker_exit=1))
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out)["success"])
+        row = L.list_outcomes(self.db)[0]
+        self.assertEqual((row["project"], row["task_id"], row["verification_status"]),
+                         ("p", "t", "verified"))
+        self.assertFalse(row["success"])
+
+    def test_explicit_verification_status_is_kept(self):
+        code, out = self.run_cli(self.base(verification_status="pending"))
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["success"])
+        row = L.list_outcomes(self.db)[0]
+        self.assertEqual(row["verification_status"], "pending")
+
+
 class EventKeyTests(unittest.TestCase):
     """A pipeline event is stored once, however often a step is retried."""
 

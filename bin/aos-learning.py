@@ -1832,6 +1832,23 @@ def _write_atomic(path, text):
         raise
 
 
+def _validate_record_outcome_cli(event):
+    """The record-outcome CLI demands the identity a hand record must carry.
+
+    The library still accepts legacy rows without identity; the CLI is the
+    host's own path, so a hand-recorded outcome must say which task it scores
+    and how the work ended. ``verification_status`` is defaulted only after this
+    gate, so an invalid event never reaches the ledger.
+    """
+    if (not isinstance(event, dict)
+            or not isinstance(event.get("project"), str) or not event.get("project").strip()
+            or not isinstance(event.get("task_id"), str) or not event.get("task_id").strip()
+            or isinstance(event.get("worker_exit"), bool) or not isinstance(event.get("worker_exit"), int)
+            or not isinstance(event.get("test_pass"), bool)):
+        raise ValueError("record-outcome needs project, task_id, worker_exit "
+                         "(0 when the session did the work itself) and test_pass")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1894,7 +1911,13 @@ def main(argv=None):
         else:
             with open(args.event, "r") as fh:
                 raw = fh.read()
-        payload = record_outcome(args.database, json.loads(raw))
+        event = json.loads(raw)
+        _validate_record_outcome_cli(event)
+        if "verification_status" not in event:
+            # A hand record comes from a host that ran the checks: score the row
+            # as verified unless the caller says otherwise.
+            event["verification_status"] = "verified"
+        payload = record_outcome(args.database, event)
     elif args.command == "verify-outcome":
         if args.test_pass.lower() not in ("true", "false"):
             raise ValueError("--test-pass must be true or false")

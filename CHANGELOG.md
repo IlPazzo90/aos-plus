@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.7.0 — azione esterna senza routing e righe del ledger con un'identità — 2026-09-25
+
+Una sessione che lavora via Bash e API (gestionale, mail ai fornitori) non tocca file con
+Edit/Write, quindi l'avviso della prima modifica non la vede, e i suoi prompt escono
+BUSINESS_OPERATIONS o GENERAL senza tipo. Le righe registrate a mano, inoltre, arrivavano senza
+progetto, task e `worker_exit`.
+
+- `bin/aos-prompt-hook.py`: `action_notice`. In una sessione Claude senza tier valido, un verbo
+  di invio (manda, invia, spedisci, inoltra, pubblica, send, publish) in qualunque dominio, o un
+  verbo di scrittura (aggiorna, inserisci, crea, metti, elimina, modifica, registra…) con
+  dominio BUSINESS_OPERATIONS o LEGAL_COMPLIANCE, aggiunge «azione esterna senza routing:
+  rischio HIGH…». Coda protetta, emessa anche senza altra classificazione, mai insieme a
+  «nessun routing registrato». Codex: nessun segmento.
+- `bin/aos-learning.py`: `record-outcome` da riga di comando rifiuta un evento senza `project`,
+  `task_id`, `worker_exit` intero e `test_pass` booleano; un record a mano senza
+  `verification_status` vale `verified`.
+- Verifiche: suite 910 test OK; prompt reali passati all'hook; scansione di sicurezza pulita.
+
 ## 3.6.0 — la prima modifica di una sessione senza routing riceve l'avviso, qualunque sia il prompt — 2026-09-24
 
 L'avviso «nessun routing registrato» della 3.5 scatta solo quando il classificatore a parole

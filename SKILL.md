@@ -1,7 +1,7 @@
 ---
 name: aos
 metadata:
-  version: "3.6.0"
+  version: "3.7.0"
 description: "Orchestratore di task per Claude Code e Codex: classifica dominio (sviluppo, legale e compliance, business, ricerca, dati), dimensione, rischio e capacità richieste; sceglie le skill pertinenti, il modello esecutore per costo atteso e un reviewer indipendente; verifica con evidenze e registra i risultati per migliorare il routing. Usa per software, configurazioni e rilascio, e per documenti, contratti, analisi e ricerche con un esito verificabile; su richiesta audit di efficacia e consumi. Caveman, RTK e ponytail per il costo; processo proporzionato."
 ---
 
@@ -121,6 +121,8 @@ The prompt hook reminds a routed Claude session (`tier attivo … da <n> min`) a
 fix or feature prompt in a session with no routing recorded (`nessun routing registrato`);
 its `PreToolUse` mode flags once the first file edit of an unrouted Claude session
 (`prima modifica senza routing registrato`), whatever the prompt said: route before going on.
+A prompt that sends (mail, publish) in any domain, or writes business/legal records, in an
+unrouted Claude session gets `azione esterna senza routing: rischio HIGH` — census first.
 HIGH/CRITICAL or unclear autonomy: read `references/risk-and-tiers.md`. The main session
 runs on an accepted model (`premium.session_models`: Opus on Claude, `gpt-6-astra` on
 Codex); Fable plans and reviews through the router, it is not a session model. On a
@@ -287,7 +289,9 @@ identities in `--task`.
 
 **Every routed attempt at T1+ is a datapoint** (the real benchmark is real use): record
 it with `bin/aos-learning.py record-outcome` — model, domain, task type, needs, failure
-type from the taxonomy, retries, escalation, findings, tokens by role. `matrix` turns
+type from the taxonomy, retries, escalation, findings, tokens by role. The CLI refuses
+a row without `project`, `task_id`, `worker_exit` (0 when the session did the work) and
+`test_pass`; a hand record defaults to `verified`. `matrix` turns
 the ledger into the performance matrix the router reads; `kpi` and `recommend` report
 it. A failure attributed to AOS or infrastructure (context, routing, tool, timeout)
 never lowers a model's score. Recommendations are proposals: the router's code and

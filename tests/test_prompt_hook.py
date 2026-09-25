@@ -748,6 +748,98 @@ class UnroutedNoticeTests(unittest.TestCase):
         self.assertEqual(hook.reroute_reminder({"session_id": "sess-un"}, None), "")
 
 
+class ActionNoticeTests(unittest.TestCase):
+    """A prompt that acts outside routing gets one advisory, never stacked."""
+
+    def setUp(self):
+        import tempfile
+        self.registry = hook._load_orchestrate().load_registry()
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        patcher = mock.patch.dict(os.environ, {"AOS_STATUS_DIR": self.directory,
+                                               "CLAUDE_PROJECT_DIR": "/x"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, session="sess-act", **record):
+        record.setdefault("expires_at", time.time() + 3600)
+        (Path(self.directory) / (session + ".json")).write_text(json.dumps(record))
+
+    def body(self, prompt, session="sess-act"):
+        output = hook.decide({"prompt": prompt, "session_id": session}, self.registry)
+        return output["hookSpecificOutput"]["additionalContext"] if output else None
+
+    def test_business_write_prompt_without_tier_gets_the_notice(self):
+        body = self.body("crea e inserisci i codici e metti i prezzi su unico")
+        self.assertIn("azione esterna senza routing", body)
+
+    def test_general_send_prompt_emits_the_aos_action_line(self):
+        body = self.body("sì, correggi e poi mandale")
+        self.assertIsNotNone(body)
+        self.assertTrue(body.startswith("AOS · azione esterna"))
+
+    def test_routed_record_gets_no_action_notice(self):
+        self.write(tier="T2", risk="LOW")
+        body = self.body("crea e inserisci i codici e metti i prezzi su unico")
+        self.assertNotIn("azione esterna", body or "")
+
+    def test_codex_gets_no_action_notice(self):
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        body = self.body("crea e inserisci i codici e metti i prezzi su unico")
+        self.assertNotIn("azione esterna", body or "")
+
+    def test_business_prompt_without_verbs_gets_no_action_notice(self):
+        body = self.body("riassumi l'offerta del fornitore")
+        self.assertNotIn("azione esterna", body or "")
+
+    def test_engineering_write_prompt_gets_no_action_notice(self):
+        body = self.body("crea un componente")
+        self.assertNotIn("azione esterna", body or "")
+
+    def test_unrouted_bug_fix_gets_only_the_routing_notice(self):
+        body = self.body("correggi questo bug nel file app.py e poi manda l'esito")
+        self.assertIn("nessun routing registrato", body)
+        self.assertNotIn("azione esterna", body)
+
+    def test_long_hint_keeps_the_action_notice_whole(self):
+        class Module:
+            def classify(self, prompt, adaptive):
+                return {"domains": ["BUSINESS_OPERATIONS"], "task_type": None}
+            def build_profile(self, **kwargs):
+                return {}
+            def decompose(self, profile, adaptive):
+                return range(30)
+            def select_skills(self, bundle, profile, adaptive):
+                return ["skill_%d_%s" % (bundle, "x" * 20)]
+        with mock.patch.object(hook, "_publish_profile"):
+            output = hook.decide({"prompt": "crea e inserisci i codici e metti i prezzi su unico",
+                                  "session_id": "sess-act"}, {"adaptive": {}}, module=Module())
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertLessEqual(len(body), hook.LINE_CAP)
+        self.assertIn(hook.ACTION_NOTICE, body)
+
+    def test_compact_command_stays_silent(self):
+        self.assertIsNone(hook.decide({"prompt": "/compact keep the plan",
+                                       "session_id": "sess-act"}, self.registry))
+
+    def test_action_notice_send_verb_fires_in_any_domain(self):
+        self.assertEqual(hook.action_notice({"session_id": "sess-act"}, "manda la mail",
+                                            ["ENGINEERING"]),
+                         hook.ACTION_NOTICE)
+
+    def test_action_notice_write_verb_needs_business_or_legal(self):
+        self.assertEqual(hook.action_notice({"session_id": "sess-act"}, "crea un file",
+                                            ["ENGINEERING"]), "")
+        self.assertEqual(hook.action_notice({"session_id": "sess-act"}, "crea un file",
+                                            ["BUSINESS_OPERATIONS"]),
+                         hook.ACTION_NOTICE)
+
+    def test_action_notice_with_a_routed_tier_is_silent(self):
+        self.write(tier="T2", risk="LOW")
+        self.assertEqual(hook.action_notice({"session_id": "sess-act"}, "manda la mail",
+                                            ["GENERAL"]), "")
+
+
 class PreToolUseTests(unittest.TestCase):
     """The first file edit in an unrouted Claude Code session claims the notice."""
 

@@ -11,17 +11,20 @@ output at all. It never talks to a provider, never runs a command and never
 reads a secret. Under Claude Code it also stores domains and task type in the
 session's status record (aos-status.py), so the status line can show them.
 
-Two signals turn written rules into visible ones: a session that already routed a
-task is reminded to route again when a new work prompt arrives, and a session
-whose context is past the policy's soft limit (aos-context.py) is told to compact
-at the next breakpoint. Only the user can run /compact, so under Claude Code that
-signal also reaches the user as a systemMessage.
+Written rules turn visible through a few signals: a session that already routed a
+task is reminded to route again when a new work prompt arrives, a session whose
+context is past the policy's soft limit (aos-context.py) is told to compact at
+the next breakpoint, and a prompt that would act outside AOS routing (e-mail,
+published records, business/legal writes) is warned before it runs. Only the user
+can run /compact, so under Claude Code that signal also reaches the user as a
+systemMessage.
 """
 
 import importlib.util
 import json
 import math
 import os
+import re
 import stat
 import sys
 import time
@@ -42,6 +45,15 @@ EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 UNROUTED_EDIT_NOTICE = ("AOS · prima modifica senza routing registrato: se è lavoro software "
                         "fai censimento, router e aos-status set prima di continuare; "
                         "altrimenti ignora")
+ACTION_NOTICE = (" · azione esterna senza routing: rischio HIGH, censimento, router e "
+                 "aos-status set prima di eseguirla")
+# Verbs that act on the outside world (e-mail, published documents, ...); the
+# word-start alternatives cover the Italian imperatives the prompts actually use.
+SEND_RE = re.compile(r"\b(mand[ao]|mandiam|mandal|mandar|invi[aoi]|inviam|inviar"
+                     r"|spedisc|spedir|inoltr|pubblic|send|publish)\w*", re.IGNORECASE)
+WRITE_RE = re.compile(r"\b(aggiorn|inserisc|inserir|crea|creare|metti|mettere|carica"
+                      r"|elimin|cancell|modific|registr|update|insert|create|delete|upload)\w*",
+                      re.IGNORECASE)
 
 
 def _load_module(name, filename):
@@ -432,6 +444,33 @@ def unrouted_notice(task_type):
     return " · nessun routing registrato: censimento, router e aos-status set prima della prima modifica"
 
 
+def action_notice(payload, prompt, domains):
+    """Segment warning that a prompt acts outside AOS routing, or "".
+
+    Claude Code only, and only while the live status record has no valid tier: a
+    session that routed already declared itself, so the router notice must stay
+    the single one. Send verbs act on the outside world in any domain; write
+    verbs count only when the classification touches business or legal records,
+    where inserting and correcting has external effects. Any failure -> "".
+    """
+    try:
+        session = _claude_session(payload)
+        if session is None:
+            return ""
+        tier = _load_status().load_live(session).get("tier")
+        if isinstance(tier, str) and tier.strip().upper() in ("T0", "T1", "T2", "T3"):
+            return ""
+    except Exception:
+        return ""
+    domains = domains or []
+    if SEND_RE.search(prompt or ""):
+        return ACTION_NOTICE
+    if ("BUSINESS_OPERATIONS" in domains or "LEGAL_COMPLIANCE" in domains) \
+            and WRITE_RE.search(prompt or ""):
+        return ACTION_NOTICE
+    return ""
+
+
 def session_model(payload):
     """The model the session is running, or None when it cannot be read.
 
@@ -464,19 +503,24 @@ def is_premium(model, names):
     return any(name in model for name in names)
 
 
-def _routing_hint(module, prompt, registry, payload=None, context_segment=""):
+def _routing_hint(module, prompt, registry, payload=None, context_segment="",
+                  classification=None, action_segment=""):
     """One line from the keyword classifier: a hint, never a routing decision.
 
     Tier, risk and executor are not printed: from keywords alone they would be
     defaults dressed up as a decision. The census and `route` decide those.
     """
     adaptive = registry["adaptive"]
-    cls = module.classify(prompt, adaptive)
+    cls = classification if classification is not None else module.classify(prompt, adaptive)
     domains = cls.get("domains") or []
     task_type = cls.get("task_type")
     if domains == ["GENERAL"] and task_type is None:
         return None
     reminder = reroute_reminder(payload, task_type)
+    if "nessun routing registrato" in reminder:
+        # The unrouted notice already points at census, router and aos-status:
+        # one notice per prompt, never the external-action notice stacked on top.
+        action_segment = ""
     _publish_profile(payload, domains, task_type)
     profile = module.build_profile(text=prompt, adaptive=adaptive)
     skills = []
@@ -486,9 +530,9 @@ def _routing_hint(module, prompt, registry, payload=None, context_segment=""):
                 skills.append(skill)
     head = "AOS · domini: " + "+".join(domains) + " · tipo: " + (task_type or "—")
     route = " · per T1+ censimento e route con /aos ($aos in Codex)"
-    tail = model_warning(session_model(payload)) + reminder + context_segment
-    # Warning, reminder and context segment are kept whole: a long skill list is
-    # what gets truncated.
+    tail = model_warning(session_model(payload)) + action_segment + reminder + context_segment
+    # Warning, action, reminder and context segments are kept whole: a long skill
+    # list is what gets truncated.
     listing = (" · skill: " + ", ".join(skills)) if skills else ""
     room = max(0, LINE_CAP - len(head) - len(route) - len(tail))
     if len(listing) > room:
@@ -540,13 +584,21 @@ def decide(payload, registry, module=None):
         signal = None
     segment = signal[0] if signal is not None else ""
     try:
-        hint = _routing_hint(module, prompt, registry, payload, segment)
+        classification = module.classify(prompt, registry["adaptive"])
+    except Exception:
+        classification = None
+    domains = classification.get("domains") if isinstance(classification, dict) else None
+    action = action_notice(payload, prompt, domains or [])
+    try:
+        hint = _routing_hint(module, prompt, registry, payload, segment,
+                             classification=classification, action_segment=action)
     except Exception:
         hint = None
-    if hint is None and segment:
-        # The context segment is emitted even when the classifier has nothing to
-        # say: a full context matters whatever the prompt is about.
-        hint = "AOS" + segment
+    if hint is None and (action or segment):
+        # The action and context segments are emitted even when the classifier
+        # has nothing to say: an external action or a full context matters
+        # whatever the prompt is about.
+        hint = "AOS" + action + segment
     if not hint:
         return None
     output = {"hookSpecificOutput": {"hookEventName": HOOK_EVENT, "additionalContext": hint}}
